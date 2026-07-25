@@ -1,0 +1,120 @@
+{
+  "generated_at": "SystemTime { intervals: 134292629891439130 }",
+  "modules": [
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/agent_bridge.rs",
+      "stem": "agent_bridge"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/app.rs",
+      "stem": "app"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/charts.rs",
+      "stem": "charts"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/config_io.rs",
+      "stem": "config_io"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/events.rs",
+      "stem": "events"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/fonts.rs",
+      "stem": "fonts"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/git_workspace.rs",
+      "stem": "git_workspace"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/main.rs",
+      "stem": "main"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/markdown.rs",
+      "stem": "markdown"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/model.rs",
+      "stem": "model"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/task.rs",
+      "stem": "task"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/unity.rs",
+      "stem": "unity"
+    },
+    {
+      "crate_name": "bony-build",
+      "path": "crates/codegen/bony-build/src/usage.rs",
+      "stem": "usage"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/architecture.rs",
+      "stem": "architecture"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/catalog.rs",
+      "stem": "catalog"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/features.rs",
+      "stem": "features"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/git.rs",
+      "stem": "git"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/impact.rs",
+      "stem": "impact"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/main.rs",
+      "stem": "main"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/matrix.rs",
+      "stem": "matrix"
+    },
+    {
+      "crate_name": "bony-monitor",
+      "path": "crates/codegen/bony-monitor/src/workflow.rs",
+      "stem": "workflow"
+    },
+    {
+      "crate_name": "scripts",
+      "path": "scripts/run-desktop.ps1",
+      "stem": "run-desktop"
+    },
+    {
+      "crate_name": "scripts",
+      "path": "scripts/run-monitor.ps1",
+      "stem": "run-monitor"
+    }
+  ]
+}
