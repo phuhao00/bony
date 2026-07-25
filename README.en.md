@@ -24,7 +24,7 @@
 
 ## What is this
 
-**Bony Build** is a native desktop client (Rust / egui, currently `v0.1.2`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
+**Bony Build** is a native desktop client (Rust / egui, currently `v0.1.3`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
 
 Good fit if you want to:
 
@@ -43,10 +43,10 @@ Typical uses: explain repo structure, dig into recent changes, add tests, summar
 
 GitHub Releases ship desktop zips (you still need a local `grok` CLI):
 
-- [**Bony Build v0.1.2**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.2)
-  - `bony-build-v0.1.2-windows-x86_64.zip`
-  - `bony-build-v0.1.2-macos-aarch64.zip`
-  - `bony-build-v0.1.2-macos-x86_64.zip`
+- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.3)
+  - `bony-build-v0.1.3-windows-x86_64.zip`
+  - `bony-build-v0.1.3-macos-aarch64.zip`
+  - `bony-build-v0.1.3-macos-x86_64.zip`
 
 Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) on `v*` tags (`release-dist` profile).
 
@@ -280,7 +280,7 @@ cargo run -p bony-build -- --cwd $PWD
 
 Ignore local artifacts: `target/`, `.tools/`, `*.log`, and a local `Bony Build.exe`.
 
-To cut a release: push an annotated tag (e.g. `v0.1.2`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
+To cut a release: push an annotated tag (e.g. `v0.1.3`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
 
 ---
 
