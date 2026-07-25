@@ -2,13 +2,15 @@
 
 **Bony Build** 桌面客户端 crate（eframe/egui + ACP stdio）。
 
-产品说明、截图与完整上手步骤见仓库根目录 [`README.md`](../../../README.md)（[English](../../../README.en.md)），含 Unity、任务 / worktree、监控等介绍。
+产品说明、截图与完整上手步骤见仓库根目录 [`README.md`](../../../README.md)（[English](../../../README.en.md)），含预编译包、会话级插件、Unity、任务 / worktree、监控与上游同步说明。
 
 ## 运行
 
 ```powershell
 # 仓库根目录
 powershell -ExecutionPolicy Bypass -File .\scripts\run-desktop.ps1
+# 干净重启（结束旧进程 + release）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-bony-build.ps1
 # 或
 cargo run -p bony-build
 ```
@@ -34,8 +36,8 @@ grok agent stdio  →  MvpAgent / SessionActor
 
 入口有两处：
 
-1. **侧栏「Unity 控制」** — 引导安装 CLI / Pipeline、选工程、分组操作  
-2. **聊天输入框旁的 `Unity` 按钮** — 打开对话控制芯片；也可直接发送「保存场景」「进入 Play」或 `/unity`
+1. **侧栏「插件 → Unity 控制」** — 引导安装 CLI / Pipeline、选工程、分组操作  
+2. **聊天输入框旁的 `+` → Unity 控制** — 为本会话挂上可关闭的 Unity 芯片；也可直接发送「保存场景」「进入 Play」或 `/unity`
 
 对话控制走本地 Unity CLI，**不经 Agent**，避免 agent 在 worktree 里挂死 `unity pipeline install`。
 
