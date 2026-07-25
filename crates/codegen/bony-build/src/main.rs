@@ -9,6 +9,7 @@ mod config_io;
 mod events;
 mod fonts;
 mod git_workspace;
+mod i18n;
 mod markdown;
 mod model;
 mod npc_ai;

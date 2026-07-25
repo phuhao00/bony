@@ -23,6 +23,7 @@ use crate::unity::{
     format_relative, parse_generated_unity_plan_unrestricted, parse_unity_chat_command,
     unity_chat_help_text, wants_unity_help,
 };
+use crate::i18n::{self, Language, UiPrefs, load_ui_prefs, save_ui_prefs};
 use crate::usage::{
     ChatInteraction, PluginPrefs, aggregate_model_usage, forget_project, format_tokens,
     load_plugin_prefs, remember_project, save_plugin_prefs,
@@ -135,8 +136,14 @@ pub struct BonyBuildApp {
     composer_plus_just_opened: bool,
     /// Anchor for the composer + menu (screen coords).
     composer_plus_anchor: Option<egui::Rect>,
+    /// Skip outside-click dismiss on the open frame for account menu.
+    user_menu_just_opened: bool,
+    /// Anchor for the account menu (screen coords).
+    user_menu_anchor: Option<egui::Rect>,
     /// Plugin enablement (persisted).
     plugin_prefs: PluginPrefs,
+    /// UI prefs (language, etc.).
+    ui_prefs: UiPrefs,
     /// Collapsed project keys in the sidebar conversation list.
     collapsed_projects: std::collections::HashSet<String>,
     /// Expanded "已归档" subsections keyed by project.
@@ -242,13 +249,34 @@ impl BonyBuildApp {
             show_composer_plus: false,
             composer_plus_just_opened: false,
             composer_plus_anchor: None,
+            user_menu_just_opened: false,
+            user_menu_anchor: None,
             plugin_prefs: prefs,
+            ui_prefs: load_ui_prefs(),
             collapsed_projects: std::collections::HashSet::new(),
             expanded_archived: std::collections::HashSet::new(),
             stop_armed_force: false,
             window_dragging: false,
             window_drag_grab: None,
         }
+    }
+
+    #[inline]
+    fn lang(&self) -> Language {
+        self.ui_prefs.language
+    }
+
+    #[inline]
+    fn t<'a>(&'a self, key: &'a str) -> &'a str {
+        i18n::t(self.lang(), key)
+    }
+
+    fn set_language(&mut self, lang: Language) {
+        if self.ui_prefs.language == lang {
+            return;
+        }
+        self.ui_prefs.language = lang;
+        save_ui_prefs(&self.ui_prefs);
     }
 
     fn ensure_started(&mut self, ctx: &egui::Context) {
@@ -862,7 +890,7 @@ impl eframe::App for BonyBuildApp {
                                 self.model.task_title.as_str()
                             }
                         } else {
-                            self.model.main_nav.title()
+                            self.model.main_nav.title_lang(self.lang())
                         };
                         ui.label(RichText::new(title).size(14.0).strong().color(TEXT));
                         if on_unity {
@@ -879,7 +907,9 @@ impl eframe::App for BonyBuildApp {
                             );
                             if self.unity.demo_mode {
                                 ui.label(
-                                    RichText::new("· 演示模式").size(12.0).color(UNITY_ACCENT),
+                                    RichText::new(self.t("common.demo_mode"))
+                                        .size(12.0)
+                                        .color(UNITY_ACCENT),
                                 );
                             }
                         }
@@ -910,7 +940,7 @@ impl eframe::App for BonyBuildApp {
                                     ui.add_space(8.0);
                                     ui.vertical_centered(|ui| {
                                         ui.label(
-                                            RichText::new("只读历史 · 发送新消息将回到当前会话")
+                                            RichText::new(self.t("composer.readonly_history"))
                                                 .size(12.0)
                                                 .color(MUTED),
                                         );
@@ -926,7 +956,11 @@ impl eframe::App for BonyBuildApp {
                                     ui.add_space(8.0);
                                     ui.horizontal(|ui| {
                                         ui.spinner();
-                                        ui.label(RichText::new("处理中…").size(12.5).color(MUTED));
+                                        ui.label(
+                                            RichText::new(self.t("composer.processing"))
+                                                .size(12.5)
+                                                .color(MUTED),
+                                        );
                                     });
                                 }
                                 ui.add_space(20.0);
@@ -998,56 +1032,62 @@ impl BonyBuildApp {
                     |ui| {
                         // —— Left cluster ——
                         let left_on = self.model.show_left_sidebar;
-                        if panel_toggle_btn(ui, PanelSide::Left, "切换侧栏", left_on) {
+                        if panel_toggle_btn(ui, PanelSide::Left, self.t("tip.toggle_sidebar"), left_on)
+                        {
                             self.model.show_left_sidebar = !left_on;
                         }
                         let can_back = self.model.is_viewing_history();
-                        if nav_chevron_btn(ui, NavDir::Back, "返回当前会话", can_back) && can_back
+                        if nav_chevron_btn(ui, NavDir::Back, self.t("tip.back_live"), can_back)
+                            && can_back
                         {
                             self.model.return_to_live();
                         }
-                        let _ = nav_chevron_btn(ui, NavDir::Forward, "前进", false);
+                        let _ = nav_chevron_btn(ui, NavDir::Forward, self.t("tip.forward"), false);
 
                         ui.add_space(8.0);
                         ui.spacing_mut().button_padding = Vec2::new(6.0, 2.0);
                         ui.visuals_mut().button_frame = false;
-                        for (label, build) in
-                            [("文件", 0u8), ("编辑", 1u8), ("视图", 2u8), ("帮助", 3u8)]
-                        {
+                        for (label_key, build) in [
+                            ("menu.file", 0u8),
+                            ("menu.edit", 1u8),
+                            ("menu.view", 2u8),
+                            ("menu.help", 3u8),
+                        ] {
+                            let label = self.t(label_key);
                             ui.menu_button(RichText::new(label).size(13.0).color(MUTED), |ui| {
                                 ui.visuals_mut().button_frame = true;
                                 match build {
                                     0 => {
-                                        if ui.button("新建任务").clicked() {
+                                        if ui.button(self.t("menu.new_task")).clicked() {
                                             self.create_task(ctx);
                                             ui.close_menu();
                                         }
-                                        if ui.button("打开项目…").clicked() {
+                                        if ui.button(self.t("menu.open_project")).clicked() {
                                             self.pick_project(ctx);
                                             ui.close_menu();
                                         }
                                         ui.separator();
-                                        if ui.button("退出").clicked() {
+                                        if ui.button(self.t("menu.quit")).clicked() {
                                             ui.close_menu();
                                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                                         }
                                     }
                                     1 => {
-                                        if ui.button("聚焦输入框").clicked() {
+                                        if ui.button(self.t("menu.focus_composer")).clicked() {
                                             self.model.go_chat();
                                             self.model.focus_composer = true;
                                             ui.close_menu();
                                         }
-                                        if ui.button("清空草稿").clicked() {
+                                        if ui.button(self.t("menu.clear_draft")).clicked() {
                                             self.model.draft.clear();
                                             ui.close_menu();
                                         }
                                     }
                                     2 => {
                                         let left_label = if self.model.show_left_sidebar {
-                                            "隐藏侧栏"
+                                            self.t("menu.hide_sidebar")
                                         } else {
-                                            "显示侧栏"
+                                            self.t("menu.show_sidebar")
                                         };
                                         if ui.button(left_label).clicked() {
                                             self.model.show_left_sidebar =
@@ -1055,26 +1095,26 @@ impl BonyBuildApp {
                                             ui.close_menu();
                                         }
                                         let right_label = if self.model.show_right_panel {
-                                            "隐藏右侧栏"
+                                            self.t("menu.hide_right")
                                         } else {
-                                            "显示右侧栏"
+                                            self.t("menu.show_right")
                                         };
                                         if ui.button(right_label).clicked() {
                                             self.model.show_right_panel =
                                                 !self.model.show_right_panel;
                                             ui.close_menu();
                                         }
-                                        if ui.button("使用统计").clicked() {
+                                        if ui.button(self.t("menu.usage")).clicked() {
                                             self.model.show_usage_detail = true;
                                             ui.close_menu();
                                         }
-                                        if ui.button("插件管理").clicked() {
+                                        if ui.button(self.t("menu.plugins")).clicked() {
                                             self.model.main_nav = MainNav::Plugins;
                                             ui.close_menu();
                                         }
                                     }
                                     _ => {
-                                        if ui.button("关于 Bony Build").clicked() {
+                                        if ui.button(self.t("menu.about")).clicked() {
                                             self.model.show_about = true;
                                             ui.close_menu();
                                         }
@@ -1109,9 +1149,9 @@ impl BonyBuildApp {
                                 ui,
                                 PanelSide::Right,
                                 if right_on {
-                                    "隐藏右侧栏"
+                                    self.t("tip.hide_right")
                                 } else {
-                                    "显示右侧栏"
+                                    self.t("tip.show_right")
                                 },
                                 right_on,
                             ) {
@@ -1223,37 +1263,40 @@ impl BonyBuildApp {
 
         if self.model.show_task_search {
             ui.add_space(6.0);
+            let filter_hint = self.t("sidebar.filter_tasks").to_owned();
             ui.add(
                 egui::TextEdit::singleline(&mut self.model.task_filter)
                     .desired_width(f32::INFINITY)
-                    .hint_text("筛选任务…")
+                    .hint_text(filter_hint)
                     .frame(true),
             );
         }
 
         ui.add_space(12.0);
 
-        if nav_row(ui, SidebarGlyph::Plus, "新建任务", false) {
+        if nav_row(ui, SidebarGlyph::Plus, self.t("nav.new_task"), false) {
             self.create_task(ctx);
         }
         ui.add_space(2.0);
         let chat_selected =
             self.model.main_nav == MainNav::Chat && !self.model.is_viewing_history();
-        if nav_row(ui, SidebarGlyph::Chat, "聊天", chat_selected) {
+        if nav_row(ui, SidebarGlyph::Chat, self.t("nav.chat"), chat_selected) {
             self.model.return_to_live();
         }
         ui.add_space(2.0);
         let plugins_selected = self.model.main_nav == MainNav::Plugins
             || self.model.main_nav == MainNav::Unity;
-        if nav_row(ui, SidebarGlyph::Plug, "插件", plugins_selected) {
+        if nav_row(ui, SidebarGlyph::Plug, self.t("nav.plugins"), plugins_selected) {
             self.model.main_nav = MainNav::Plugins;
         }
 
         ui.add_space(16.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("按项目").size(11.5).color(MUTED));
+            ui.label(RichText::new(self.t("sidebar.by_project")).size(11.5).color(MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_btn(ui, SidebarGlyph::Plus, "打开项目", false).clicked() {
+                if icon_btn(ui, SidebarGlyph::Plus, self.t("menu.open_project_short"), false)
+                    .clicked()
+                {
                     self.pick_project(ctx);
                 }
             });
@@ -1288,9 +1331,9 @@ impl BonyBuildApp {
                 if groups.is_empty() {
                     ui.label(
                         RichText::new(if self.model.task_filter.trim().is_empty() {
-                            "还没有对话记录"
+                            self.t("sidebar.no_history")
                         } else {
-                            "没有匹配的对话"
+                            self.t("sidebar.no_match")
                         })
                         .size(12.0)
                         .color(MUTED),
@@ -1371,11 +1414,12 @@ impl BonyBuildApp {
                         })
                         .response;
                     header.context_menu(|ui| {
-                        if !group.is_current && ui.button("切换到此项目").clicked() {
+                        if !group.is_current && ui.button(self.t("sidebar.switch_project")).clicked()
+                        {
                             switch_to = true;
                             ui.close_menu();
                         }
-                        if ui.button("从列表移除").clicked() {
+                        if ui.button(self.t("sidebar.remove_from_list")).clicked() {
                             forget = true;
                             ui.close_menu();
                         }
@@ -1404,7 +1448,11 @@ impl BonyBuildApp {
                     if group.tasks.is_empty() && group.archived.is_empty() {
                         ui.horizontal(|ui| {
                             ui.add_space(22.0);
-                            ui.label(RichText::new("暂无对话").size(11.5).color(MUTED));
+                            ui.label(
+                                RichText::new(self.t("sidebar.no_chats"))
+                                    .size(11.5)
+                                    .color(MUTED),
+                            );
                         });
                         ui.add_space(4.0);
                         continue;
@@ -1483,11 +1531,19 @@ impl BonyBuildApp {
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.add_space(4.0);
+            let open = self.model.show_user_menu;
             let pill = Frame::new()
-                .fill(PANEL)
-                .corner_radius(CornerRadius::same(20))
+                .fill(if open { SELECTED } else { PANEL })
+                .corner_radius(CornerRadius::same(18))
                 .inner_margin(Margin::symmetric(8, 6))
-                .stroke(Stroke::new(1.0, BORDER))
+                .stroke(Stroke::new(
+                    1.0,
+                    if open {
+                        Color32::from_rgb(70, 72, 84)
+                    } else {
+                        BORDER
+                    },
+                ))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         avatar_circle(ui, &self.model.initials());
@@ -1506,6 +1562,14 @@ impl BonyBuildApp {
             }
             if pill.clicked() {
                 self.model.show_user_menu = !self.model.show_user_menu;
+                self.user_menu_just_opened = self.model.show_user_menu;
+                if self.model.show_user_menu {
+                    self.user_menu_anchor = Some(pill.rect);
+                } else {
+                    self.user_menu_anchor = None;
+                }
+            } else if self.model.show_user_menu {
+                self.user_menu_anchor = Some(pill.rect);
             }
         });
     }
@@ -1851,10 +1915,10 @@ impl BonyBuildApp {
 
     fn plugins_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(12.0);
-        ui.label(RichText::new("插件").size(22.0).strong().color(TEXT));
+        ui.label(RichText::new(self.t("plugins.title")).size(22.0).strong().color(TEXT));
         ui.add_space(6.0);
         ui.label(
-            RichText::new("在此安装扩展；对话里点输入框「+」即可使用或取消。")
+            RichText::new(self.t("plugins.blurb"))
                 .size(13.0)
                 .color(MUTED),
         );
@@ -1887,13 +1951,13 @@ impl BonyBuildApp {
                     ui.add_space(10.0);
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Unity 控制")
+                            RichText::new(self.t("plugins.unity_title"))
                                 .size(15.0)
                                 .strong()
                                 .color(TEXT),
                         );
                         ui.label(
-                            RichText::new("本地 CLI 驱动编辑器：安装 Pipeline、探测、场景操作")
+                            RichText::new(self.t("plugins.unity_blurb"))
                                 .size(12.0)
                                 .color(MUTED),
                         );
@@ -3247,62 +3311,71 @@ impl BonyBuildApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("关于 Bony Build")
+        egui::Window::new(self.t("about.title"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_min_width(440.0);
-                ui.label(RichText::new("Bony Build").size(18.0).strong().color(TEXT));
+                ui.label(
+                    RichText::new(self.t("app.name"))
+                        .size(18.0)
+                        .strong()
+                        .color(TEXT),
+                );
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("原生桌面 AI 编程助手 · 含 Unity CLI 本地控制")
+                    RichText::new(self.t("about.tagline"))
                         .size(13.0)
                         .color(MUTED),
                 );
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new(format!("版本 {}", env!("CARGO_PKG_VERSION")))
-                        .size(12.5)
-                        .color(MUTED),
+                    RichText::new(format!(
+                        "{} {}",
+                        self.t("about.version"),
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .size(12.5)
+                    .color(MUTED),
                 );
                 ui.add_space(12.0);
                 ui.label(
-                    RichText::new(
-                        "通过 ACP 驱动本地 grok agent，在仓库工作区里对话、改代码、跑工具。",
-                    )
-                    .size(12.5)
-                    .color(TEXT),
+                    RichText::new(self.t("about.body"))
+                        .size(12.5)
+                        .color(TEXT),
                 );
                 ui.add_space(10.0);
-                ui.label(RichText::new("Unity 控制（近期）").size(12.5).strong().color(TEXT));
+                ui.label(
+                    RichText::new(self.t("about.unity"))
+                        .size(12.5)
+                        .strong()
+                        .color(TEXT),
+                );
                 ui.add_space(4.0);
-                for line in [
-                    "• 侧栏「插件 → Unity 控制」：安装 CLI / Pipeline、绑定工程、按钮操作",
-                    "• 聊天旁 Unity 芯片或 /unity：探测编辑器、Play、跑循环等",
-                    "• 走本机 Unity CLI，不经 Agent，避免 pipeline 安装卡死",
-                ] {
-                    ui.label(RichText::new(line).size(12.0).color(MUTED));
-                }
-                ui.add_space(10.0);
-                ui.label(RichText::new("其它能力").size(12.5).strong().color(TEXT));
-                ui.add_space(4.0);
-                for line in [
-                    "• 多供应商 BYOK（Qwen / Kimi / 智谱 / OpenAI 兼容等）",
-                    "• 项目与任务：可选隔离 Git worktree，按任务控制权限",
-                    "• 工具卡片、模型切换、使用量统计与中文界面",
-                ] {
-                    ui.label(RichText::new(line).size(12.0).color(MUTED));
+                for key in ["about.u1", "about.u2", "about.u3"] {
+                    ui.label(RichText::new(self.t(key)).size(12.0).color(MUTED));
                 }
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("底层复用 SpaceXAI Grok agent；桌面壳为本产品。")
+                    RichText::new(self.t("about.other"))
+                        .size(12.5)
+                        .strong()
+                        .color(TEXT),
+                );
+                ui.add_space(4.0);
+                for key in ["about.o1", "about.o2", "about.o3"] {
+                    ui.label(RichText::new(self.t(key)).size(12.0).color(MUTED));
+                }
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(self.t("about.footer"))
                         .size(11.5)
                         .color(MUTED),
                 );
                 ui.add_space(14.0);
-                if ui.button("关闭").clicked() {
+                if ui.button(self.t("common.close")).clicked() {
                     self.model.show_about = false;
                 }
             });
@@ -3323,23 +3396,23 @@ impl BonyBuildApp {
             || unity_local
     }
 
-    fn composer_send_hint(&self, can_send: bool) -> &'static str {
+    fn composer_send_hint(&self, can_send: bool) -> &str {
         if can_send {
-            return "发送 · Enter";
+            return self.t("composer.send_hint");
         }
         if self.model.needs_login {
-            return "请先登录或配置 API Key";
+            return self.t("composer.need_login");
         }
         if self.model.busy {
-            return "正在处理上一轮，请稍候或点停止";
+            return self.t("composer.busy");
         }
         if !self.model.connected {
-            return "正在连接 agent，连上后即可发送";
+            return self.t("composer.connecting");
         }
         if self.model.draft.trim().is_empty() && self.attachments.is_empty() {
-            return "先输入消息，或用 + 添加文件";
+            return self.t("composer.empty");
         }
-        "暂时无法发送"
+        self.t("composer.cant_send")
     }
 
     fn floating_composer(&mut self, ui: &mut egui::Ui) {
@@ -3366,16 +3439,17 @@ impl BonyBuildApp {
                 }
 
                 let hint = if self.model.needs_login {
-                    "请先登录或配置 API Key…"
+                    self.t("composer.hint_login")
                 } else if unity_on {
-                    "描述要对编辑器做的事…"
+                    self.t("composer.hint_unity")
                 } else if !self.model.connected {
-                    "正在连接 agent…"
+                    self.t("composer.hint_connecting")
                 } else if self.model.is_viewing_history() {
-                    "要求后续变更（将回到当前会话）…"
+                    self.t("composer.hint_history")
                 } else {
-                    "有问题，尽管问…  Enter 发送 · Shift+Enter 换行"
-                };
+                    self.t("composer.hint")
+                }
+                .to_owned();
 
                 let edit = egui::TextEdit::multiline(&mut self.model.draft)
                     .desired_width(f32::INFINITY)
@@ -3415,7 +3489,12 @@ impl BonyBuildApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let plus = composer_plus_btn(ui, self.show_composer_plus);
+                    let plus_tip = if self.show_composer_plus {
+                        self.t("composer.plus_open")
+                    } else {
+                        self.t("composer.plus_closed")
+                    };
+                    let plus = composer_plus_btn(ui, self.show_composer_plus, plus_tip);
                     if plus.clicked() {
                         self.show_composer_plus = !self.show_composer_plus;
                         self.composer_plus_just_opened = self.show_composer_plus;
@@ -3429,7 +3508,7 @@ impl BonyBuildApp {
                         let send = ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("发送")
+                                    RichText::new(self.t("composer.send"))
                                         .size(12.5)
                                         .color(if can_send { BG } else { MUTED })
                                         .strong(),
@@ -3456,9 +3535,9 @@ impl BonyBuildApp {
                                 .add(
                                     egui::Button::new(
                                         RichText::new(if self.stop_armed_force {
-                                            "强制停止"
+                                            self.t("composer.force_stop")
                                         } else {
-                                            "停止"
+                                            self.t("composer.stop")
                                         })
                                         .size(12.0)
                                         .color(if self.stop_armed_force { DANGER } else { TEXT }),
@@ -3502,6 +3581,7 @@ impl BonyBuildApp {
                         if soft_chip(ui, &usage_label, true) {
                             self.model.show_usage_detail = true;
                             self.model.show_user_menu = false;
+                            self.user_menu_anchor = None;
                         }
                         ui.add_space(4.0);
 
@@ -3698,8 +3778,8 @@ impl BonyBuildApp {
                         if plus_menu_row(
                             ui,
                             SidebarGlyph::Doc,
-                            "添加文件",
-                            "加入当前对话上下文",
+                            self.t("plus.add_file"),
+                            self.t("plus.add_file_sub"),
                             false,
                         ) {
                             add_files = true;
@@ -3707,25 +3787,30 @@ impl BonyBuildApp {
                         }
 
                         ui.add_space(2.0);
-                        plus_menu_divider(ui, "插件");
+                        plus_menu_divider(ui, self.t("plus.section_plugins"));
                         ui.add_space(2.0);
 
                         if unity_installed {
                             let sub = if unity_active {
-                                "已启用 · 再点关闭"
+                                self.t("plus.unity_on")
                             } else {
-                                "本地 CLI，不经 Agent"
+                                self.t("plus.unity_off")
                             };
-                            if plus_menu_row(ui, SidebarGlyph::Unity, "Unity 控制", sub, unity_active)
-                            {
+                            if plus_menu_row(
+                                ui,
+                                SidebarGlyph::Unity,
+                                self.t("plus.unity"),
+                                sub,
+                                unity_active,
+                            ) {
                                 toggle_unity = true;
                                 close = true;
                             }
                         } else if plus_menu_row(
                             ui,
                             SidebarGlyph::Unity,
-                            "Unity 控制",
-                            "未启用 · 去插件页开启",
+                            self.t("plus.unity"),
+                            self.t("plus.unity_disabled"),
                             false,
                         ) {
                             open_plugins = true;
@@ -3743,8 +3828,8 @@ impl BonyBuildApp {
                         if plus_menu_row(
                             ui,
                             SidebarGlyph::Plug,
-                            "管理插件",
-                            "安装、启用或关闭",
+                            self.t("plus.manage"),
+                            self.t("plus.manage_sub"),
                             false,
                         ) {
                             open_plugins = true;
@@ -3789,72 +3874,141 @@ impl BonyBuildApp {
         if !self.model.show_user_menu {
             return;
         }
+        let Some(anchor) = self.user_menu_anchor else {
+            self.model.show_user_menu = false;
+            return;
+        };
 
-        let mut open = true;
-        egui::Window::new("user_menu")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::LEFT_BOTTOM, [12.0, -56.0])
-            .frame(
-                Frame::new()
-                    .fill(PANEL)
-                    .corner_radius(CornerRadius::same(12))
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(Margin::symmetric(10, 10))
-                    .shadow(Shadow {
-                        offset: [0, 8],
-                        blur: 24,
-                        spread: 0,
-                        color: Color32::from_black_alpha(120),
-                    }),
-            )
-            .open(&mut open)
+        let mut close = false;
+        let mut open_usage = false;
+        let mut open_config = false;
+        let mut do_login = false;
+        let mut next_lang: Option<Language> = None;
+        let needs_login = self.model.needs_login;
+        let display_name = self.model.display_name.clone();
+        let initials = self.model.initials();
+        let subtitle = if needs_login {
+            self.t("user.signed_out")
+        } else {
+            self.t("user.local_account")
+        };
+        let usage_label = self.t("user.usage");
+        let config_label = self.t("user.edit_config");
+        let lang_label = self.t("user.language");
+        let auth_label = if needs_login {
+            self.t("user.login")
+        } else {
+            self.t("user.relogin")
+        };
+        let current_lang = self.lang();
+
+        let area = egui::Area::new(egui::Id::new("user_account_menu"))
+            .order(egui::Order::Foreground)
+            .pivot(Align2::LEFT_BOTTOM)
+            .fixed_pos(egui::pos2(anchor.left(), anchor.top() - 8.0))
+            .constrain(true)
             .show(ctx, |ui| {
-                ui.set_min_width(220.0);
-                ui.horizontal(|ui| {
-                    avatar_circle(ui, &self.model.initials());
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(&self.model.display_name)
-                            .size(14.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
+                Frame::new()
+                    .fill(Color32::from_rgb(24, 24, 28))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(62, 62, 72)))
+                    .corner_radius(CornerRadius::same(12))
+                    .shadow(Shadow {
+                        offset: [0, 10],
+                        blur: 28,
+                        spread: 0,
+                        color: Color32::from_black_alpha(140),
+                    })
+                    .inner_margin(Margin::symmetric(8, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(248.0);
 
-                if menu_row(ui, "使用统计", true) {
-                    self.model.show_usage_detail = true;
-                    self.model.show_user_menu = false;
-                }
-                if menu_row(ui, "设置 · 编辑 config.toml", false) {
-                    self.model.show_user_menu = false;
-                    if let Err(e) = crate::config_io::open_config_in_editor() {
-                        self.model
-                            .apply(AgentEvent::Error(format!("无法打开配置: {e}")));
-                    }
-                }
-                if self.model.needs_login {
-                    if menu_row(ui, "登录", false) {
-                        self.model.show_user_menu = false;
-                        self.send_cmd(UiCommand::Login);
-                    }
-                } else if menu_row(ui, "重新登录", false) {
-                    self.model.show_user_menu = false;
-                    self.send_cmd(UiCommand::Login);
-                }
+                        // Header
+                        ui.horizontal(|ui| {
+                            avatar_circle(ui, &initials);
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(&display_name)
+                                        .size(13.5)
+                                        .strong()
+                                        .color(TEXT),
+                                );
+                                ui.label(RichText::new(subtitle).size(11.5).color(MUTED));
+                            });
+                        });
+
+                        ui.add_space(8.0);
+                        thin_menu_rule(ui);
+                        ui.add_space(4.0);
+
+                        if account_menu_row(ui, usage_label, AccountRowKind::Chevron) {
+                            open_usage = true;
+                            close = true;
+                        }
+                        if account_menu_row(ui, config_label, AccountRowKind::Plain) {
+                            open_config = true;
+                            close = true;
+                        }
+
+                        ui.add_space(4.0);
+                        thin_menu_rule(ui);
+                        ui.add_space(6.0);
+
+                        // Language: quiet label + compact segmented control
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(lang_label).size(12.5).color(TEXT));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(lang) = language_segment(ui, current_lang) {
+                                    next_lang = Some(lang);
+                                }
+                            });
+                        });
+
+                        ui.add_space(6.0);
+                        thin_menu_rule(ui);
+                        ui.add_space(4.0);
+
+                        if account_menu_row(ui, auth_label, AccountRowKind::Muted) {
+                            do_login = true;
+                            close = true;
+                        }
+                    });
             });
 
-        if !open {
-            self.model.show_user_menu = false;
+        if let Some(lang) = next_lang {
+            self.set_language(lang);
+        }
+        if open_usage {
+            self.model.show_usage_detail = true;
+        }
+        if open_config {
+            if let Err(e) = crate::config_io::open_config_in_editor() {
+                self.model.apply(AgentEvent::Error(format!(
+                    "{}: {e}",
+                    self.t("user.open_failed")
+                )));
+            }
+        }
+        if do_login {
+            self.send_cmd(UiCommand::Login);
         }
 
-        // Click-away: close when pointer down outside (simple: Esc).
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if self.user_menu_just_opened {
+            self.user_menu_just_opened = false;
+        } else {
+            let pointer = ctx.pointer_interact_pos().unwrap_or(egui::pos2(-999.0, -999.0));
+            let clicked_elsewhere = ctx.input(|i| i.pointer.any_click())
+                && !area.response.contains_pointer()
+                && !anchor.contains(pointer);
+            if close || clicked_elsewhere || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.model.show_user_menu = false;
+                self.user_menu_anchor = None;
+            }
+        }
+        if close {
             self.model.show_user_menu = false;
+            self.user_menu_anchor = None;
         }
     }
 
@@ -5443,13 +5597,9 @@ fn paint_sidebar_glyph(ui: &mut egui::Ui, glyph: SidebarGlyph, color: Color32) {
 }
 
 /// Larger, clearer 「+」 control (ChatGPT / Codex style).
-fn composer_plus_btn(ui: &mut egui::Ui, open: bool) -> egui::Response {
+fn composer_plus_btn(ui: &mut egui::Ui, open: bool, tip: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
-    let resp = resp.on_hover_text(if open {
-        "关闭菜单"
-    } else {
-        "添加文件或插件"
-    });
+    let resp = resp.on_hover_text(tip);
     let fill = if open {
         Color32::from_rgb(52, 54, 64)
     } else if resp.hovered() {
@@ -5866,6 +6016,7 @@ fn soft_chip(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
     enabled && resp.clicked()
 }
 
+#[allow(dead_code)]
 fn menu_row(ui: &mut egui::Ui, label: &str, with_chevron: bool) -> bool {
     let resp = Frame::new()
         .fill(Color32::TRANSPARENT)
@@ -5888,6 +6039,109 @@ fn menu_row(ui: &mut egui::Ui, label: &str, with_chevron: bool) -> bool {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+}
+
+#[derive(Clone, Copy)]
+enum AccountRowKind {
+    Plain,
+    Chevron,
+    Muted,
+}
+
+fn thin_menu_rule(ui: &mut egui::Ui) {
+    let y = ui.cursor().top();
+    ui.painter().hline(
+        ui.max_rect().x_range().shrink(4.0),
+        y,
+        Stroke::new(1.0, Color32::from_rgb(42, 42, 50)),
+    );
+    ui.add_space(1.0);
+}
+
+fn account_menu_row(ui: &mut egui::Ui, label: &str, kind: AccountRowKind) -> bool {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(8), Color32::from_rgb(36, 38, 46));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let color = match kind {
+        AccountRowKind::Muted => MUTED,
+        _ => TEXT,
+    };
+    ui.painter().text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(13.0),
+        color,
+    );
+    if matches!(kind, AccountRowKind::Chevron) {
+        ui.painter().text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            "›",
+            egui::FontId::proportional(16.0),
+            MUTED,
+        );
+    }
+    resp.clicked()
+}
+
+/// Compact language segmented control. Returns newly selected language if changed.
+fn language_segment(ui: &mut egui::Ui, current: Language) -> Option<Language> {
+    let langs = Language::all();
+    let seg_w = 44.0;
+    let seg_h = 24.0;
+    let pad = 2.0;
+    let total = Vec2::new(seg_w * langs.len() as f32 + pad * 2.0, seg_h + pad * 2.0);
+    let (rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(7),
+        Color32::from_rgb(32, 34, 42),
+    );
+
+    let mut chosen = None;
+    for (i, lang) in langs.iter().enumerate() {
+        let x = rect.left() + pad + i as f32 * seg_w;
+        let seg = egui::Rect::from_min_size(
+            egui::pos2(x, rect.top() + pad),
+            Vec2::new(seg_w, seg_h),
+        );
+        let id = ui.id().with("lang_seg").with(lang.native_name());
+        let resp = ui.interact(seg, id, egui::Sense::click());
+        let selected = *lang == current;
+        if selected || resp.hovered() {
+            ui.painter().rect_filled(
+                seg,
+                CornerRadius::same(5),
+                if selected {
+                    Color32::from_rgb(48, 50, 60)
+                } else {
+                    Color32::from_rgb(40, 42, 50)
+                },
+            );
+        }
+        ui.painter().text(
+            seg.center(),
+            Align2::CENTER_CENTER,
+            match lang {
+                Language::Zh => "中",
+                Language::En => "EN",
+            },
+            egui::FontId::proportional(11.5),
+            if selected { TEXT } else { MUTED },
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp.clicked() && !selected {
+            chosen = Some(*lang);
+        }
+    }
+    chosen
 }
 
 fn avatar_circle(ui: &mut egui::Ui, initials: &str) {
