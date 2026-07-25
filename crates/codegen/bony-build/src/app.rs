@@ -868,15 +868,23 @@ impl eframe::App for BonyBuildApp {
                 }
 
                 if on_chat {
-                    let avail = ui.available_height();
-                    let composer_h = if self.unity_chat_mode { 188.0 } else { 148.0 };
-                    let chat_h = (avail - composer_h).max(120.0);
+                    // Size composer to its content first so Unity chips / shortcuts
+                    // never clip the + / model / send row at the bottom.
+                    egui::TopBottomPanel::bottom("chat_composer")
+                        .frame(egui::Frame::NONE)
+                        .show_separator_line(false)
+                        .show_inside(ui, |ui| {
+                            ui.add_space(8.0);
+                            centered_column(ui, |ui| {
+                                self.floating_composer(ui);
+                            });
+                            ui.add_space(12.0);
+                        });
 
                     egui::ScrollArea::vertical()
                         .id_salt("chat_scroll")
                         .stick_to_bottom(self.model.auto_scroll)
                         .auto_shrink([false, false])
-                        .max_height(chat_h)
                         .show(ui, |ui| {
                             centered_column(ui, |ui| {
                                 if self.model.is_viewing_history() {
@@ -905,12 +913,6 @@ impl eframe::App for BonyBuildApp {
                                 ui.add_space(20.0);
                             });
                         });
-
-                    ui.add_space(8.0);
-                    centered_column(ui, |ui| {
-                        self.floating_composer(ui);
-                    });
-                    ui.add_space(12.0);
                 } else if on_plugins {
                     egui::ScrollArea::vertical()
                         .id_salt("plugins_scroll")
@@ -3222,6 +3224,37 @@ impl BonyBuildApp {
         }
     }
 
+    fn composer_can_send(&self) -> bool {
+        let draft = self.model.draft.trim();
+        let has_content = !draft.is_empty() || !self.attachments.is_empty();
+        let unity_local = !draft.is_empty()
+            && (parse_unity_chat_command(draft).is_some() || wants_unity_help(draft));
+        (self.model.connected
+            && !self.model.busy
+            && !self.model.needs_login
+            && has_content)
+            || unity_local
+    }
+
+    fn composer_send_hint(&self, can_send: bool) -> &'static str {
+        if can_send {
+            return "发送 · Enter";
+        }
+        if self.model.needs_login {
+            return "请先登录或配置 API Key";
+        }
+        if self.model.busy {
+            return "正在处理上一轮，请稍候或点停止";
+        }
+        if !self.model.connected {
+            return "正在连接 agent，连上后即可发送";
+        }
+        if self.model.draft.trim().is_empty() && self.attachments.is_empty() {
+            return "先输入消息，或用 + 添加文件";
+        }
+        "暂时无法发送"
+    }
+
     fn floating_composer(&mut self, ui: &mut egui::Ui) {
         Frame::new()
             .fill(PANEL)
@@ -3269,7 +3302,9 @@ impl BonyBuildApp {
                     self.model.focus_composer = false;
                 }
 
+                let can_send = self.composer_can_send();
                 let enter_send = response.has_focus()
+                    && can_send
                     && ui.input(|i| {
                         i.key_pressed(egui::Key::Enter)
                             && !i.modifiers.shift
@@ -3303,26 +3338,29 @@ impl BonyBuildApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let can_send = (self.model.connected
-                            && !self.model.busy
-                            && !self.model.needs_login
-                            && (!self.model.draft.trim().is_empty()
-                                || !self.attachments.is_empty()))
-                            || (!self.model.draft.trim().is_empty()
-                                && (parse_unity_chat_command(self.model.draft.trim()).is_some()
-                                    || wants_unity_help(self.model.draft.trim())));
-                        if ui
-                            .add_enabled(
-                                can_send,
+                        let send_hint = self.composer_send_hint(can_send);
+                        let send = ui
+                            .add(
                                 egui::Button::new(
-                                    RichText::new("发送").size(12.0).color(BG).strong(),
+                                    RichText::new("发送")
+                                        .size(12.5)
+                                        .color(if can_send { BG } else { MUTED })
+                                        .strong(),
                                 )
-                                .fill(if can_send { ACCENT } else { PANEL_2 })
+                                .fill(if can_send {
+                                    ACCENT
+                                } else {
+                                    Color32::from_rgb(48, 48, 56)
+                                })
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if can_send { ACCENT } else { BORDER },
+                                ))
                                 .corner_radius(CornerRadius::same(10))
-                                .min_size(Vec2::new(56.0, 30.0)),
+                                .min_size(Vec2::new(72.0, 32.0)),
                             )
-                            .clicked()
-                        {
+                            .on_hover_text(send_hint);
+                        if can_send && send.clicked() {
                             self.send_prompt();
                         }
 
