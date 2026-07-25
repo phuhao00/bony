@@ -75,6 +75,8 @@ fn main() -> eframe::Result<()> {
             .with_icon(app_icon)
             // Codex-style: single custom title bar (menus + window controls).
             .with_decorations(false),
+        vsync: true,
+        hardware_acceleration: eframe::HardwareAcceleration::Preferred,
         ..Default::default()
     };
 
