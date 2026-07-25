@@ -67,13 +67,18 @@ pub enum MainNav {
 
 impl MainNav {
     pub fn title(self) -> &'static str {
+        self.title_lang(crate::i18n::Language::Zh)
+    }
+
+    pub fn title_lang(self, lang: crate::i18n::Language) -> &'static str {
+        use crate::i18n::t;
         match self {
-            Self::Chat => "聊天",
-            Self::Unity => "Unity 控制",
-            Self::Scheduled => "已安排",
-            Self::Plugins => "插件",
-            Self::Sites => "站点",
-            Self::PullRequests => "拉取请求",
+            Self::Chat => t(lang, "nav.chat"),
+            Self::Unity => t(lang, "nav.unity"),
+            Self::Scheduled => t(lang, "nav.scheduled"),
+            Self::Plugins => t(lang, "nav.plugins"),
+            Self::Sites => t(lang, "nav.sites"),
+            Self::PullRequests => t(lang, "nav.prs"),
         }
     }
 
