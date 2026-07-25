@@ -7,6 +7,8 @@ async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "9
 resolver = "2"
 members = [
     "crates/build/xai-proto-build",
+    "crates/codegen/bony-build",
+    "crates/codegen/bony-monitor",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
     "crates/codegen/xai-acp-lib",
