@@ -24,7 +24,7 @@
 
 ## 这是什么
 
-**Bony Build** 是原生桌面客户端（Rust / egui，当前 `v0.1.2`）：通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
+**Bony Build** 是原生桌面客户端（Rust / egui，当前 `v0.1.3`）：通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
 
 适合：
 
@@ -43,10 +43,10 @@
 
 GitHub Releases 提供桌面 zip（需本机另装 `grok` CLI）：
 
-- [**Bony Build v0.1.2**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.2)
-  - `bony-build-v0.1.2-windows-x86_64.zip`
-  - `bony-build-v0.1.2-macos-aarch64.zip`
-  - `bony-build-v0.1.2-macos-x86_64.zip`
+- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.3)
+  - `bony-build-v0.1.3-windows-x86_64.zip`
+  - `bony-build-v0.1.3-macos-aarch64.zip`
+  - `bony-build-v0.1.3-macos-x86_64.zip`
 
 由 [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) 在推送 `v*` tag 时构建（`release-dist` profile）。
 
@@ -280,7 +280,7 @@ cargo run -p bony-build -- --cwd $PWD
 
 建议忽略本地产物：`target/`、`.tools/`、各类 `*.log`、本地 `Bony Build.exe`。
 
-打 release：推送 annotated tag（如 `v0.1.2`）触发桌面工作流，或 `workflow_dispatch` 指定已有 tag。
+打 release：推送 annotated tag（如 `v0.1.3`）触发桌面工作流，或 `workflow_dispatch` 指定已有 tag。
 
 ---
 
