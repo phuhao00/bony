@@ -4,6 +4,8 @@
 
 **原生桌面 AI 编程助手** — 对话改代码、任务隔离 worktree、Unity CLI 本地控制。
 
+**语言:** **中文** · [English](README.en.md)
+
 [快速开始](#快速开始) ·
 [功能](#功能) ·
 [Unity 控制](#unity-控制) ·
