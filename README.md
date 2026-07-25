@@ -12,7 +12,7 @@
 [架构](#架构) ·
 [开发](#开发)
 
-![Bony Build 桌面端](docs/bony-build-desktop-2026-07.png)
+![Bony Build 桌面端](docs/bony-build-desktop-2026-07-25.png)
 
 </div>
 
