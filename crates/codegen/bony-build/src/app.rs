@@ -22,7 +22,10 @@ use crate::unity::{
     format_relative, parse_generated_unity_plan_unrestricted, parse_unity_chat_command,
     unity_chat_help_text, wants_unity_help,
 };
-use crate::usage::{aggregate_model_usage, format_tokens, remember_project};
+use crate::usage::{
+    ChatInteraction, PluginPrefs, aggregate_model_usage, forget_project, format_tokens,
+    load_plugin_prefs, remember_project, save_plugin_prefs,
+};
 
 const BG: Color32 = Color32::from_rgb(22, 22, 24);
 const SIDEBAR: Color32 = Color32::from_rgb(18, 18, 20);
@@ -54,6 +57,7 @@ enum TaskListFilter {
     WaitingApproval,
     Completed,
     Failed,
+    Archived,
 }
 
 #[derive(Clone)]
@@ -71,16 +75,19 @@ impl TaskListFilter {
             Self::WaitingApproval => "待审批",
             Self::Completed => "已完成",
             Self::Failed => "失败",
+            Self::Archived => "已归档",
         }
     }
 
     fn matches(self, status: TaskStatus) -> bool {
         match self {
-            Self::All => true,
+            // "全部"只列活跃对话；归档单独挂在项目下的「已归档」区。
+            Self::All => !matches!(status, TaskStatus::Archived),
             Self::Active => matches!(status, TaskStatus::Draft | TaskStatus::Running),
             Self::WaitingApproval => status == TaskStatus::WaitingApproval,
             Self::Completed => status == TaskStatus::Completed,
             Self::Failed => status == TaskStatus::Failed,
+            Self::Archived => status == TaskStatus::Archived,
         }
     }
 }
@@ -117,6 +124,22 @@ pub struct BonyBuildApp {
     pending_unity_approval: Option<PendingUnityApproval>,
     /// Composer shows Unity quick-control chips (local CLI, not agent).
     unity_chat_mode: bool,
+    /// Empty-state / inline Unity docs panel (commands stay behind this).
+    unity_docs_open: bool,
+    /// Floating docs window opened from the plugins manager.
+    show_unity_docs_window: bool,
+    /// Codex-style 「+」 menu above the composer.
+    show_composer_plus: bool,
+    /// Skip outside-click dismiss on the open frame.
+    composer_plus_just_opened: bool,
+    /// Anchor for the composer + menu (screen coords).
+    composer_plus_anchor: Option<egui::Rect>,
+    /// Plugin enablement (persisted).
+    plugin_prefs: PluginPrefs,
+    /// Collapsed project keys in the sidebar conversation list.
+    collapsed_projects: std::collections::HashSet<String>,
+    /// Expanded "已归档" subsections keyed by project.
+    expanded_archived: std::collections::HashSet<String>,
     /// After soft cancel, next Stop click force-kills the agent.
     stop_armed_force: bool,
 }
@@ -129,11 +152,15 @@ impl BonyBuildApp {
         let task_repo = SqliteTaskRepository::open_default().ok();
         let mut tasks = task_repo
             .as_ref()
-            .and_then(|r| r.list(false).ok())
+            .and_then(|r| r.list(true).ok())
             .unwrap_or_default();
         let mut active = tasks
             .iter()
-            .find(|t| t.project_path == config.cwd && t.session_id.is_some())
+            .find(|t| {
+                t.status != TaskStatus::Archived
+                    && t.project_path == config.cwd
+                    && t.session_id.is_some()
+            })
             .cloned();
         let mut init_error = None;
         if active.is_none() {
@@ -171,8 +198,18 @@ impl BonyBuildApp {
             config.resume_session_id = task.session_id.clone();
         }
         let active_task_id = active.as_ref().map(|t| t.id.clone());
+        let project_root = canonical_project_root(&config.cwd);
+        let mut model = AppModel::new(config.cwd.clone());
+        // Collapse worktree short-id folders into primary project roots.
+        let mut normalized = Vec::new();
+        for path in std::mem::take(&mut model.recent_projects) {
+            remember_project(&mut normalized, &canonical_project_root(&path));
+        }
+        model.recent_projects = normalized;
+        remember_project(&mut model.recent_projects, &project_root);
+        let prefs = load_plugin_prefs();
         Self {
-            model: AppModel::new(config.cwd.clone()),
+            model,
             event_rx,
             event_tx,
             cmd_tx: None,
@@ -193,7 +230,16 @@ impl BonyBuildApp {
             pending_unity_chat: None,
             pending_unity_planner: false,
             pending_unity_approval: None,
+            // Fresh conversation: no plugins until user adds via 「+」.
             unity_chat_mode: false,
+            unity_docs_open: false,
+            show_unity_docs_window: false,
+            show_composer_plus: false,
+            composer_plus_just_opened: false,
+            composer_plus_anchor: None,
+            plugin_prefs: prefs,
+            collapsed_projects: std::collections::HashSet::new(),
+            expanded_archived: std::collections::HashSet::new(),
             stop_armed_force: false,
         }
     }
@@ -223,10 +269,11 @@ impl BonyBuildApp {
         }
         self.send_cmd(UiCommand::Shutdown);
         self.cmd_tx = None;
+        let root = canonical_project_root(&path);
         self.config.cwd = path.clone();
         self.config.resume_session_id = None;
         self.active_task_id = None;
-        remember_project(&mut self.model.recent_projects, &path);
+        remember_project(&mut self.model.recent_projects, &root);
         self.model.cwd = Some(path);
         self.model.connected = false;
         self.model.session_id = None;
@@ -444,16 +491,45 @@ impl BonyBuildApp {
         self.config.cwd = task.worktree_path.clone();
         self.config.resume_session_id = task.session_id.clone();
         self.model = AppModel::new(task.worktree_path.clone());
+        // Keep sidebar project identity on the real repo root, not worktree short ids.
+        remember_project(
+            &mut self.model.recent_projects,
+            &canonical_project_root(&task.project_path),
+        );
         self.model.task_title = task.title;
         self.model.busy = false;
         self.stop_armed_force = false;
         self.attachments.clear();
         self.changes.clear();
         self.selected_diff = None;
+        // New / switched conversation starts without session plugins.
+        self.clear_session_plugins();
         let tx =
             agent_bridge::spawn_bridge(self.config.clone(), ctx.clone(), self.event_tx.clone());
         self.cmd_tx = Some(tx);
         self.started = true;
+    }
+
+    fn maybe_autotitle_active_task(&mut self, text: &str) {
+        let Some(id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        if !is_placeholder_task_title(&task.title) {
+            return;
+        }
+        let title = suggest_task_title(text);
+        if title.is_empty() {
+            return;
+        }
+        task.title = title;
+        task.updated_at = unix_time();
+        self.model.task_title = task.title.clone();
+        if let Some(repo) = &self.task_repo {
+            let _ = repo.save(task);
+        }
     }
 
     fn send_cmd(&self, cmd: UiCommand) {
@@ -475,13 +551,15 @@ impl BonyBuildApp {
         {
             return;
         }
+        let title_src = if text.is_empty() {
+            format!("已附加 {} 个文件", self.attachments.len())
+        } else {
+            text.clone()
+        };
+        self.maybe_autotitle_active_task(&title_src);
         if let Some(id) = self.active_task_id.clone()
             && let Some(task) = self.tasks.iter_mut().find(|t| t.id == id)
         {
-            if task.title == "新任务" && !text.is_empty() {
-                task.title = text.chars().take(42).collect();
-                self.model.task_title = task.title.clone();
-            }
             task.status = TaskStatus::Running;
             task.updated_at = unix_time();
             if let Some(repo) = &self.task_repo {
@@ -502,15 +580,31 @@ impl BonyBuildApp {
         if text.is_empty() || !self.attachments.is_empty() {
             return false;
         }
-        if wants_unity_help(text) {
+        let looks_unity = wants_unity_help(text)
+            || parse_unity_chat_command(text).is_some()
+            || compile_unity_scene_command(text).is_some()
+            || (self.unity_chat_mode
+                && text
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("/unity"));
+        if looks_unity && !self.plugin_prefs.unity_enabled {
             self.model.push_local_user(text.to_string());
-            self.model.push_local_assistant(unity_chat_help_text());
-            self.unity_chat_mode = true;
+            self.model.push_local_assistant(
+                "Unity 控制插件未启用。请打开侧栏「插件」，启用后再使用。".into(),
+            );
+            return true;
+        }
+        if wants_unity_help(text) {
+            self.maybe_autotitle_active_task("Unity 说明");
+            self.model.push_local_user(text.to_string());
+            self.show_unity_docs_window = true;
             return true;
         }
         if let Some((label, eval)) = compile_unity_scene_command(text) {
+            self.maybe_autotitle_active_task(&label);
             self.model.go_chat();
-            self.unity_chat_mode = true;
+            self.set_chat_interaction(ChatInteraction::Unity);
             self.model.push_local_user(text.to_string());
             if self.unity.busy || self.unity.is_guiding() {
                 self.model
@@ -573,8 +667,9 @@ impl BonyBuildApp {
 
     fn dispatch_unity_chat_cmd(&mut self, cmd: &UnityChatCmd, spoken: Option<&str>) {
         let label = spoken.unwrap_or(cmd.chip).to_string();
+        self.maybe_autotitle_active_task(cmd.chip);
         self.model.go_chat();
-        self.unity_chat_mode = true;
+        self.set_chat_interaction(ChatInteraction::Unity);
         self.model.push_local_user(label);
         if self.unity.busy || self.unity.is_guiding() {
             self.model
@@ -724,6 +819,12 @@ impl eframe::App for BonyBuildApp {
 
         let on_chat = self.model.main_nav == MainNav::Chat;
         let on_unity = self.model.main_nav == MainNav::Unity;
+        let on_plugins = self.model.main_nav == MainNav::Plugins;
+        // Unity settings page is only reachable via the plugins manager.
+        if on_unity && !self.plugin_prefs.unity_enabled {
+            self.model.main_nav = MainNav::Plugins;
+        }
+        let on_unity = self.model.main_nav == MainNav::Unity;
         let show_task_title =
             on_chat && (!self.model.is_empty_chat() || self.model.is_viewing_history());
 
@@ -768,7 +869,7 @@ impl eframe::App for BonyBuildApp {
 
                 if on_chat {
                     let avail = ui.available_height();
-                    let composer_h = if self.unity_chat_mode { 210.0 } else { 140.0 };
+                    let composer_h = if self.unity_chat_mode { 188.0 } else { 148.0 };
                     let chat_h = (avail - composer_h).max(120.0);
 
                     egui::ScrollArea::vertical()
@@ -807,13 +908,18 @@ impl eframe::App for BonyBuildApp {
 
                     ui.add_space(8.0);
                     centered_column(ui, |ui| {
-                        if self.unity_chat_mode {
-                            self.unity_composer_chips(ui);
-                            ui.add_space(6.0);
-                        }
                         self.floating_composer(ui);
                     });
                     ui.add_space(12.0);
+                } else if on_plugins {
+                    egui::ScrollArea::vertical()
+                        .id_salt("plugins_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            centered_column(ui, |ui| {
+                                self.plugins_panel(ui);
+                            });
+                        });
                 } else if on_unity {
                     egui::ScrollArea::vertical()
                         .id_salt("unity_scroll")
@@ -831,7 +937,9 @@ impl eframe::App for BonyBuildApp {
             });
 
         self.user_menu_popup(ctx);
+        self.composer_plus_popup(ctx);
         self.usage_detail_window(ctx);
+        self.unity_docs_window(ctx);
         self.permission_modal(ctx);
         self.unity_permission_modal(ctx);
         self.model_picker_modal(ctx);
@@ -939,16 +1047,8 @@ impl BonyBuildApp {
                                             self.model.show_usage_detail = true;
                                             ui.close_menu();
                                         }
-                                        if ui.button("Unity 控制").clicked() {
-                                            self.model.main_nav = MainNav::Unity;
-                                            self.unity_chat_mode = true;
-                                            self.unity.ensure_detecting();
-                                            ui.close_menu();
-                                        }
-                                        if ui.button("聊天里控制 Unity").clicked() {
-                                            self.model.go_chat();
-                                            self.unity_chat_mode = true;
-                                            self.model.focus_composer = true;
+                                        if ui.button("插件管理").clicked() {
+                                            self.model.main_nav = MainNav::Plugins;
                                             ui.close_menu();
                                         }
                                     }
@@ -1044,87 +1144,31 @@ impl BonyBuildApp {
 
         ui.add_space(12.0);
 
-        if nav_item(ui, "＋  新建任务", false) {
+        if nav_row(ui, SidebarGlyph::Plus, "新建任务", false) {
             self.create_task(ctx);
         }
         ui.add_space(2.0);
         let chat_selected =
             self.model.main_nav == MainNav::Chat && !self.model.is_viewing_history();
-        if nav_item(ui, "⊕  聊天", chat_selected) {
+        if nav_row(ui, SidebarGlyph::Chat, "聊天", chat_selected) {
             self.model.return_to_live();
         }
         ui.add_space(2.0);
-        let unity_selected = self.model.main_nav == MainNav::Unity;
-        if nav_item(ui, "◇  Unity 控制", unity_selected) {
-            self.model.main_nav = MainNav::Unity;
-            self.unity_chat_mode = true;
-            self.unity.ensure_detecting();
-        }
-        ui.add_space(2.0);
-        if ui
-            .add(
-                egui::Button::new(RichText::new("    在聊天里用指令控制 →").size(11.5).color(
-                    if self.unity_chat_mode {
-                        UNITY_ACCENT
-                    } else {
-                        MUTED
-                    },
-                ))
-                .fill(Color32::TRANSPARENT)
-                .frame(false),
-            )
-            .on_hover_text("打开聊天并显示 Unity 快捷指令（本地 CLI，不经 Agent）")
-            .clicked()
-        {
-            self.model.go_chat();
-            self.unity_chat_mode = true;
-            self.model.focus_composer = true;
-            if self.model.is_empty_chat() {
-                self.model.push_local_assistant(unity_chat_help_text());
-            }
+        let plugins_selected = self.model.main_nav == MainNav::Plugins
+            || self.model.main_nav == MainNav::Unity;
+        if nav_row(ui, SidebarGlyph::Plug, "插件", plugins_selected) {
+            self.model.main_nav = MainNav::Plugins;
         }
 
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("项目").size(12.0).color(MUTED));
+            ui.label(RichText::new("按项目").size(11.5).color(MUTED));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("＋").size(13.0).color(MUTED))
-                            .fill(Color32::TRANSPARENT)
-                            .frame(false),
-                    )
-                    .on_hover_text("打开项目")
-                    .clicked()
-                {
+                if icon_btn(ui, SidebarGlyph::Plus, "打开项目", false).clicked() {
                     self.pick_project(ctx);
                 }
             });
         });
-        ui.add_space(4.0);
-
-        let projects = self.model.recent_projects.clone();
-        let current = self.model.cwd.clone();
-        if projects.is_empty() {
-            ui.label(RichText::new("没有项目").size(12.0).color(MUTED));
-        } else {
-            for path in &projects {
-                let label = AppModel::project_label(path);
-                let selected = current
-                    .as_ref()
-                    .and_then(|c| c.canonicalize().ok())
-                    .zip(path.canonicalize().ok())
-                    .is_some_and(|(a, b)| a == b)
-                    || current.as_ref() == Some(path);
-                if nav_item(ui, &format!("📁  {label}"), selected) {
-                    self.switch_project(ctx, path.clone());
-                }
-                ui.add_space(1.0);
-            }
-        }
-
-        ui.add_space(14.0);
-        ui.label(RichText::new("任务").size(12.0).color(MUTED));
         ui.add_space(6.0);
 
         egui::ComboBox::from_id_salt("task_status_filter")
@@ -1137,111 +1181,214 @@ impl BonyBuildApp {
                     TaskListFilter::WaitingApproval,
                     TaskListFilter::Completed,
                     TaskListFilter::Failed,
+                    TaskListFilter::Archived,
                 ] {
                     ui.selectable_value(&mut self.task_list_filter, filter, filter.label());
                 }
             });
-        ui.add_space(6.0);
+        ui.add_space(8.0);
 
         let filter = self.model.task_filter.trim().to_lowercase();
-        let tasks: Vec<_> = self
-            .tasks
-            .iter()
-            .filter(|t| self.task_list_filter.matches(t.status))
-            .filter(|t| filter.is_empty() || t.title.to_lowercase().contains(&filter))
-            .cloned()
-            .collect();
+        let groups = self.conversation_groups(&filter);
         let active_id = self.active_task_id.clone();
 
         egui::ScrollArea::vertical()
             .id_salt("task_list")
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                if tasks.is_empty() {
+                if groups.is_empty() {
                     ui.label(
                         RichText::new(if self.model.task_filter.trim().is_empty() {
-                            "还没有任务记录"
+                            "还没有对话记录"
                         } else {
-                            "没有匹配的任务"
+                            "没有匹配的对话"
                         })
                         .size(12.0)
                         .color(MUTED),
                     );
                 }
-                for task in &tasks {
-                    let selected = active_id.as_ref() == Some(&task.id);
-                    let fill = if selected {
+                for group in &groups {
+                    let key = project_group_key(&group.project_path);
+                    let expanded = !self.collapsed_projects.contains(&key);
+                    let mut toggle = false;
+                    let mut switch_to = false;
+                    let mut forget = false;
+
+                    let header_fill = if group.is_current {
                         SELECTED
                     } else {
                         Color32::TRANSPARENT
                     };
-                    let resp = Frame::new()
-                        .fill(fill)
+                    let header = Frame::new()
+                        .fill(header_fill)
                         .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::symmetric(10, 8))
+                        .inner_margin(Margin::symmetric(6, 5))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new(&task.title).size(13.0).color(if selected {
-                                TEXT
-                            } else {
-                                MUTED
-                            }));
-                            ui.label(
-                                RichText::new(format!(
-                                    "{}{} · {}",
-                                    if task.isolated { "隔离" } else { "共享" },
-                                    task.branch
-                                        .as_deref()
-                                        .map(|b| format!(" · {b}"))
-                                        .unwrap_or_default(),
-                                    task.status.label()
-                                ))
-                                .size(11.0)
-                                .color(MUTED),
-                            );
+                            ui.horizontal(|ui| {
+                                if icon_btn(
+                                    ui,
+                                    if expanded {
+                                        SidebarGlyph::ChevronDown
+                                    } else {
+                                        SidebarGlyph::ChevronRight
+                                    },
+                                    if expanded { "折叠项目" } else { "展开项目" },
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    toggle = true;
+                                }
+                                paint_sidebar_glyph(
+                                    ui,
+                                    SidebarGlyph::Folder,
+                                    if group.is_current { TEXT } else { MUTED },
+                                );
+                                ui.add_space(6.0);
+                                let name = AppModel::project_label(&group.project_path);
+                                let name_resp = ui
+                                    .add(
+                                        egui::Label::new(
+                                            RichText::new(name)
+                                                .size(13.0)
+                                                .color(if group.is_current { TEXT } else { MUTED })
+                                                .strong(),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_text(group.project_path.display().to_string());
+                                if name_resp.clicked() {
+                                    if !group.is_current {
+                                        switch_to = true;
+                                    } else {
+                                        toggle = true;
+                                    }
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let count = group.tasks.len() + group.archived.len();
+                                        if count > 0 {
+                                            ui.label(
+                                                RichText::new(count.to_string())
+                                                    .size(11.0)
+                                                    .color(MUTED),
+                                            );
+                                        }
+                                    },
+                                );
+                            });
                         })
-                        .response
-                        .interact(egui::Sense::click());
-                    if resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    let mut archive = false;
-                    let mut rename = false;
-                    let mut request_delete = false;
-                    resp.context_menu(|ui| {
-                        if ui.button("重命名任务").clicked() {
-                            rename = true;
+                        .response;
+                    header.context_menu(|ui| {
+                        if !group.is_current && ui.button("切换到此项目").clicked() {
+                            switch_to = true;
                             ui.close_menu();
                         }
-                        if ui.button("归档任务").clicked() {
-                            archive = true;
-                            ui.close_menu();
-                        }
-                        if ui.button("删除任务记录").clicked() {
-                            request_delete = true;
+                        if ui.button("从列表移除").clicked() {
+                            forget = true;
                             ui.close_menu();
                         }
                     });
-                    if resp.clicked() {
-                        self.activate_task(ctx, task.clone());
+
+                    if toggle {
+                        if expanded {
+                            self.collapsed_projects.insert(key.clone());
+                        } else {
+                            self.collapsed_projects.remove(&key);
+                        }
                     }
-                    if archive {
-                        if let Some(found) = self.tasks.iter_mut().find(|t| t.id == task.id) {
-                            found.status = TaskStatus::Archived;
-                            found.updated_at = unix_time();
-                            if let Some(repo) = &self.task_repo {
-                                let _ = repo.save(found);
+                    if switch_to {
+                        self.switch_project(ctx, group.project_path.clone());
+                    }
+                    if forget {
+                        forget_project(&mut self.model.recent_projects, &group.project_path);
+                        if group.tasks.is_empty() && group.archived.is_empty() {
+                            continue;
+                        }
+                    }
+                    if !expanded {
+                        ui.add_space(4.0);
+                        continue;
+                    }
+                    if group.tasks.is_empty() && group.archived.is_empty() {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            ui.label(RichText::new("暂无对话").size(11.5).color(MUTED));
+                        });
+                        ui.add_space(4.0);
+                        continue;
+                    }
+                    let show_archived_only = self.task_list_filter == TaskListFilter::Archived;
+                    if !show_archived_only {
+                        for task in &group.tasks {
+                            self.render_task_row(ui, ctx, task, &active_id, false);
+                        }
+                    }
+                    if !group.archived.is_empty()
+                        && matches!(
+                            self.task_list_filter,
+                            TaskListFilter::All | TaskListFilter::Archived
+                        )
+                    {
+                        let arch_expanded =
+                            show_archived_only || self.expanded_archived.contains(&key);
+                        let mut toggle_arch = false;
+                        if !show_archived_only {
+                            ui.add_space(2.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                if icon_btn(
+                                    ui,
+                                    if arch_expanded {
+                                        SidebarGlyph::ChevronDown
+                                    } else {
+                                        SidebarGlyph::ChevronRight
+                                    },
+                                    if arch_expanded {
+                                        "折叠已归档"
+                                    } else {
+                                        "展开已归档"
+                                    },
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    toggle_arch = true;
+                                }
+                                paint_sidebar_glyph(ui, SidebarGlyph::Archive, MUTED);
+                                ui.add_space(4.0);
+                                let arch_resp = ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!(
+                                            "已归档 · {}",
+                                            group.archived.len()
+                                        ))
+                                        .size(11.5)
+                                        .color(MUTED),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if arch_resp.clicked() {
+                                    toggle_arch = true;
+                                }
+                            });
+                        }
+                        if toggle_arch {
+                            if arch_expanded {
+                                self.expanded_archived.remove(&key);
+                            } else {
+                                self.expanded_archived.insert(key.clone());
                             }
                         }
-                        self.tasks.retain(|t| t.id != task.id);
+                        if arch_expanded || show_archived_only {
+                            for task in &group.archived {
+                                self.render_task_row(ui, ctx, task, &active_id, true);
+                            }
+                        }
                     }
-                    if rename {
-                        self.rename_task = Some((task.id.clone(), task.title.clone()));
-                    }
-                    if request_delete {
-                        self.delete_task = Some(task.id.clone());
-                    }
-                    ui.add_space(2.0);
+                    ui.add_space(8.0);
                 }
             });
 
@@ -1573,9 +1720,225 @@ impl BonyBuildApp {
         });
     }
 
+    fn set_unity_plugin_enabled(&mut self, enabled: bool) {
+        self.plugin_prefs.unity_enabled = enabled;
+        if !enabled {
+            self.clear_session_plugins();
+            if self.model.main_nav == MainNav::Unity {
+                self.model.main_nav = MainNav::Plugins;
+            }
+        }
+        save_plugin_prefs(&self.plugin_prefs);
+    }
+
+    /// Activate / deactivate a plugin for this conversation only (not persisted).
+    fn set_chat_interaction(&mut self, mode: ChatInteraction) {
+        let mode = if mode == ChatInteraction::Unity && !self.plugin_prefs.unity_enabled {
+            ChatInteraction::Agent
+        } else {
+            mode
+        };
+        self.unity_chat_mode = mode == ChatInteraction::Unity;
+        if self.unity_chat_mode {
+            self.unity.ensure_detecting();
+        }
+    }
+
+    fn clear_session_plugins(&mut self) {
+        self.unity_chat_mode = false;
+        self.unity_docs_open = false;
+        self.show_unity_docs_window = false;
+        self.show_composer_plus = false;
+        self.composer_plus_anchor = None;
+    }
+
+    fn open_unity_settings(&mut self) {
+        if !self.plugin_prefs.unity_enabled {
+            self.set_unity_plugin_enabled(true);
+        }
+        self.model.main_nav = MainNav::Unity;
+        self.unity.ensure_detecting();
+    }
+
+    fn plugins_panel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        ui.label(RichText::new("插件").size(22.0).strong().color(TEXT));
+        ui.add_space(6.0);
+        ui.label(
+            RichText::new("在此安装扩展；对话里点输入框「+」即可使用或取消。")
+                .size(13.0)
+                .color(MUTED),
+        );
+        ui.add_space(18.0);
+
+        let enabled = self.plugin_prefs.unity_enabled;
+        let status = self.unity.status.label();
+        let status_color = match self.unity.status {
+            CliStatus::Ready => OK,
+            CliStatus::Missing | CliStatus::Error => DANGER,
+            _ => MUTED,
+        };
+
+        Frame::new()
+            .fill(PANEL)
+            .corner_radius(CornerRadius::same(14))
+            .stroke(Stroke::new(
+                1.0,
+                if enabled { UNITY_ACCENT } else { BORDER },
+            ))
+            .inner_margin(Margin::symmetric(16, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    paint_sidebar_glyph(
+                        ui,
+                        SidebarGlyph::Unity,
+                        if enabled { UNITY_ACCENT } else { MUTED },
+                    );
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Unity 控制")
+                                .size(15.0)
+                                .strong()
+                                .color(TEXT),
+                        );
+                        ui.label(
+                            RichText::new("本地 CLI 驱动编辑器：安装 Pipeline、探测、场景操作")
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mut on = enabled;
+                        if ui
+                            .add(egui::Checkbox::new(&mut on, RichText::new("启用").size(12.5)))
+                            .changed()
+                        {
+                            self.set_unity_plugin_enabled(on);
+                        }
+                    });
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("状态").size(12.0).color(MUTED));
+                    ui.label(RichText::new(status).size(12.5).color(status_color));
+                    if enabled {
+                        ui.label(
+                            RichText::new("· 聊天输入旁可开 Unity 模式")
+                                .size(11.5)
+                                .color(MUTED),
+                        );
+                    }
+                });
+
+                if enabled {
+                    ui.add_space(12.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("打开设置").size(12.5).color(BG).strong(),
+                                )
+                                .fill(UNITY_ACCENT)
+                                .corner_radius(CornerRadius::same(8))
+                                .min_size(Vec2::new(0.0, 30.0)),
+                            )
+                            .clicked()
+                        {
+                            self.open_unity_settings();
+                        }
+                        if ui
+                            .button(RichText::new("说明文档").size(12.5))
+                            .on_hover_text("查看 /unity 指令与常用说法")
+                            .clicked()
+                        {
+                            self.show_unity_docs_window = true;
+                        }
+                        if ui
+                            .button(RichText::new("在聊天中使用").size(12.5))
+                            .clicked()
+                        {
+                            self.model.go_chat();
+                            self.set_chat_interaction(ChatInteraction::Unity);
+                            self.model.focus_composer = true;
+                        }
+                    });
+                } else {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("启用后可在聊天里用本地 CLI 控制 Unity，不经 Agent。")
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                }
+            });
+
+        ui.add_space(14.0);
+        Frame::new()
+            .fill(PANEL)
+            .corner_radius(CornerRadius::same(14))
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(16, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    paint_sidebar_glyph(ui, SidebarGlyph::Plug, MUTED);
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("更多插件")
+                                .size(14.0)
+                                .strong()
+                                .color(MUTED),
+                        );
+                        ui.label(
+                            RichText::new("后续会在这里扩展更多本地能力。")
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                    });
+                });
+            });
+    }
+
+    fn unity_docs_window(&mut self, ctx: &egui::Context) {
+        if !self.show_unity_docs_window {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Unity 说明文档")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([520.0, 480.0])
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        markdown::render(ui, &unity_chat_help_text(), TEXT);
+                    });
+            });
+        if !open {
+            self.show_unity_docs_window = false;
+        }
+    }
+
     fn unity_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("← 插件").size(12.0).color(MUTED))
+                        .fill(Color32::TRANSPARENT)
+                        .frame(false),
+                )
+                .clicked()
+            {
+                self.model.main_nav = MainNav::Plugins;
+            }
             ui.label(
                 RichText::new("对话或按钮都能驱动编辑器：观察 → 行动 → 验证")
                     .size(13.0)
@@ -1599,15 +1962,15 @@ impl BonyBuildApp {
                 }
                 if ui
                     .button(RichText::new("打开对话控制").size(12.0).color(UNITY_ACCENT))
-                    .on_hover_text("回到聊天，用一句话或快捷芯片控制 Unity CLI")
+                    .on_hover_text("回到聊天，并切换到 Unity CLI 交互")
                     .clicked()
                 {
                     self.model.go_chat();
-                    self.unity_chat_mode = true;
+                    self.set_chat_interaction(ChatInteraction::Unity);
                     self.model.focus_composer = true;
-                    if self.model.is_empty_chat() {
-                        self.model.push_local_assistant(unity_chat_help_text());
-                    }
+                }
+                if ui.button(RichText::new("说明").size(12.0)).clicked() {
+                    self.show_unity_docs_window = true;
                 }
                 if ui
                     .add_enabled(
@@ -2389,6 +2752,7 @@ impl BonyBuildApp {
 
     fn unity_actions_card(&mut self, ui: &mut egui::Ui) {
         let busy = self.unity.busy || self.unity.is_guiding();
+        let need_pipeline = !self.unity.pipeline_ready_for_commands();
         Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, BORDER))
@@ -2399,21 +2763,44 @@ impl BonyBuildApp {
                 ui.label(RichText::new("可视化操作").size(14.0).strong().color(TEXT));
                 ui.add_space(8.0);
 
+                ui.label(RichText::new("创作").size(12.0).color(MUTED));
+                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
-                    let actions = [
-                        UnityAction::ListEditors,
-                        UnityAction::ListPipeline,
-                        UnityAction::InstallPipeline,
-                        UnityAction::ProbeEditor,
-                        UnityAction::ListCommands,
-                        UnityAction::ObserveCollider,
-                        UnityAction::FixCollider,
-                        UnityAction::EnterPlayMode,
-                        UnityAction::ExitPlayMode,
-                    ];
-                    for action in actions {
-                        let emphasize = matches!(action, UnityAction::InstallPipeline)
-                            && !self.unity.pipeline_ready_for_commands();
+                    for action in [
+                        UnityAction::ScaffoldMiniGame,
+                        UnityAction::ScaffoldRpg,
+                        UnityAction::ScaffoldMmo,
+                        UnityAction::ScaffoldRoguelike,
+                        UnityAction::SetupSkyDay,
+                        UnityAction::SetupSkySunset,
+                        UnityAction::SetupSkyNight,
+                        UnityAction::CreateGround,
+                        UnityAction::CreateDirectionalLight,
+                        UnityAction::SetupMainCamera,
+                        UnityAction::CreatePlayerCapsule,
+                        UnityAction::CreateNpc,
+                        UnityAction::CreateNpcVendor,
+                        UnityAction::CreateNpcQuest,
+                        UnityAction::CreateSpawnPoint,
+                        UnityAction::CreatePortalZone,
+                        UnityAction::CreateEnemySpawn,
+                        UnityAction::EnableNpcAi,
+                        UnityAction::InstallNpcAi,
+                        UnityAction::AttachNpcAi,
+                        UnityAction::LayoutRpg,
+                        UnityAction::LayoutMmo,
+                        UnityAction::LayoutRoguelike,
+                        UnityAction::SaveNamedScene,
+                        UnityAction::NewScene,
+                    ] {
+                        let emphasize = matches!(
+                            action,
+                            UnityAction::ScaffoldMiniGame
+                                | UnityAction::ScaffoldRpg
+                                | UnityAction::ScaffoldMmo
+                                | UnityAction::ScaffoldRoguelike
+                                | UnityAction::EnableNpcAi
+                        );
                         if ui
                             .add_enabled(
                                 !busy,
@@ -2425,6 +2812,192 @@ impl BonyBuildApp {
                                 .fill(if emphasize { UNITY_ACCENT } else { PANEL_2 })
                                 .min_size(Vec2::new(0.0, 30.0))
                                 .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.unity.run_action(action);
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("快捷操作").size(12.0).color(MUTED));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        UnityAction::SaveScene,
+                        UnityAction::RefreshAssets,
+                        UnityAction::RequestScriptReload,
+                        UnityAction::ClearConsole,
+                        UnityAction::UndoLast,
+                        UnityAction::RedoLast,
+                        UnityAction::EnterPlayMode,
+                        UnityAction::ExitPlayMode,
+                        UnityAction::PausePlayMode,
+                        UnityAction::StepPlayMode,
+                        UnityAction::FrameSelection,
+                        UnityAction::FocusGameView,
+                        UnityAction::FocusSceneView,
+                        UnityAction::DuplicateSelection,
+                        UnityAction::DeleteSelection,
+                    ] {
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(RichText::new(action.label()).size(12.5).color(TEXT))
+                                    .fill(PANEL_2)
+                                    .min_size(Vec2::new(0.0, 30.0))
+                                    .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.unity.run_action(action);
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("场景 / 对象").size(12.0).color(MUTED));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        UnityAction::ListScenes,
+                        UnityAction::ActiveSceneInfo,
+                        UnityAction::NewScene,
+                        UnityAction::LoadFirstScene,
+                        UnityAction::HierarchyRoots,
+                        UnityAction::CreatePlane,
+                        UnityAction::CreateDirectionalLight,
+                    ] {
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(RichText::new(action.label()).size(12.5).color(TEXT))
+                                    .fill(PANEL_2)
+                                    .min_size(Vec2::new(0.0, 30.0))
+                                    .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.unity.run_action(action);
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("资源 / 包").size(12.0).color(MUTED));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        UnityAction::SaveAssets,
+                        UnityAction::FindAssets,
+                        UnityAction::ConsoleErrors,
+                        UnityAction::FindMissingScripts,
+                        UnityAction::ListPackages,
+                        UnityAction::AddPackage,
+                    ] {
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(RichText::new(action.label()).size(12.5).color(TEXT))
+                                    .fill(PANEL_2)
+                                    .min_size(Vec2::new(0.0, 30.0))
+                                    .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.unity.run_action(action);
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("工程连接").size(12.0).color(MUTED));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        UnityAction::EditorStatus,
+                        UnityAction::ListProjects,
+                        UnityAction::ProjectInfo,
+                        UnityAction::OpenProject,
+                        UnityAction::RegisterProject,
+                        UnityAction::PinProject,
+                        UnityAction::RequireEditor,
+                        UnityAction::ProbeEditor,
+                        UnityAction::ListEditors,
+                        UnityAction::ListPipeline,
+                        UnityAction::InstallPipeline,
+                        UnityAction::UpgradePipeline,
+                        UnityAction::ListLtsReleases,
+                        UnityAction::HubLogs,
+                        UnityAction::CacheInfo,
+                    ] {
+                        let emphasize =
+                            matches!(action, UnityAction::InstallPipeline) && need_pipeline;
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(
+                                    RichText::new(action.label())
+                                        .size(12.5)
+                                        .color(if emphasize { BG } else { TEXT }),
+                                )
+                                .fill(if emphasize { UNITY_ACCENT } else { PANEL_2 })
+                                .min_size(Vec2::new(0.0, 30.0))
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.unity.run_action(action);
+                        }
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.label(RichText::new("测试 / 构建 / 闭环").size(12.0).color(MUTED));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("闭环对象").size(12.0).color(MUTED));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.unity.loop_object)
+                            .desired_width(120.0)
+                            .hint_text("Ground"),
+                    );
+                    if ui
+                        .add_enabled(
+                            !busy,
+                            egui::Button::new(
+                                RichText::new(UnityAction::SelectLoopObject.label())
+                                    .size(12.5)
+                                    .color(TEXT),
+                            )
+                            .fill(PANEL_2)
+                            .min_size(Vec2::new(0.0, 30.0))
+                            .corner_radius(CornerRadius::same(8)),
+                        )
+                        .clicked()
+                    {
+                        self.unity.run_action(UnityAction::SelectLoopObject);
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for action in [
+                        UnityAction::RunEditModeTests,
+                        UnityAction::RunPlayModeTests,
+                        UnityAction::BuildWindowsPlayer,
+                        UnityAction::ObserveCollider,
+                        UnityAction::FixCollider,
+                        UnityAction::RunFullLoop,
+                        UnityAction::ListCommands,
+                    ] {
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(RichText::new(action.label()).size(12.5).color(TEXT))
+                                    .fill(PANEL_2)
+                                    .min_size(Vec2::new(0.0, 30.0))
+                                    .corner_radius(CornerRadius::same(8)),
                             )
                             .clicked()
                         {
@@ -2617,7 +3190,7 @@ impl BonyBuildApp {
                 ui.label(RichText::new("Unity 控制（近期）").size(12.5).strong().color(TEXT));
                 ui.add_space(4.0);
                 for line in [
-                    "• 侧栏「Unity 控制」：安装 CLI / Pipeline、绑定工程、按钮操作",
+                    "• 侧栏「插件 → Unity 控制」：安装 CLI / Pipeline、绑定工程、按钮操作",
                     "• 聊天旁 Unity 芯片或 /unity：探测编辑器、Play、跑循环等",
                     "• 走本机 Unity CLI，不经 Agent，避免 pipeline 安装卡死",
                 ] {
@@ -2649,70 +3222,11 @@ impl BonyBuildApp {
         }
     }
 
-    fn unity_composer_chips(&mut self, ui: &mut egui::Ui) {
-        let busy = self.unity.busy || self.unity.is_guiding() || self.model.busy;
-        Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(12))
-            .stroke(Stroke::new(1.0, UNITY_ACCENT))
-            .inner_margin(Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Unity CLI")
-                            .size(12.0)
-                            .strong()
-                            .color(UNITY_ACCENT),
-                    );
-                    ui.label(
-                        RichText::new("本地执行 · 也可直接打「探测编辑器」")
-                            .size(11.5)
-                            .color(MUTED),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("收起").clicked() {
-                            self.unity_chat_mode = false;
-                        }
-                        if ui.small_button("设置").clicked() {
-                            self.model.main_nav = MainNav::Unity;
-                            self.unity.ensure_detecting();
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    for cmd in UNITY_CHAT_CHIPS {
-                        let clicked = ui
-                            .add_enabled(
-                                !busy,
-                                egui::Button::new(RichText::new(cmd.chip).size(12.0))
-                                    .fill(PANEL_2)
-                                    .stroke(Stroke::new(1.0, BORDER))
-                                    .corner_radius(CornerRadius::same(8)),
-                            )
-                            .on_hover_text(cmd.slash)
-                            .clicked();
-                        if clicked {
-                            self.dispatch_unity_chat_cmd(cmd, None);
-                        }
-                    }
-                });
-            });
-    }
-
     fn floating_composer(&mut self, ui: &mut egui::Ui) {
         Frame::new()
             .fill(PANEL)
-            .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(
-                1.0,
-                if self.unity_chat_mode {
-                    UNITY_ACCENT
-                } else {
-                    BORDER
-                },
-            ))
+            .corner_radius(CornerRadius::same(20))
+            .stroke(Stroke::new(1.0, BORDER))
             .shadow(Shadow {
                 offset: [0, 6],
                 blur: 24,
@@ -2722,16 +3236,25 @@ impl BonyBuildApp {
             .inner_margin(Margin::symmetric(14, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+
+                // Codex-style context chips: active plugins + files (dismissible).
+                let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
+                let has_context = unity_on || !self.attachments.is_empty();
+                if has_context {
+                    self.composer_context_chips(ui);
+                    ui.add_space(8.0);
+                }
+
                 let hint = if self.model.needs_login {
                     "请先登录或配置 API Key…"
-                } else if self.unity_chat_mode {
-                    "Unity：探测编辑器 / 进入 Play · 本地 CLI，无需等 Agent"
+                } else if unity_on {
+                    "描述要对编辑器做的事…"
                 } else if !self.model.connected {
                     "正在连接 agent…"
                 } else if self.model.is_viewing_history() {
                     "要求后续变更（将回到当前会话）…"
                 } else {
-                    "要求后续变更…  Enter 发送 · Shift+Enter 换行 · 点 Unity 控制编辑器"
+                    "有问题，尽管问…  Enter 发送 · Shift+Enter 换行"
                 };
 
                 let edit = egui::TextEdit::multiline(&mut self.model.draft)
@@ -2763,29 +3286,20 @@ impl BonyBuildApp {
                     self.send_prompt();
                 }
 
-                ui.add_space(8.0);
-                if !self.attachments.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for a in &self.attachments {
-                            ui.label(
-                                RichText::new(format!("📎 {}", a.name))
-                                    .size(11.5)
-                                    .color(MUTED),
-                            );
-                        }
-                        if ui.small_button("清除").clicked() {
-                            self.attachments.clear();
-                        }
-                    });
-                    ui.add_space(4.0);
+                if unity_on {
+                    ui.add_space(8.0);
+                    self.unity_composer_shortcuts(ui);
                 }
+
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .button(RichText::new("＋").size(16.0).color(MUTED))
-                        .on_hover_text("添加文件或图片")
-                        .clicked()
-                    {
-                        self.pick_attachments();
+                    let plus = composer_plus_btn(ui, self.show_composer_plus);
+                    if plus.clicked() {
+                        self.show_composer_plus = !self.show_composer_plus;
+                        self.composer_plus_just_opened = self.show_composer_plus;
+                    }
+                    if self.show_composer_plus {
+                        self.composer_plus_anchor = Some(plus.rect);
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2900,38 +3414,235 @@ impl BonyBuildApp {
                         ) {
                             self.model.show_model_picker = true;
                         }
-
-                        ui.add_space(4.0);
-                        let unity_on = self.unity_chat_mode;
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Unity")
-                                        .size(12.0)
-                                        .color(if unity_on { BG } else { UNITY_ACCENT })
-                                        .strong(),
-                                )
-                                .fill(if unity_on { UNITY_ACCENT } else { PANEL_2 })
-                                .stroke(Stroke::new(
-                                    1.0,
-                                    if unity_on { UNITY_ACCENT } else { BORDER },
-                                ))
-                                .corner_radius(CornerRadius::same(10))
-                                .min_size(Vec2::new(56.0, 28.0)),
-                            )
-                            .on_hover_text(
-                                "打开 Unity 对话控制：点芯片或说「探测编辑器」走本地 CLI",
-                            )
-                            .clicked()
-                        {
-                            self.unity_chat_mode = !unity_on;
-                            if self.unity_chat_mode {
-                                self.unity.ensure_detecting();
-                            }
-                        }
                     });
                 });
             });
+    }
+
+    /// Dismissible pills for active plugins / attachments (Codex-like).
+    fn composer_context_chips(&mut self, ui: &mut egui::Ui) {
+        let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
+        let mut drop_unity = false;
+        let mut clear_files = false;
+        let mut drop_file: Option<usize> = None;
+
+        ui.horizontal_wrapped(|ui| {
+            if unity_on {
+                let pill = Frame::new()
+                    .fill(PANEL_2)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            paint_sidebar_glyph(ui, SidebarGlyph::Unity, MUTED);
+                            ui.add_space(5.0);
+                            ui.label(RichText::new("Unity").size(12.0).color(TEXT));
+                            ui.add_space(4.0);
+                            if icon_btn(ui, SidebarGlyph::Close, "移除此对话中的 Unity", false)
+                                .clicked()
+                            {
+                                drop_unity = true;
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text("此对话使用 Unity CLI；点 × 取消");
+                let _ = pill;
+            }
+
+            let names: Vec<String> = self.attachments.iter().map(|a| a.name.clone()).collect();
+            for (idx, name) in names.iter().enumerate() {
+                Frame::new()
+                    .fill(PANEL_2)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            paint_sidebar_glyph(ui, SidebarGlyph::Doc, MUTED);
+                            ui.add_space(5.0);
+                            ui.label(
+                                RichText::new(truncate_chip_label(name, 18))
+                                    .size(12.0)
+                                    .color(TEXT),
+                            );
+                            ui.add_space(4.0);
+                            if icon_btn(ui, SidebarGlyph::Close, "移除附件", false).clicked() {
+                                drop_file = Some(idx);
+                            }
+                        });
+                    });
+            }
+
+            if names.len() > 1
+                && ui
+                    .add(
+                        egui::Button::new(RichText::new("清除文件").size(11.0).color(MUTED))
+                            .fill(Color32::TRANSPARENT)
+                            .frame(false),
+                    )
+                    .clicked()
+            {
+                clear_files = true;
+            }
+        });
+
+        if drop_unity {
+            self.set_chat_interaction(ChatInteraction::Agent);
+        }
+        if clear_files {
+            self.attachments.clear();
+        } else if let Some(i) = drop_file
+            && i < self.attachments.len()
+        {
+            self.attachments.remove(i);
+        }
+    }
+
+    fn unity_composer_shortcuts(&mut self, ui: &mut egui::Ui) {
+        let busy = self.unity.busy || self.unity.is_guiding() || self.model.busy;
+        ui.horizontal_wrapped(|ui| {
+            for cmd in UNITY_CHAT_CHIPS.iter().take(5) {
+                let clicked = ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(RichText::new(cmd.chip).size(11.0).color(MUTED))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::new(1.0, BORDER))
+                            .corner_radius(CornerRadius::same(8))
+                            .min_size(Vec2::new(0.0, 22.0)),
+                    )
+                    .on_hover_text(cmd.slash)
+                    .clicked();
+                if clicked {
+                    self.dispatch_unity_chat_cmd(cmd, None);
+                }
+            }
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("说明").size(11.0).color(MUTED))
+                        .fill(Color32::TRANSPARENT)
+                        .frame(false),
+                )
+                .clicked()
+            {
+                self.show_unity_docs_window = true;
+            }
+        });
+    }
+
+    /// Floating 「+」 menu: files + installable plugins for this conversation.
+    fn composer_plus_popup(&mut self, ctx: &egui::Context) {
+        if !self.show_composer_plus {
+            return;
+        }
+        let Some(anchor) = self.composer_plus_anchor else {
+            self.show_composer_plus = false;
+            return;
+        };
+
+        let mut close = false;
+        let mut add_files = false;
+        let mut toggle_unity = false;
+        let mut open_plugins = false;
+        let unity_installed = self.plugin_prefs.unity_enabled;
+        let unity_active = self.unity_chat_mode && unity_installed;
+
+        let area = egui::Area::new(egui::Id::new("composer_plus_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(anchor.left(), anchor.bottom() + 6.0))
+            .constrain(true)
+            .show(ctx, |ui| {
+                Frame::new()
+                    .fill(Color32::from_rgb(28, 28, 32))
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(14))
+                    .shadow(Shadow {
+                        offset: [0, 8],
+                        blur: 28,
+                        spread: 0,
+                        color: Color32::from_black_alpha(120),
+                    })
+                    .inner_margin(Margin::symmetric(8, 8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(260.0);
+                        if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Doc,
+                            "添加文件",
+                            "把文件放进当前对话上下文",
+                        ) {
+                            add_files = true;
+                            close = true;
+                        }
+                        ui.add_space(2.0);
+                        ui.label(
+                            RichText::new("插件")
+                                .size(11.0)
+                                .color(MUTED),
+                        );
+                        ui.add_space(4.0);
+                        if unity_installed {
+                            let (title, sub) = if unity_active {
+                                ("Unity 控制", "已用于此对话 · 再点可取消")
+                            } else {
+                                ("Unity 控制", "本地 CLI 驱动编辑器，不经 Agent")
+                            };
+                            if plus_menu_row(ui, SidebarGlyph::Unity, title, sub) {
+                                toggle_unity = true;
+                                close = true;
+                            }
+                        } else if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Unity,
+                            "Unity 控制",
+                            "未启用 · 前往插件页开启",
+                        ) {
+                            open_plugins = true;
+                            close = true;
+                        }
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        if plus_menu_row(ui, SidebarGlyph::Plug, "管理插件", "安装、启用或关闭扩展")
+                        {
+                            open_plugins = true;
+                            close = true;
+                        }
+                    });
+            });
+
+        if add_files {
+            self.pick_attachments();
+        }
+        if toggle_unity {
+            if unity_active {
+                self.set_chat_interaction(ChatInteraction::Agent);
+            } else {
+                self.set_chat_interaction(ChatInteraction::Unity);
+            }
+        }
+        if open_plugins {
+            self.model.main_nav = MainNav::Plugins;
+        }
+
+        if self.composer_plus_just_opened {
+            self.composer_plus_just_opened = false;
+        } else {
+            let pointer = ctx.pointer_interact_pos().unwrap_or(egui::pos2(-999.0, -999.0));
+            let clicked_elsewhere = ctx.input(|i| i.pointer.any_click())
+                && !area.response.contains_pointer()
+                && !anchor.contains(pointer);
+            if close || clicked_elsewhere || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.show_composer_plus = false;
+                self.composer_plus_anchor = None;
+            }
+        }
+        if close {
+            self.show_composer_plus = false;
+            self.composer_plus_anchor = None;
+        }
     }
 
     fn user_menu_popup(&mut self, ctx: &egui::Context) {
@@ -3470,7 +4181,7 @@ impl BonyBuildApp {
             );
             ui.add_space(8.0);
             ui.label(
-                RichText::new("写代码用 Agent；控编辑器用下方 Unity 指令（本地 CLI）。")
+                RichText::new("写代码用 Agent。需要扩展能力时，点输入框旁的 + 添加插件。")
                     .size(14.0)
                     .color(MUTED),
             );
@@ -3481,11 +4192,8 @@ impl BonyBuildApp {
             return;
         }
 
-        ui.add_space(24.0);
-        self.unity_chat_entry_card(ui);
-
         ui.add_space(20.0);
-        ui.label(RichText::new("快速开始 · 代码").size(12.5).color(MUTED));
+        ui.label(RichText::new("快速开始").size(12.5).color(MUTED));
         ui.add_space(10.0);
 
         let starters: Vec<&str> = STARTERS.to_vec();
@@ -3514,73 +4222,200 @@ impl BonyBuildApp {
         }
     }
 
-    /// Discoverable entry for conversation → Unity CLI control.
-    fn unity_chat_entry_card(&mut self, ui: &mut egui::Ui) {
-        let busy = self.unity.busy || self.unity.is_guiding() || self.model.busy;
-        Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(14))
-            .stroke(Stroke::new(1.5, UNITY_ACCENT))
-            .inner_margin(Margin::symmetric(16, 14))
+    fn render_task_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        task: &TaskState,
+        active_id: &Option<String>,
+        archived: bool,
+    ) {
+        let selected = active_id.as_ref() == Some(&task.id);
+        let fill = if selected {
+            SELECTED
+        } else {
+            Color32::TRANSPARENT
+        };
+        let mut archive = false;
+        let mut unarchive = false;
+        let mut rename = false;
+        let mut request_delete = false;
+        let mut activate = false;
+        let title = display_task_title(task);
+        let meta = task_row_meta(task);
+        let resp = Frame::new()
+            .fill(fill)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin {
+                left: 8,
+                right: 4,
+                top: 5,
+                bottom: 5,
+            })
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Unity 对话控制")
-                            .size(15.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.label(RichText::new(self.unity.status.label()).size(12.0).color(
-                        match self.unity.status {
-                            CliStatus::Ready => OK,
-                            CliStatus::Missing | CliStatus::Error => DANGER,
-                            _ => MUTED,
+                    ui.add_space(14.0);
+                    paint_sidebar_glyph(
+                        ui,
+                        if archived {
+                            SidebarGlyph::Archive
+                        } else {
+                            SidebarGlyph::Chat
                         },
-                    ));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .small_button("设置页")
-                            .on_hover_text("打开引导：选工程 / 装 Pipeline")
-                            .clicked()
-                        {
-                            self.model.main_nav = MainNav::Unity;
-                            self.unity.ensure_detecting();
+                        if selected { TEXT } else { MUTED },
+                    );
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.set_max_width((ui.available_width() - 28.0).max(40.0));
+                        ui.label(
+                            RichText::new(&title)
+                                .size(12.5)
+                                .color(if selected { TEXT } else { MUTED }),
+                        );
+                        if !meta.is_empty() {
+                            ui.label(RichText::new(meta).size(10.5).color(MUTED));
                         }
-                        if ui
-                            .small_button("全部指令")
-                            .on_hover_text("在聊天里列出 /unity 指令")
-                            .clicked()
-                        {
-                            self.unity_chat_mode = true;
-                            self.model.push_local_assistant(unity_chat_help_text());
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icon_btn(ui, SidebarGlyph::Close, "删除对话记录", false).clicked() {
+                            request_delete = true;
                         }
                     });
                 });
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("点芯片立刻执行本地 Unity CLI，不会让 Agent 去跑终端。")
-                        .size(12.5)
-                        .color(MUTED),
-                );
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    for cmd in UNITY_CHAT_CHIPS {
-                        let resp = ui.add_enabled(
-                            !busy,
-                            egui::Button::new(
-                                RichText::new(cmd.chip).size(12.5).color(BG).strong(),
-                            )
-                            .fill(UNITY_ACCENT)
-                            .corner_radius(CornerRadius::same(8))
-                            .min_size(Vec2::new(0.0, 28.0)),
-                        );
-                        if resp.on_hover_text(cmd.slash).clicked() {
-                            self.dispatch_unity_chat_cmd(cmd, None);
-                        }
-                    }
-                });
+            })
+            .response
+            .interact(egui::Sense::click());
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        resp.context_menu(|ui| {
+            if ui.button("重命名").clicked() {
+                rename = true;
+                ui.close_menu();
+            }
+            if archived {
+                if ui.button("取消归档").clicked() {
+                    unarchive = true;
+                    ui.close_menu();
+                }
+            } else if ui.button("归档到项目").clicked() {
+                archive = true;
+                ui.close_menu();
+            }
+            if ui.button("删除记录").clicked() {
+                request_delete = true;
+                ui.close_menu();
+            }
+        });
+        if resp.clicked() && !request_delete {
+            activate = true;
+        }
+        if activate {
+            self.activate_task(ctx, task.clone());
+        }
+        if archive {
+            if let Some(found) = self.tasks.iter_mut().find(|t| t.id == task.id) {
+                found.status = TaskStatus::Archived;
+                found.updated_at = unix_time();
+                found.project_path = canonical_project_root(&found.project_path);
+                if let Some(repo) = &self.task_repo {
+                    let _ = repo.save(found);
+                }
+            }
+            self.expanded_archived
+                .insert(project_group_key(&canonical_project_root(&task.project_path)));
+        }
+        if unarchive {
+            if let Some(found) = self.tasks.iter_mut().find(|t| t.id == task.id) {
+                found.status = TaskStatus::Draft;
+                found.updated_at = unix_time();
+                if let Some(repo) = &self.task_repo {
+                    let _ = repo.save(found);
+                }
+            }
+        }
+        if rename {
+            self.rename_task = Some((task.id.clone(), title));
+        }
+        if request_delete {
+            self.delete_task = Some(task.id.clone());
+        }
+        ui.add_space(1.0);
+    }
+
+    fn conversation_groups(&self, title_filter: &str) -> Vec<ConversationGroup> {
+        let mut order: Vec<std::path::PathBuf> = Vec::new();
+        let mut map: std::collections::HashMap<String, ConversationGroup> =
+            std::collections::HashMap::new();
+
+        for path in self
+            .model
+            .recent_projects
+            .iter()
+            .chain(self.tasks.iter().map(|t| &t.project_path))
+        {
+            let root = canonical_project_root(path);
+            let key = project_group_key(&root);
+            map.entry(key).or_insert_with(|| {
+                order.push(root.clone());
+                ConversationGroup {
+                    project_path: root,
+                    is_current: false,
+                    tasks: Vec::new(),
+                    archived: Vec::new(),
+                }
             });
+        }
+
+        let current_key = self
+            .model
+            .cwd
+            .as_ref()
+            .map(|p| project_group_key(&canonical_project_root(p)));
+
+        for task in &self.tasks {
+            if !title_filter.is_empty()
+                && !task.title.to_lowercase().contains(title_filter)
+                && !display_task_title(task).to_lowercase().contains(title_filter)
+            {
+                continue;
+            }
+            let key = project_group_key(&canonical_project_root(&task.project_path));
+            let Some(group) = map.get_mut(&key) else {
+                continue;
+            };
+            if task.status == TaskStatus::Archived {
+                if matches!(
+                    self.task_list_filter,
+                    TaskListFilter::All | TaskListFilter::Archived
+                ) {
+                    group.archived.push(task.clone());
+                }
+            } else if self.task_list_filter.matches(task.status) {
+                group.tasks.push(task.clone());
+            }
+        }
+
+        let mut groups: Vec<ConversationGroup> = order
+            .into_iter()
+            .filter_map(|path| map.remove(&project_group_key(&path)))
+            .collect();
+
+        if !title_filter.is_empty() || self.task_list_filter == TaskListFilter::Archived {
+            groups.retain(|g| !g.tasks.is_empty() || !g.archived.is_empty());
+        }
+
+        for group in &mut groups {
+            group.is_current = current_key.as_ref() == Some(&project_group_key(&group.project_path));
+            group.tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            group
+                .archived
+                .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        }
+
+        groups.sort_by(|a, b| b.is_current.cmp(&a.is_current));
+        groups
     }
 
     fn timeline(&mut self, ui: &mut egui::Ui) {
@@ -4347,7 +5182,358 @@ fn win_chrome_btn(ui: &mut egui::Ui, kind: WinChrome) -> bool {
     resp.clicked()
 }
 
-fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
+#[derive(Clone)]
+struct ConversationGroup {
+    project_path: std::path::PathBuf,
+    is_current: bool,
+    tasks: Vec<TaskState>,
+    archived: Vec<TaskState>,
+}
+
+fn canonical_project_root(path: &std::path::Path) -> std::path::PathBuf {
+    GitWorkspaceService::primary_repo_root(path)
+        .ok()
+        .flatten()
+        .or_else(|| GitWorkspaceService::repo_root(path).ok().flatten())
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+fn project_group_key(path: &std::path::Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_lowercase()
+}
+
+fn is_placeholder_task_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "" | "新任务" | "新对话" | "未命名对话" | "未命名任务"
+    )
+}
+
+fn display_task_title(task: &TaskState) -> String {
+    let title = task.title.trim();
+    if is_placeholder_task_title(title) {
+        return "未命名对话".into();
+    }
+    // Old data sometimes stored worktree short ids as titles.
+    if looks_like_short_id(title) {
+        return "未命名对话".into();
+    }
+    title.chars().take(36).collect()
+}
+
+fn looks_like_short_id(s: &str) -> bool {
+    let s = s.trim();
+    (8..=12).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit())
+}
+
+fn suggest_task_title(text: &str) -> String {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "未命名对话".into();
+    }
+    if let Some(cmd) = parse_unity_chat_command(trimmed) {
+        return cmd.chip.to_string();
+    }
+    if let Some((label, _)) = compile_unity_scene_command(trimmed) {
+        return label;
+    }
+    if wants_unity_help(trimmed)
+        || trimmed.contains("对话控制 Unity")
+        || trimmed.starts_with("### ")
+    {
+        return "Unity 说明".into();
+    }
+
+    let line = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or(trimmed);
+
+    // Prefer a short, human line — drop heavy slash prefixes when spoken form exists.
+    let mut cleaned = line.trim();
+    if let Some(rest) = cleaned.strip_prefix("/unity") {
+        cleaned = rest.trim();
+        if cleaned.is_empty() {
+            return "Unity 操作".into();
+        }
+    }
+
+    let mut out = String::new();
+    for (i, ch) in cleaned.chars().enumerate() {
+        if i >= 28 {
+            out.push('…');
+            break;
+        }
+        if ch == '\n' || ch == '\r' {
+            break;
+        }
+        out.push(ch);
+    }
+    let out = out.trim().to_string();
+    if out.is_empty() || looks_like_short_id(&out) {
+        "未命名对话".into()
+    } else {
+        out
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SidebarGlyph {
+    Plus,
+    Chat,
+    Unity,
+    Doc,
+    Plug,
+    Folder,
+    Archive,
+    ChevronRight,
+    ChevronDown,
+    Close,
+}
+
+fn paint_sidebar_glyph(ui: &mut egui::Ui, glyph: SidebarGlyph, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
+    paint_sidebar_glyph_at(ui.painter(), rect.center(), glyph, color);
+}
+
+/// Larger, clearer 「+」 control (ChatGPT / Codex style).
+fn composer_plus_btn(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
+    let resp = resp.on_hover_text("添加文件或插件");
+    let fill = if open || resp.hovered() {
+        SELECTED
+    } else {
+        PANEL_2
+    };
+    ui.painter()
+        .circle_filled(rect.center(), 13.0, fill);
+    ui.painter().circle_stroke(
+        rect.center(),
+        13.0,
+        Stroke::new(1.0, if open { TEXT } else { BORDER }),
+    );
+    paint_sidebar_glyph_at(
+        ui.painter(),
+        rect.center(),
+        SidebarGlyph::Plus,
+        if open || resp.hovered() { TEXT } else { MUTED },
+    );
+    resp
+}
+
+fn icon_btn(ui: &mut egui::Ui, glyph: SidebarGlyph, tip: &str, active: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::click());
+    let resp = resp.on_hover_text(tip);
+    if resp.hovered() || active {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), SELECTED);
+    }
+    let color = if active || resp.hovered() { TEXT } else { MUTED };
+    paint_sidebar_glyph_at(ui.painter(), rect.center(), glyph, color);
+    resp
+}
+
+fn paint_sidebar_glyph_at(
+    painter: &egui::Painter,
+    c: egui::Pos2,
+    glyph: SidebarGlyph,
+    color: Color32,
+) {
+    let stroke = Stroke::new(1.35, color);
+    match glyph {
+        SidebarGlyph::Plus => {
+            painter.line_segment(
+                [egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x + 5.0, c.y)],
+                stroke,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x, c.y - 5.0), egui::pos2(c.x, c.y + 5.0)],
+                stroke,
+            );
+        }
+        SidebarGlyph::Chat => {
+            let bubble =
+                egui::Rect::from_center_size(c + Vec2::new(0.0, -0.5), Vec2::new(12.0, 9.0));
+            painter.rect_stroke(
+                bubble,
+                CornerRadius::same(3),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(bubble.left() + 3.0, bubble.bottom()),
+                    egui::pos2(bubble.left() + 1.0, bubble.bottom() + 3.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(bubble.left() + 1.0, bubble.bottom() + 3.0),
+                    egui::pos2(bubble.left() + 6.0, bubble.bottom()),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::Unity => {
+            let pts = [
+                egui::pos2(c.x, c.y - 6.0),
+                egui::pos2(c.x + 5.5, c.y),
+                egui::pos2(c.x, c.y + 6.0),
+                egui::pos2(c.x - 5.5, c.y),
+            ];
+            painter.line_segment([pts[0], pts[1]], stroke);
+            painter.line_segment([pts[1], pts[2]], stroke);
+            painter.line_segment([pts[2], pts[3]], stroke);
+            painter.line_segment([pts[3], pts[0]], stroke);
+            painter.line_segment(
+                [pts[0], pts[2]],
+                Stroke::new(1.0, color.linear_multiply(0.7)),
+            );
+        }
+        SidebarGlyph::Doc => {
+            let page = egui::Rect::from_center_size(c, Vec2::new(10.0, 12.0));
+            painter.rect_stroke(
+                page,
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(page.left() + 2.5, page.top() + 3.5),
+                    egui::pos2(page.right() - 2.5, page.top() + 3.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(page.left() + 2.5, page.top() + 6.5),
+                    egui::pos2(page.right() - 2.5, page.top() + 6.5),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::Plug => {
+            // Simple puzzle / plug: rounded square with a tab.
+            let body = egui::Rect::from_center_size(c + Vec2::new(-0.5, 0.5), Vec2::new(9.0, 9.0));
+            painter.rect_stroke(
+                body,
+                CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(body.right(), c.y - 2.0),
+                    egui::pos2(body.right() + 3.5, c.y - 2.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(body.right(), c.y + 2.0),
+                    egui::pos2(body.right() + 3.5, c.y + 2.0),
+                ],
+                stroke,
+            );
+            painter.circle_filled(egui::pos2(c.x - 1.5, c.y + 0.5), 1.2, color);
+        }
+        SidebarGlyph::Folder => {
+            let tab =
+                egui::Rect::from_min_size(egui::pos2(c.x - 6.0, c.y - 4.5), Vec2::new(5.0, 3.0));
+            let body = egui::Rect::from_center_size(c + Vec2::new(0.0, 1.0), Vec2::new(12.0, 8.5));
+            painter.rect_stroke(tab, CornerRadius::same(1), stroke, egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                body,
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+        }
+        SidebarGlyph::Archive => {
+            let box_r =
+                egui::Rect::from_center_size(c + Vec2::new(0.0, 1.0), Vec2::new(11.0, 8.0));
+            painter.rect_stroke(
+                box_r,
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(box_r.left(), box_r.top() + 2.5),
+                    egui::pos2(box_r.right(), box_r.top() + 2.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x, box_r.top() + 3.5),
+                    egui::pos2(c.x, box_r.bottom() - 1.5),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::ChevronRight => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 2.5, c.y - 4.0),
+                    egui::pos2(c.x + 2.0, c.y),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 2.0, c.y),
+                    egui::pos2(c.x - 2.5, c.y + 4.0),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::ChevronDown => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 4.0, c.y - 2.0),
+                    egui::pos2(c.x, c.y + 2.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x, c.y + 2.5),
+                    egui::pos2(c.x + 4.0, c.y - 2.0),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::Close => {
+            let half = 3.8;
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - half, c.y - half),
+                    egui::pos2(c.x + half, c.y + half),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + half, c.y - half),
+                    egui::pos2(c.x - half, c.y + half),
+                ],
+                stroke,
+            );
+        }
+    }
+}
+
+fn nav_row(ui: &mut egui::Ui, glyph: SidebarGlyph, label: &str, selected: bool) -> bool {
     let fill = if selected {
         SELECTED
     } else {
@@ -4359,11 +5545,15 @@ fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
         .inner_margin(Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(label)
-                    .size(13.5)
-                    .color(if selected { TEXT } else { MUTED }),
-            );
+            ui.horizontal(|ui| {
+                paint_sidebar_glyph(ui, glyph, if selected { TEXT } else { MUTED });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(label)
+                        .size(13.5)
+                        .color(if selected { TEXT } else { MUTED }),
+                );
+            });
         })
         .response
         .interact(egui::Sense::click());
@@ -4371,6 +5561,57 @@ fn nav_item(ui: &mut egui::Ui, label: &str, selected: bool) -> bool {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+}
+
+fn task_row_meta(task: &TaskState) -> String {
+    let mut parts = Vec::new();
+    if task.isolated {
+        parts.push("隔离工作区");
+    }
+    let status = match task.status {
+        TaskStatus::Draft => None,
+        other => Some(other.label()),
+    };
+    if let Some(s) = status {
+        parts.push(s);
+    }
+    parts.join(" · ")
+}
+
+fn plus_menu_row(ui: &mut egui::Ui, glyph: SidebarGlyph, title: &str, subtitle: &str) -> bool {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 48.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(10), SELECTED);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(10.0, 8.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    content.horizontal(|ui| {
+        paint_sidebar_glyph(ui, glyph, MUTED);
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(title).size(13.5).color(TEXT));
+            ui.label(RichText::new(subtitle).size(11.5).color(MUTED));
+        });
+    });
+    resp.clicked()
+}
+
+fn truncate_chip_label(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn soft_chip(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {

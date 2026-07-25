@@ -117,7 +117,7 @@ impl acp::Client for DesktopAcpClient {
         args: acp::CreateTerminalRequest,
     ) -> acp::Result<acp::CreateTerminalResponse> {
         let id = uuid::Uuid::new_v4().to_string();
-        let mut command = std::process::Command::new(&args.command);
+        let mut command = crate::process::command(&args.command);
         command
             .args(&args.args)
             .stdout(std::process::Stdio::piped())
@@ -431,7 +431,7 @@ async fn run_session(
         tracing::info!(hydrated, "injected model env_keys before agent spawn");
     }
 
-    let mut child = match tokio::process::Command::new(&config.grok_bin)
+    let mut child = match crate::process::tokio_command(&config.grok_bin)
         .args(["agent", "stdio"])
         .current_dir(&config.cwd)
         .stdin(std::process::Stdio::piped())
@@ -885,7 +885,7 @@ async fn run_grok_login(
 
     let grok_bin = config.grok_bin.clone();
     let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(&grok_bin).arg("login").status()
+        crate::process::command(&grok_bin).arg("login").status()
     })
     .await;
 

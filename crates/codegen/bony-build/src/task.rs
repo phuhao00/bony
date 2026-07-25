@@ -123,7 +123,7 @@ impl TaskState {
         let now = unix_time();
         Self {
             id: Uuid::new_v4().to_string(),
-            title: "新任务".into(),
+            title: "新对话".into(),
             worktree_path: project_path.clone(),
             project_path,
             branch: None,

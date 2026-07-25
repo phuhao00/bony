@@ -169,10 +169,9 @@ pub fn hydrate_model_env_keys() -> usize {
 fn lookup_os_env(key: &str) -> Option<String> {
     #[cfg(windows)]
     {
-        use std::process::Command;
         // GUI launches often miss User-scoped vars; pull User then Machine.
         for scope in ["User", "Machine"] {
-            let output = Command::new("powershell")
+            let output = crate::process::command("powershell")
                 .args([
                     "-NoProfile",
                     "-Command",
@@ -281,7 +280,7 @@ pub fn open_config_in_editor() -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        std::process::Command::new("cmd")
+        crate::process::command("cmd")
             .args(["/C", "start", "", &path.to_string_lossy()])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -290,7 +289,7 @@ pub fn open_config_in_editor() -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "xdg-open".into());
-        std::process::Command::new(editor)
+        crate::process::command(editor)
             .arg(&path)
             .spawn()
             .map_err(|e| e.to_string())?;

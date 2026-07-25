@@ -6,14 +6,67 @@
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CMD_TIMEOUT: Duration = Duration::from_secs(45);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
+const TEST_TIMEOUT: Duration = Duration::from_secs(600);
+const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
+const PACKAGE_TIMEOUT: Duration = Duration::from_secs(300);
 const GUIDE_STEP_GAP: Duration = Duration::from_millis(650);
+
+const EVAL_SAVE_SCENE: &str =
+    "return UnityEditor.SceneManagement.EditorSceneManager.SaveOpenScenes();";
+const EVAL_REFRESH_ASSETS: &str = "UnityEditor.AssetDatabase.Refresh(); return true;";
+const EVAL_SCRIPT_RELOAD: &str = "UnityEditor.EditorUtility.RequestScriptReload(); return true;";
+const EVAL_CLEAR_CONSOLE: &str = "var asm = System.Reflection.Assembly.GetAssembly(typeof(UnityEditor.Editor)); var t = asm.GetType(\"UnityEditor.LogEntries\"); t.GetMethod(\"Clear\").Invoke(null, null); return \"cleared\";";
+const EVAL_PAUSE_PLAY: &str = "UnityEditor.EditorApplication.isPaused = !UnityEditor.EditorApplication.isPaused; return UnityEditor.EditorApplication.isPaused;";
+const EVAL_STEP_PLAY: &str = "UnityEditor.EditorApplication.Step(); return true;";
+const EVAL_UNDO: &str = "UnityEditor.Undo.PerformUndo(); return \"undo\";";
+const EVAL_REDO: &str = "UnityEditor.Undo.PerformRedo(); return \"redo\";";
+const EVAL_FRAME_SELECTION: &str = "UnityEditor.SceneView.FrameLastActiveSceneView(); return UnityEditor.Selection.activeGameObject != null ? UnityEditor.Selection.activeGameObject.name : \"none\";";
+const EVAL_FOCUS_GAME: &str = "UnityEditor.EditorApplication.ExecuteMenuItem(\"Window/General/Game\"); return \"Game\";";
+const EVAL_FOCUS_SCENE: &str = "UnityEditor.EditorApplication.ExecuteMenuItem(\"Window/General/Scene\"); return \"Scene\";";
+const EVAL_DUPLICATE_SELECTION: &str = "UnityEditor.Unsupported.DuplicateGameObjectsUsingPasteboard(); return UnityEditor.Selection.gameObjects.Length;";
+const EVAL_DELETE_SELECTION: &str = "var objs = UnityEditor.Selection.gameObjects; if (objs == null || objs.Length == 0) return 0; UnityEditor.Undo.DestroyObjectImmediate(objs[0]); for (int i = 1; i < objs.Length; i++) UnityEditor.Undo.DestroyObjectImmediate(objs[i]); return objs.Length;";
+const EVAL_CREATE_CUBE: &str = "var go = GameObject.CreatePrimitive(PrimitiveType.Cube); go.name = \"BonyCube\"; go.transform.position = Vector3.zero; UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_CAPSULE: &str = "var go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = \"BonyCapsule\"; go.transform.position = Vector3.zero; UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_PLANE: &str = "var go = GameObject.CreatePrimitive(PrimitiveType.Plane); go.name = \"BonyPlane\"; go.transform.position = Vector3.zero; UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_LIGHT: &str = "var go = new GameObject(\"BonyDirectionalLight\"); var light = go.AddComponent<Light>(); light.type = LightType.Directional; light.intensity = 1f; go.transform.rotation = Quaternion.Euler(50f, -30f, 0f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, \"Create light\"); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_SETUP_SKY_DAY: &str = "RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight; RenderSettings.ambientSkyColor = new Color(0.45f, 0.65f, 0.95f); RenderSettings.ambientEquatorColor = new Color(0.55f, 0.6f, 0.65f); RenderSettings.ambientGroundColor = new Color(0.25f, 0.22f, 0.2f); var shader = Shader.Find(\"Skybox/Procedural\"); if (shader != null) { var mat = new Material(shader); mat.name = \"BonySkyDay\"; if (mat.HasProperty(\"_SkyTint\")) mat.SetColor(\"_SkyTint\", new Color(0.4f, 0.55f, 0.9f)); if (mat.HasProperty(\"_AtmosphereThickness\")) mat.SetFloat(\"_AtmosphereThickness\", 1.1f); if (mat.HasProperty(\"_Exposure\")) mat.SetFloat(\"_Exposure\", 1.2f); RenderSettings.skybox = mat; } else { RenderSettings.skybox = null; } var cam = Camera.main; if (cam != null) { cam.clearFlags = CameraClearFlags.Skybox; cam.backgroundColor = new Color(0.45f, 0.7f, 1f); } DynamicGI.UpdateEnvironment(); return \"day\";";
+const EVAL_SETUP_SKY_SUNSET: &str = "RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight; RenderSettings.ambientSkyColor = new Color(0.95f, 0.45f, 0.25f); RenderSettings.ambientEquatorColor = new Color(0.85f, 0.4f, 0.35f); RenderSettings.ambientGroundColor = new Color(0.2f, 0.12f, 0.1f); var shader = Shader.Find(\"Skybox/Procedural\"); if (shader != null) { var mat = new Material(shader); mat.name = \"BonySkySunset\"; if (mat.HasProperty(\"_SkyTint\")) mat.SetColor(\"_SkyTint\", new Color(0.95f, 0.4f, 0.2f)); if (mat.HasProperty(\"_GroundColor\")) mat.SetColor(\"_GroundColor\", new Color(0.35f, 0.15f, 0.1f)); if (mat.HasProperty(\"_AtmosphereThickness\")) mat.SetFloat(\"_AtmosphereThickness\", 1.4f); if (mat.HasProperty(\"_Exposure\")) mat.SetFloat(\"_Exposure\", 1.0f); RenderSettings.skybox = mat; } else { RenderSettings.skybox = null; } var cam = Camera.main; if (cam != null) { cam.clearFlags = CameraClearFlags.Skybox; cam.backgroundColor = new Color(0.95f, 0.5f, 0.3f); } DynamicGI.UpdateEnvironment(); return \"sunset\";";
+const EVAL_SETUP_SKY_NIGHT: &str = "RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight; RenderSettings.ambientSkyColor = new Color(0.05f, 0.08f, 0.18f); RenderSettings.ambientEquatorColor = new Color(0.08f, 0.1f, 0.18f); RenderSettings.ambientGroundColor = new Color(0.02f, 0.02f, 0.04f); var shader = Shader.Find(\"Skybox/Procedural\"); if (shader != null) { var mat = new Material(shader); mat.name = \"BonySkyNight\"; if (mat.HasProperty(\"_SkyTint\")) mat.SetColor(\"_SkyTint\", new Color(0.05f, 0.08f, 0.2f)); if (mat.HasProperty(\"_AtmosphereThickness\")) mat.SetFloat(\"_AtmosphereThickness\", 0.6f); if (mat.HasProperty(\"_Exposure\")) mat.SetFloat(\"_Exposure\", 0.35f); RenderSettings.skybox = mat; } else { RenderSettings.skybox = null; } var cam = Camera.main; if (cam != null) { cam.clearFlags = CameraClearFlags.Skybox; cam.backgroundColor = new Color(0.02f, 0.03f, 0.08f); } DynamicGI.UpdateEnvironment(); return \"night\";";
+const EVAL_CREATE_GROUND: &str = "var go = GameObject.Find(\"Ground\"); if (go == null) { go = GameObject.CreatePrimitive(PrimitiveType.Plane); go.name = \"Ground\"; UnityEditor.Undo.RegisterCreatedObjectUndo(go, \"Create Ground\"); } go.transform.position = Vector3.zero; go.transform.localScale = new Vector3(8f, 1f, 8f); var col = go.GetComponent<Collider>(); if (col != null) col.enabled = true; UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name + \" scale=\" + go.transform.localScale;";
+const EVAL_SETUP_MAIN_CAMERA: &str = "var cam = Camera.main; GameObject cgo; if (cam == null) { cgo = new GameObject(\"Main Camera\"); cam = cgo.AddComponent<Camera>(); cgo.tag = \"MainCamera\"; if (cgo.GetComponent<AudioListener>() == null) cgo.AddComponent<AudioListener>(); UnityEditor.Undo.RegisterCreatedObjectUndo(cgo, \"Create Main Camera\"); } else { cgo = cam.gameObject; } UnityEditor.Undo.RecordObject(cgo.transform, \"Frame Main Camera\"); cgo.transform.position = new Vector3(0f, 5f, -10f); cgo.transform.rotation = Quaternion.Euler(20f, 0f, 0f); cam.clearFlags = CameraClearFlags.Skybox; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(cgo.scene); return cgo.name + \" @ \" + cgo.transform.position;";
+const EVAL_CREATE_PLAYER: &str = "var go = GameObject.Find(\"Player\"); if (go == null) { go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = \"Player\"; UnityEditor.Undo.RegisterCreatedObjectUndo(go, \"Create Player\"); } go.transform.position = new Vector3(0f, 1.1f, 0f); go.transform.localScale = Vector3.one; var rb = go.GetComponent<Rigidbody>(); if (rb == null) rb = UnityEditor.Undo.AddComponent<Rigidbody>(go); rb.constraints = RigidbodyConstraints.FreezeRotation; rb.collisionDetectionMode = CollisionDetectionMode.Continuous; UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name + \" y=\" + go.transform.position.y;";
+const EVAL_CREATE_NPC: &str = "int i = 1; string name; do { name = \"NPC_\" + i; i++; } while (GameObject.Find(name) != null); var go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = name; go.transform.position = new Vector3((i - 2) * 2f, 0.5f, 2f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_NPC_VENDOR: &str = "var go = GameObject.Find(\"NPC_Vendor\"); if (go == null) { go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = \"NPC_Vendor\"; UnityEditor.Undo.RegisterCreatedObjectUndo(go, \"NPC_Vendor\"); } go.transform.position = new Vector3(4f, 0.5f, 2f); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_NPC_QUEST: &str = "var go = GameObject.Find(\"NPC_Quest\"); if (go == null) { go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = \"NPC_Quest\"; UnityEditor.Undo.RegisterCreatedObjectUndo(go, \"NPC_Quest\"); } go.transform.position = new Vector3(-4f, 0.5f, 2f); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_SPAWN_POINT: &str = "int i = 1; string name; do { name = \"Spawn_\" + i; i++; } while (GameObject.Find(name) != null); var go = new GameObject(name); go.transform.position = new Vector3((i - 2) * 3f, 0.1f, -6f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_PORTAL_ZONE: &str = "int i = 1; string name; do { name = i == 1 ? \"Portal_Zone\" : (\"Portal_Zone_\" + i); i++; } while (GameObject.Find(name) != null); var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder); go.name = name; go.transform.position = new Vector3(0f, 1f, 8f + (i - 2) * 3f); go.transform.localScale = new Vector3(2f, 2f, 2f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_CREATE_ENEMY_SPAWN: &str = "int i = 1; string name; do { name = \"Enemy_Spawn_\" + i; i++; } while (GameObject.Find(name) != null); var go = new GameObject(name); go.transform.position = new Vector3((i - 2) * 4f, 0.5f, 6f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); UnityEditor.Selection.activeGameObject = go; UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); return go.name;";
+const EVAL_LAYOUT_RPG: &str = "System.Func<string,Vector3,PrimitiveType,GameObject> prim = (name, pos, t) => { var go = GameObject.Find(name); if (go == null) { go = GameObject.CreatePrimitive(t); go.name = name; UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; return go; }; System.Func<string,Vector3,GameObject> empty = (name, pos) => { var go = GameObject.Find(name); if (go == null) { go = new GameObject(name); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; return go; }; var ground = prim(\"Ground\", Vector3.zero, PrimitiveType.Plane); ground.transform.localScale = new Vector3(10f,1f,10f); prim(\"NPC_Vendor\", new Vector3(4f,0.5f,2f), PrimitiveType.Capsule); prim(\"NPC_Quest\", new Vector3(-4f,0.5f,2f), PrimitiveType.Capsule); empty(\"Spawn_Town\", new Vector3(0f,0.1f,-6f)); var player = prim(\"Player\", new Vector3(0f,1.1f,-4f), PrimitiveType.Capsule); var rb = player.GetComponent<Rigidbody>() ?? UnityEditor.Undo.AddComponent<Rigidbody>(player); rb.constraints = RigidbodyConstraints.FreezeRotation; var canvasGo = GameObject.Find(\"Canvas\"); if (canvasGo == null) { canvasGo = new GameObject(\"Canvas\"); var c = canvasGo.AddComponent<Canvas>(); c.renderMode = RenderMode.ScreenSpaceOverlay; canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>(); canvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>(); UnityEditor.Undo.RegisterCreatedObjectUndo(canvasGo, \"Canvas\"); } var hud = GameObject.Find(\"HUD\"); if (hud == null) { hud = new GameObject(\"HUD\"); hud.transform.SetParent(canvasGo.transform, false); UnityEditor.Undo.RegisterCreatedObjectUndo(hud, \"HUD\"); } System.Action<string,string,Vector2> label = (n, text, anchored) => { var go = GameObject.Find(n); if (go == null) { go = new GameObject(n); go.transform.SetParent(hud.transform, false); var t = go.AddComponent<UnityEngine.UI.Text>(); t.font = Resources.GetBuiltinResource<Font>(\"Arial.ttf\"); t.text = text; t.fontSize = 22; t.color = Color.white; var rt = go.GetComponent<RectTransform>(); rt.anchorMin = new Vector2(0,1); rt.anchorMax = new Vector2(0,1); rt.pivot = new Vector2(0,1); rt.anchoredPosition = anchored; rt.sizeDelta = new Vector2(240, 36); UnityEditor.Undo.RegisterCreatedObjectUndo(go, n); } }; label(\"HUD_HP\", \"HP 100/100\", new Vector2(16,-16)); label(\"HUD_Gold\", \"Gold 0\", new Vector2(16,-56)); UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene()); return \"rpg layout: NPC_Vendor NPC_Quest Spawn_Town HUD\";";
+const EVAL_LAYOUT_MMO: &str = "System.Func<string,Vector3,PrimitiveType,GameObject> prim = (name, pos, t) => { var go = GameObject.Find(name); if (go == null) { go = GameObject.CreatePrimitive(t); go.name = name; UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; return go; }; System.Func<string,Vector3,GameObject> empty = (name, pos) => { var go = GameObject.Find(name); if (go == null) { go = new GameObject(name); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; return go; }; var hub = prim(\"World_Hub\", Vector3.zero, PrimitiveType.Plane); hub.transform.localScale = new Vector3(20f,1f,20f); empty(\"Spawn_A\", new Vector3(-8f,0.2f,-8f)); empty(\"Spawn_B\", new Vector3(0f,0.2f,-10f)); empty(\"Spawn_C\", new Vector3(8f,0.2f,-8f)); var portal = prim(\"Portal_Zone\", new Vector3(0f,1f,10f), PrimitiveType.Cylinder); portal.transform.localScale = new Vector3(2f,2f,2f); var player = prim(\"Player\", new Vector3(0f,1.1f,-6f), PrimitiveType.Capsule); var rb = player.GetComponent<Rigidbody>() ?? UnityEditor.Undo.AddComponent<Rigidbody>(player); rb.constraints = RigidbodyConstraints.FreezeRotation; var canvasGo = GameObject.Find(\"Canvas\"); if (canvasGo == null) { canvasGo = new GameObject(\"Canvas\"); var c = canvasGo.AddComponent<Canvas>(); c.renderMode = RenderMode.ScreenSpaceOverlay; canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>(); canvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>(); UnityEditor.Undo.RegisterCreatedObjectUndo(canvasGo, \"Canvas\"); } System.Action<string,Vector2,Vector2> panel = (n, anchor, size) => { var go = GameObject.Find(n); if (go == null) { go = new GameObject(n); go.transform.SetParent(canvasGo.transform, false); var img = go.AddComponent<UnityEngine.UI.Image>(); img.color = new Color(0f,0f,0f,0.45f); var rt = go.GetComponent<RectTransform>(); rt.anchorMin = anchor; rt.anchorMax = anchor; rt.pivot = anchor; rt.anchoredPosition = Vector2.zero; rt.sizeDelta = size; UnityEditor.Undo.RegisterCreatedObjectUndo(go, n); } }; panel(\"ChatPanel\", new Vector2(0,0), new Vector2(360,180)); panel(\"MinimapFrame\", new Vector2(1,1), new Vector2(160,160)); UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene()); return \"mmo layout: World_Hub Spawn_A Spawn_B Spawn_C Portal_Zone ChatPanel MinimapFrame\";";
+const EVAL_LAYOUT_ROGUELIKE: &str = "System.Func<string,Vector3,Vector3,GameObject> room = (name, pos, scale) => { var go = GameObject.Find(name); if (go == null) { go = GameObject.CreatePrimitive(PrimitiveType.Cube); go.name = name; UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; go.transform.localScale = scale; return go; }; System.Func<string,Vector3,GameObject> empty = (name, pos) => { var go = GameObject.Find(name); if (go == null) { go = new GameObject(name); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); } go.transform.position = pos; return go; }; int idx = 0; for (int z = -1; z <= 1; z++) { for (int x = -1; x <= 1; x++) { room(\"Room_\" + idx, new Vector3(x * 8f, -0.5f, z * 8f), new Vector3(6f, 0.2f, 6f)); idx++; } } empty(\"Enemy_Spawn_1\", new Vector3(8f, 0.5f, 0f)); empty(\"Enemy_Spawn_2\", new Vector3(-8f, 0.5f, 0f)); empty(\"Enemy_Spawn_3\", new Vector3(0f, 0.5f, 8f)); empty(\"Door_North\", new Vector3(0f, 1f, 12f)); empty(\"Door_South\", new Vector3(0f, 1f, -12f)); empty(\"Door_East\", new Vector3(12f, 1f, 0f)); empty(\"Door_West\", new Vector3(-12f, 1f, 0f)); empty(\"RunManager\", Vector3.zero); var player = GameObject.Find(\"Player\"); if (player == null) { player = GameObject.CreatePrimitive(PrimitiveType.Capsule); player.name = \"Player\"; UnityEditor.Undo.RegisterCreatedObjectUndo(player, \"Player\"); } player.transform.position = new Vector3(0f, 1.1f, 0f); var rb = player.GetComponent<Rigidbody>() ?? UnityEditor.Undo.AddComponent<Rigidbody>(player); rb.constraints = RigidbodyConstraints.FreezeRotation; var canvasGo = GameObject.Find(\"Canvas\"); if (canvasGo == null) { canvasGo = new GameObject(\"Canvas\"); var c = canvasGo.AddComponent<Canvas>(); c.renderMode = RenderMode.ScreenSpaceOverlay; canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>(); canvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>(); UnityEditor.Undo.RegisterCreatedObjectUndo(canvasGo, \"Canvas\"); } var hud = GameObject.Find(\"RunHUD\"); if (hud == null) { hud = new GameObject(\"RunHUD\"); hud.transform.SetParent(canvasGo.transform, false); UnityEditor.Undo.RegisterCreatedObjectUndo(hud, \"RunHUD\"); System.Action<string,string,Vector2> label = (n, text, anchored) => { var go = new GameObject(n); go.transform.SetParent(hud.transform, false); var t = go.AddComponent<UnityEngine.UI.Text>(); t.font = Resources.GetBuiltinResource<Font>(\"Arial.ttf\"); t.text = text; t.fontSize = 22; t.color = Color.white; var rt = go.GetComponent<RectTransform>(); rt.anchorMin = new Vector2(0,1); rt.anchorMax = new Vector2(0,1); rt.pivot = new Vector2(0,1); rt.anchoredPosition = anchored; rt.sizeDelta = new Vector2(260, 36); }; label(\"RunHUD_Floor\", \"Floor 1\", new Vector2(16,-16)); label(\"RunHUD_HP\", \"HP 3\", new Vector2(16,-56)); } UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(UnityEngine.SceneManagement.SceneManager.GetActiveScene()); return \"roguelike layout: rooms Enemy_Spawn Door_North RunManager RunHUD\";";
+
+fn eval_save_named_scene(path: &str) -> String {
+    format!(
+        "if (!UnityEditor.AssetDatabase.IsValidFolder(\"Assets/Scenes\")) UnityEditor.AssetDatabase.CreateFolder(\"Assets\", \"Scenes\"); var path = \"{path}\"; var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); UnityEditor.SceneManagement.EditorSceneManager.SaveScene(scene, path); var list = new System.Collections.Generic.List<UnityEditor.EditorBuildSettingsScene>(UnityEditor.EditorBuildSettings.scenes); bool found = false; foreach (var s in list) {{ if (s.path == path) {{ found = true; break; }} }} if (!found) list.Insert(0, new UnityEditor.EditorBuildSettingsScene(path, true)); UnityEditor.EditorBuildSettings.scenes = list.ToArray(); UnityEditor.AssetDatabase.Refresh(); return path;"
+    )
+}
+const EVAL_LIST_SCENES: &str = "var scenes = UnityEditor.EditorBuildSettings.scenes; if (scenes == null || scenes.Length == 0) return \"(no build scenes)\"; var sb = new System.Text.StringBuilder(); for (int i = 0; i < scenes.Length; i++) { sb.Append(scenes[i].enabled ? \"[x] \" : \"[ ] \"); sb.Append(scenes[i].path); if (i + 1 < scenes.Length) sb.Append('\\n'); } return sb.ToString();";
+const EVAL_NEW_SCENE: &str = "var scene = UnityEditor.SceneManagement.EditorSceneManager.NewScene(UnityEditor.SceneManagement.NewSceneSetup.DefaultGameObjects, UnityEditor.SceneManagement.NewSceneMode.Single); return scene.path.Length == 0 ? scene.name : scene.path;";
+const EVAL_LOAD_FIRST_SCENE: &str = "var scenes = UnityEditor.EditorBuildSettings.scenes; if (scenes == null || scenes.Length == 0) return \"No scenes in Build Settings\"; var path = scenes[0].path; UnityEditor.SceneManagement.EditorSceneManager.OpenScene(path); return path;";
+const EVAL_HIERARCHY_ROOTS: &str = "var roots = UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects(); if (roots == null || roots.Length == 0) return \"(empty)\"; var sb = new System.Text.StringBuilder(); for (int i = 0; i < roots.Length; i++) { sb.Append(roots[i].name); if (i + 1 < roots.Length) sb.Append('\\n'); } return sb.ToString();";
+const EVAL_ACTIVE_SCENE: &str = "var scene = UnityEngine.SceneManagement.SceneManager.GetActiveScene(); return scene.path.Length == 0 ? scene.name : scene.path;";
+const EVAL_SAVE_ASSETS: &str = "UnityEditor.AssetDatabase.SaveAssets(); return true;";
+const EVAL_CONSOLE_ERRORS: &str = "var asm = System.Reflection.Assembly.GetAssembly(typeof(UnityEditor.Editor)); var t = asm.GetType(\"UnityEditor.LogEntries\"); var getCount = t.GetMethod(\"GetCount\"); int total = (int)getCount.Invoke(null, null); var getEntry = t.GetMethod(\"GetEntryInternal\"); var entryType = asm.GetType(\"UnityEditor.LogEntry\"); var entry = System.Activator.CreateInstance(entryType); var modeField = entryType.GetField(\"mode\"); var msgField = entryType.GetField(\"message\"); int errors = 0; var sb = new System.Text.StringBuilder(); for (int i = 0; i < total && errors < 20; i++) { getEntry.Invoke(null, new object[] { i, entry }); int mode = (int)modeField.GetValue(entry); if ((mode & 1) == 0) continue; errors++; sb.Append(msgField.GetValue(entry)); sb.Append('\\n'); } return \"errors=\" + errors + \"/\" + total + \"\\n\" + sb.ToString();";
+const EVAL_MISSING_SCRIPTS: &str = "int missing = 0; var hits = new System.Collections.Generic.List<string>(); foreach (var go in UnityEngine.Object.FindObjectsByType<GameObject>(UnityEngine.FindObjectsSortMode.None)) { var comps = go.GetComponents<Component>(); for (int i = 0; i < comps.Length; i++) { if (comps[i] == null) { missing++; if (hits.Count < 20) hits.Add(go.name); break; } } } return \"missing=\" + missing + (hits.Count == 0 ? \"\" : \"\\n\" + string.Join(\"\\n\", hits));";
+const EVAL_LIST_PACKAGES: &str = "var req = UnityEditor.PackageManager.Client.List(true); while (!req.IsCompleted) System.Threading.Thread.Sleep(50); if (req.Status != UnityEditor.PackageManager.StatusCode.Success) return req.Error != null ? req.Error.message : \"List failed\"; var sb = new System.Text.StringBuilder(); int n = 0; foreach (var p in req.Result) { if (n++ >= 40) break; sb.Append(p.name).Append('@').Append(p.version).Append('\\n'); } return \"count=\" + req.Result.Count() + \"\\n\" + sb.ToString();";
+const EVAL_BUILD_WIN64: &str = "var enabled = System.Array.FindAll(UnityEditor.EditorBuildSettings.scenes, s => s.enabled); if (enabled.Length == 0) return \"No enabled scenes in Build Settings\"; var paths = System.Array.ConvertAll(enabled, s => s.path); var dir = System.IO.Path.GetFullPath(System.IO.Path.Combine(UnityEngine.Application.dataPath, \"..\", \"Builds\", \"Win64\")); System.IO.Directory.CreateDirectory(dir); var loc = System.IO.Path.Combine(dir, \"Player.exe\"); var report = UnityEditor.BuildPipeline.BuildPlayer(paths, loc, UnityEditor.BuildTarget.StandaloneWindows64, UnityEditor.BuildOptions.None); return report.summary.result.ToString() + \" \" + loc;";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliStatus {
@@ -93,7 +146,7 @@ impl Default for SceneSnapshot {
 impl SceneSnapshot {
     pub fn status_line(&self) -> String {
         format!(
-            "Player.y={:.1} · GroundCollider={} · Play={}",
+            "Player.y={:.1} · Collider={} · Play={}",
             self.player_y,
             if self.ground_collider_enabled {
                 "ON"
@@ -162,6 +215,53 @@ impl EditorLinkStatus {
     }
 }
 
+/// Genre templates for one-click scene scaffolds (skeleton only, not full games).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameGenre {
+    Playground,
+    Rpg,
+    Mmo,
+    Roguelike,
+}
+
+impl GameGenre {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Playground => "小游戏",
+            Self::Rpg => "RPG",
+            Self::Mmo => "MMO",
+            Self::Roguelike => "肉鸽",
+        }
+    }
+
+    pub fn scene_path(self) -> &'static str {
+        match self {
+            Self::Playground => "Assets/Scenes/BonyPlayground.unity",
+            Self::Rpg => "Assets/Scenes/BonyRpgTown.unity",
+            Self::Mmo => "Assets/Scenes/BonyMmoHub.unity",
+            Self::Roguelike => "Assets/Scenes/BonyRoguelikeRun.unity",
+        }
+    }
+
+    pub fn done_toast(self) -> &'static str {
+        match self {
+            Self::Playground => "小游戏雏形搭建完成 ✓",
+            Self::Rpg => "RPG 城镇骨架搭建完成 ✓",
+            Self::Mmo => "MMO 大厅骨架搭建完成 ✓",
+            Self::Roguelike => "肉鸽局骨架搭建完成 ✓",
+        }
+    }
+
+    pub fn start_toast(self) -> &'static str {
+        match self {
+            Self::Playground => "开始搭建小游戏雏形",
+            Self::Rpg => "开始搭建 RPG 城镇骨架",
+            Self::Mmo => "开始搭建 MMO 大厅骨架",
+            Self::Roguelike => "开始搭建肉鸽局骨架",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnityAction {
     RefreshDetect,
@@ -176,6 +276,90 @@ pub enum UnityAction {
     EnterPlayMode,
     ExitPlayMode,
     RunFullLoop,
+    ScaffoldMiniGame,
+    ScaffoldRpg,
+    ScaffoldMmo,
+    ScaffoldRoguelike,
+    // Productivity: one-click editor ops (via Pipeline eval).
+    SaveScene,
+    RefreshAssets,
+    RequestScriptReload,
+    ClearConsole,
+    PausePlayMode,
+    StepPlayMode,
+    UndoLast,
+    RedoLast,
+    FrameSelection,
+    FocusGameView,
+    FocusSceneView,
+    DuplicateSelection,
+    DeleteSelection,
+    // A: scene / objects
+    ListScenes,
+    NewScene,
+    LoadFirstScene,
+    HierarchyRoots,
+    ActiveSceneInfo,
+    CreatePlane,
+    CreateDirectionalLight,
+    SelectLoopObject,
+    // Game creation scaffold pieces.
+    SetupSkyDay,
+    SetupSkySunset,
+    SetupSkyNight,
+    CreateGround,
+    SetupMainCamera,
+    CreatePlayerCapsule,
+    CreateNpc,
+    CreateNpcVendor,
+    CreateNpcQuest,
+    CreateSpawnPoint,
+    CreatePortalZone,
+    CreateEnemySpawn,
+    InstallNpcAi,
+    AttachNpcAi,
+    EnableNpcAi,
+    LayoutRpg,
+    LayoutMmo,
+    LayoutRoguelike,
+    SaveNamedScene,
+    // B: assets / console
+    SaveAssets,
+    FindAssets,
+    ConsoleErrors,
+    FindMissingScripts,
+    // C: packages
+    ListPackages,
+    AddPackage,
+    // Productivity: project / connection CLI.
+    EditorStatus,
+    ListProjects,
+    OpenProject,
+    RequireEditor,
+    UpgradePipeline,
+    ProjectInfo,
+    RegisterProject,
+    PinProject,
+    ListLtsReleases,
+    HubLogs,
+    CacheInfo,
+    // Productivity: tests + D: build.
+    RunEditModeTests,
+    RunPlayModeTests,
+    BuildWindowsPlayer,
+    // Occasional diagnostics (slash only).
+    Doctor,
+    EnvInfo,
+    LicenseInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GuideKind {
+    #[default]
+    None,
+    Loop,
+    Scaffold,
+    NpcAi,
 }
 
 impl UnityAction {
@@ -193,6 +377,144 @@ impl UnityAction {
             Self::EnterPlayMode => "进入 Play",
             Self::ExitPlayMode => "退出 Play",
             Self::RunFullLoop => "跑完整闭环",
+            Self::ScaffoldMiniGame => "搭小游戏雏形",
+            Self::ScaffoldRpg => "搭 RPG",
+            Self::ScaffoldMmo => "搭 MMO 大厅",
+            Self::ScaffoldRoguelike => "搭肉鸽局",
+            Self::SaveScene => "保存场景",
+            Self::RefreshAssets => "刷新资源",
+            Self::RequestScriptReload => "重编译脚本",
+            Self::ClearConsole => "清控制台",
+            Self::PausePlayMode => "暂停/继续",
+            Self::StepPlayMode => "单帧步进",
+            Self::UndoLast => "撤销",
+            Self::RedoLast => "重做",
+            Self::FrameSelection => "框选聚焦",
+            Self::FocusGameView => "切到 Game",
+            Self::FocusSceneView => "切到 Scene",
+            Self::DuplicateSelection => "复制选中",
+            Self::DeleteSelection => "删除选中",
+            Self::ListScenes => "列构建场景",
+            Self::NewScene => "新建场景",
+            Self::LoadFirstScene => "加载首场景",
+            Self::HierarchyRoots => "场景根物体",
+            Self::ActiveSceneInfo => "当前场景",
+            Self::CreatePlane => "创建平面",
+            Self::CreateDirectionalLight => "创建平行光",
+            Self::SelectLoopObject => "选中闭环对象",
+            Self::SetupSkyDay => "白天天空",
+            Self::SetupSkySunset => "晚霞天空",
+            Self::SetupSkyNight => "夜空",
+            Self::CreateGround => "创建地面",
+            Self::SetupMainCamera => "设置主相机",
+            Self::CreatePlayerCapsule => "创建玩家",
+            Self::CreateNpc => "创建 NPC",
+            Self::CreateNpcVendor => "创建商人 NPC",
+            Self::CreateNpcQuest => "创建任务 NPC",
+            Self::CreateSpawnPoint => "创建出生点",
+            Self::CreatePortalZone => "创建传送门",
+            Self::CreateEnemySpawn => "创建敌人点",
+            Self::InstallNpcAi => "安装 NPC AI 脚本",
+            Self::AttachNpcAi => "挂载 NPC AI",
+            Self::EnableNpcAi => "给 NPC 接入 AI",
+            Self::LayoutRpg => "RPG 布局",
+            Self::LayoutMmo => "MMO 布局",
+            Self::LayoutRoguelike => "肉鸽布局",
+            Self::SaveNamedScene => "保存雏形场景",
+            Self::SaveAssets => "保存资源",
+            Self::FindAssets => "搜索资源",
+            Self::ConsoleErrors => "控制台错误",
+            Self::FindMissingScripts => "缺失脚本",
+            Self::ListPackages => "列出包",
+            Self::AddPackage => "安装包",
+            Self::EditorStatus => "编辑器状态",
+            Self::ListProjects => "Hub 工程",
+            Self::OpenProject => "打开工程",
+            Self::RequireEditor => "补齐编辑器",
+            Self::UpgradePipeline => "升级 Pipeline",
+            Self::ProjectInfo => "工程信息",
+            Self::RegisterProject => "注册到 Hub",
+            Self::PinProject => "收藏工程",
+            Self::ListLtsReleases => "LTS 版本",
+            Self::HubLogs => "Hub 日志",
+            Self::CacheInfo => "下载缓存",
+            Self::RunEditModeTests => "EditMode 测试",
+            Self::RunPlayModeTests => "PlayMode 测试",
+            Self::BuildWindowsPlayer => "构建 Win64",
+            Self::Doctor => "环境诊断",
+            Self::EnvInfo => "Hub 环境",
+            Self::LicenseInfo => "许可信息",
+        }
+    }
+
+    /// Eval-style command results need JSON success parsing.
+    fn is_eval_style(self) -> bool {
+        matches!(
+            self,
+            Self::Eval
+                | Self::ObserveCollider
+                | Self::FixCollider
+                | Self::EnterPlayMode
+                | Self::ExitPlayMode
+                | Self::SaveScene
+                | Self::RefreshAssets
+                | Self::RequestScriptReload
+                | Self::ClearConsole
+                | Self::PausePlayMode
+                | Self::StepPlayMode
+                | Self::UndoLast
+                | Self::RedoLast
+                | Self::FrameSelection
+                | Self::FocusGameView
+                | Self::FocusSceneView
+                | Self::DuplicateSelection
+                | Self::DeleteSelection
+                | Self::ListScenes
+                | Self::NewScene
+                | Self::LoadFirstScene
+                | Self::HierarchyRoots
+                | Self::ActiveSceneInfo
+                | Self::CreatePlane
+                | Self::CreateDirectionalLight
+                | Self::SelectLoopObject
+                | Self::SetupSkyDay
+                | Self::SetupSkySunset
+                | Self::SetupSkyNight
+                | Self::CreateGround
+                | Self::SetupMainCamera
+                | Self::CreatePlayerCapsule
+                | Self::CreateNpc
+                | Self::CreateNpcVendor
+                | Self::CreateNpcQuest
+                | Self::CreateSpawnPoint
+                | Self::CreatePortalZone
+                | Self::CreateEnemySpawn
+                | Self::InstallNpcAi
+                | Self::AttachNpcAi
+                | Self::LayoutRpg
+                | Self::LayoutMmo
+                | Self::LayoutRoguelike
+                | Self::SaveNamedScene
+                | Self::SaveAssets
+                | Self::FindAssets
+                | Self::ConsoleErrors
+                | Self::FindMissingScripts
+                | Self::ListPackages
+                | Self::AddPackage
+                | Self::BuildWindowsPlayer
+        )
+    }
+
+    fn timeout(self) -> Duration {
+        match self {
+            Self::InstallPipeline
+            | Self::UpgradePipeline
+            | Self::RequireEditor
+            | Self::OpenProject => INSTALL_TIMEOUT,
+            Self::RunEditModeTests | Self::RunPlayModeTests => TEST_TIMEOUT,
+            Self::BuildWindowsPlayer => BUILD_TIMEOUT,
+            Self::ListPackages | Self::AddPackage => PACKAGE_TIMEOUT,
+            _ => CMD_TIMEOUT,
         }
     }
 }
@@ -223,6 +545,212 @@ pub struct UnityChatCmd {
 /// Primary chips shown in the chat composer / empty state.
 pub const UNITY_CHAT_CHIPS: &[UnityChatCmd] = &[
     UnityChatCmd {
+        chip: "保存场景",
+        slash: "/unity save",
+        action: UnityAction::SaveScene,
+        eval: None,
+        phrases: &["保存场景", "存场景", "保存unity场景", "unitysave"],
+    },
+    UnityChatCmd {
+        chip: "刷新资源",
+        slash: "/unity refresh",
+        action: UnityAction::RefreshAssets,
+        eval: None,
+        phrases: &["刷新资源", "刷资源", "assetrefresh", "unityrefresh"],
+    },
+    UnityChatCmd {
+        chip: "清控制台",
+        slash: "/unity clear",
+        action: UnityAction::ClearConsole,
+        eval: None,
+        phrases: &["清控制台", "清空控制台", "清除控制台", "unityclear"],
+    },
+    UnityChatCmd {
+        chip: "进入 Play",
+        slash: "/unity play",
+        action: UnityAction::EnterPlayMode,
+        eval: None,
+        phrases: &["进入play", "开始播放", "开始play", "unityplay"],
+    },
+    UnityChatCmd {
+        chip: "退出 Play",
+        slash: "/unity stop",
+        action: UnityAction::ExitPlayMode,
+        eval: None,
+        phrases: &["退出play", "停止播放", "停止play", "unitystop"],
+    },
+    UnityChatCmd {
+        chip: "搭 RPG",
+        slash: "/unity scaffold rpg",
+        action: UnityAction::ScaffoldRpg,
+        eval: None,
+        phrases: &[
+            "搭rpg",
+            "做一个rpg",
+            "创建rpg",
+            "rpg雏形",
+            "rpg城镇",
+            "搭rpg城镇",
+            "scaffoldrpg",
+            "unityscaffoldrpg",
+        ],
+    },
+    UnityChatCmd {
+        chip: "搭 MMO 大厅",
+        slash: "/unity scaffold mmo",
+        action: UnityAction::ScaffoldMmo,
+        eval: None,
+        phrases: &[
+            "搭mmo大厅",
+            "搭mmo",
+            "做一个mmo",
+            "创建mmo",
+            "mmo大厅",
+            "mmo雏形",
+            "scaffoldmmo",
+            "unityscaffoldmmo",
+        ],
+    },
+    UnityChatCmd {
+        chip: "搭肉鸽局",
+        slash: "/unity scaffold roguelike",
+        action: UnityAction::ScaffoldRoguelike,
+        eval: None,
+        phrases: &[
+            "搭肉鸽局",
+            "创建肉鸽关卡",
+            "肉鸽雏形",
+            "roguelike雏形",
+            "搭roguelike",
+            "做一个肉鸽",
+            "scaffoldroguelike",
+            "unityscaffoldroguelike",
+        ],
+    },
+    UnityChatCmd {
+        chip: "搭小游戏雏形",
+        slash: "/unity scaffold",
+        action: UnityAction::ScaffoldMiniGame,
+        eval: None,
+        phrases: &[
+            "搭小游戏雏形",
+            "做一个小游戏雏形",
+            "搭一个基础场景",
+            "一键搭场景",
+            "搭建小游戏",
+            "unityscaffold",
+            "scaffoldminigame",
+        ],
+    },
+    UnityChatCmd {
+        chip: "创建 NPC",
+        slash: "/unity npc",
+        action: UnityAction::CreateNpc,
+        eval: None,
+        phrases: &[
+            "创建npc",
+            "生成npc",
+            "新建npc",
+            "放一个npc",
+            "添加npc",
+            "unitynpc",
+            "createnpc",
+        ],
+    },
+    UnityChatCmd {
+        chip: "创建商人 NPC",
+        slash: "/unity npc vendor",
+        action: UnityAction::CreateNpcVendor,
+        eval: None,
+        phrases: &[
+            "创建商人npc",
+            "创建商人",
+            "生成商人",
+            "npcvendor",
+            "创建npcvendor",
+            "unitynpcvendor",
+        ],
+    },
+    UnityChatCmd {
+        chip: "创建任务 NPC",
+        slash: "/unity npc quest",
+        action: UnityAction::CreateNpcQuest,
+        eval: None,
+        phrases: &[
+            "创建任务npc",
+            "创建任务人",
+            "生成任务npc",
+            "npcquest",
+            "创建npcquest",
+            "unitynpcquest",
+        ],
+    },
+    UnityChatCmd {
+        chip: "给 NPC 接入 AI",
+        slash: "/unity npc ai",
+        action: UnityAction::EnableNpcAi,
+        eval: None,
+        phrases: &[
+            "给npc接入ai",
+            "npc接入ai",
+            "接入npcai",
+            "启用npcai",
+            "安装npcai",
+            "npcai",
+            "unitynpcai",
+            "enablenpcai",
+        ],
+    },
+    UnityChatCmd {
+        chip: "白天天空",
+        slash: "/unity sky day",
+        action: UnityAction::SetupSkyDay,
+        eval: None,
+        phrases: &["白天天空", "unityskyday"],
+    },
+    UnityChatCmd {
+        chip: "晚霞天空",
+        slash: "/unity sky sunset",
+        action: UnityAction::SetupSkySunset,
+        eval: None,
+        phrases: &["晚霞天空", "unityskysunset"],
+    },
+    UnityChatCmd {
+        chip: "暂停/继续",
+        slash: "/unity pause",
+        action: UnityAction::PausePlayMode,
+        eval: None,
+        phrases: &["暂停play", "暂停播放", "继续play", "unitypause"],
+    },
+    UnityChatCmd {
+        chip: "单帧步进",
+        slash: "/unity step",
+        action: UnityAction::StepPlayMode,
+        eval: None,
+        phrases: &["单帧步进", "步进一帧", "unitystep"],
+    },
+    UnityChatCmd {
+        chip: "撤销",
+        slash: "/unity undo",
+        action: UnityAction::UndoLast,
+        eval: None,
+        phrases: &["撤销", "unity撤销", "unityundo"],
+    },
+    UnityChatCmd {
+        chip: "框选聚焦",
+        slash: "/unity frame",
+        action: UnityAction::FrameSelection,
+        eval: None,
+        phrases: &["框选聚焦", "聚焦选中", "unityframe", "框住选中"],
+    },
+    UnityChatCmd {
+        chip: "切到 Game",
+        slash: "/unity game",
+        action: UnityAction::FocusGameView,
+        eval: None,
+        phrases: &["切到game", "打开game视图", "unitygame"],
+    },
+    UnityChatCmd {
         chip: "创建球体",
         slash: "/unity sphere",
         action: UnityAction::Eval,
@@ -239,25 +767,370 @@ pub const UNITY_CHAT_CHIPS: &[UnityChatCmd] = &[
         ],
     },
     UnityChatCmd {
+        chip: "创建立方体",
+        slash: "/unity cube",
+        action: UnityAction::Eval,
+        eval: Some(EVAL_CREATE_CUBE),
+        phrases: &["创建立方体", "新建立方体", "生成立方体", "unitycube"],
+    },
+    UnityChatCmd {
+        chip: "创建平面",
+        slash: "/unity plane",
+        action: UnityAction::CreatePlane,
+        eval: None,
+        phrases: &["创建平面", "新建平面", "生成平面", "unityplane"],
+    },
+    UnityChatCmd {
+        chip: "列场景",
+        slash: "/unity scenes",
+        action: UnityAction::ListScenes,
+        eval: None,
+        phrases: &["列场景", "列出场景", "构建场景", "unityscenes"],
+    },
+    UnityChatCmd {
+        chip: "控制台错误",
+        slash: "/unity errors",
+        action: UnityAction::ConsoleErrors,
+        eval: None,
+        phrases: &["控制台错误", "查看错误", "unityerrors", "console错误"],
+    },
+    UnityChatCmd {
+        chip: "构建 Win64",
+        slash: "/unity build win",
+        action: UnityAction::BuildWindowsPlayer,
+        eval: None,
+        phrases: &["构建win64", "打包windows", "unitybuild", "unitybuildwin"],
+    },
+    UnityChatCmd {
+        chip: "注册到 Hub",
+        slash: "/unity register",
+        action: UnityAction::RegisterProject,
+        eval: None,
+        phrases: &["注册到hub", "注册工程", "添加到hub", "unityregister"],
+    },
+    UnityChatCmd {
+        chip: "编辑器状态",
+        slash: "/unity status",
+        action: UnityAction::EditorStatus,
+        eval: None,
+        phrases: &["编辑器状态", "unity状态", "unitystatus"],
+    },
+    UnityChatCmd {
+        chip: "打开工程",
+        slash: "/unity open",
+        action: UnityAction::OpenProject,
+        eval: None,
+        phrases: &["打开工程", "打开unity工程", "打开项目", "unityopen"],
+    },
+    UnityChatCmd {
+        chip: "EditMode 测试",
+        slash: "/unity test edit",
+        action: UnityAction::RunEditModeTests,
+        eval: None,
+        phrases: &["editmode测试", "跑editmode", "unitytested", "unitytestedit"],
+    },
+    UnityChatCmd {
         chip: "探测编辑器",
         slash: "/unity probe",
         action: UnityAction::ProbeEditor,
         eval: None,
         phrases: &["探测编辑器", "检查编辑器", "连接编辑器", "unityprobe"],
     },
+];
+
+/// Extra slash / phrase matches not shown as chips.
+pub const UNITY_CHAT_EXTRA: &[UnityChatCmd] = &[
     UnityChatCmd {
-        chip: "进入 Play",
-        slash: "/unity play",
-        action: UnityAction::EnterPlayMode,
+        chip: "夜空",
+        slash: "/unity sky night",
+        action: UnityAction::SetupSkyNight,
         eval: None,
-        phrases: &["进入play", "开始播放", "开始play", "unityplay"],
+        phrases: &["夜空", "unityskynight"],
     },
     UnityChatCmd {
-        chip: "退出 Play",
-        slash: "/unity stop",
-        action: UnityAction::ExitPlayMode,
+        chip: "创建地面",
+        slash: "/unity ground",
+        action: UnityAction::CreateGround,
         eval: None,
-        phrases: &["退出play", "停止播放", "停止play", "unitystop"],
+        phrases: &["创建地面", "铺地面", "unityground"],
+    },
+    UnityChatCmd {
+        chip: "设置主相机",
+        slash: "/unity camera",
+        action: UnityAction::SetupMainCamera,
+        eval: None,
+        phrases: &["设置主相机", "摆相机", "unitycamera"],
+    },
+    UnityChatCmd {
+        chip: "创建玩家",
+        slash: "/unity player",
+        action: UnityAction::CreatePlayerCapsule,
+        eval: None,
+        phrases: &["创建玩家", "生成玩家", "unityplayer"],
+    },
+    UnityChatCmd {
+        chip: "创建出生点",
+        slash: "/unity spawn",
+        action: UnityAction::CreateSpawnPoint,
+        eval: None,
+        phrases: &[
+            "创建出生点",
+            "创建spawn点",
+            "生成出生点",
+            "添加spawn",
+            "unityspawn",
+            "createspawn",
+        ],
+    },
+    UnityChatCmd {
+        chip: "创建传送门",
+        slash: "/unity portal",
+        action: UnityAction::CreatePortalZone,
+        eval: None,
+        phrases: &[
+            "创建传送门",
+            "创建portal",
+            "生成传送门",
+            "portalzone",
+            "unityportal",
+        ],
+    },
+    UnityChatCmd {
+        chip: "创建敌人点",
+        slash: "/unity enemy spawn",
+        action: UnityAction::CreateEnemySpawn,
+        eval: None,
+        phrases: &[
+            "创建敌人点",
+            "创建敌人出生点",
+            "生成敌人点",
+            "enemyspawn",
+            "unityenemyspawn",
+        ],
+    },
+    UnityChatCmd {
+        chip: "安装 NPC AI 脚本",
+        slash: "/unity npc ai install",
+        action: UnityAction::InstallNpcAi,
+        eval: None,
+        phrases: &["安装npcai脚本", "安装npcai", "unitynpcaiinstall"],
+    },
+    UnityChatCmd {
+        chip: "挂载 NPC AI",
+        slash: "/unity npc ai attach",
+        action: UnityAction::AttachNpcAi,
+        eval: None,
+        phrases: &["挂载npcai", "附加npcai", "unitynpcaiattach"],
+    },
+    UnityChatCmd {
+        chip: "RPG 布局",
+        slash: "/unity layout rpg",
+        action: UnityAction::LayoutRpg,
+        eval: None,
+        phrases: &["rpg布局", "unitylayoutrpg"],
+    },
+    UnityChatCmd {
+        chip: "MMO 布局",
+        slash: "/unity layout mmo",
+        action: UnityAction::LayoutMmo,
+        eval: None,
+        phrases: &["mmo布局", "unitylayoutmmo"],
+    },
+    UnityChatCmd {
+        chip: "肉鸽布局",
+        slash: "/unity layout roguelike",
+        action: UnityAction::LayoutRoguelike,
+        eval: None,
+        phrases: &["肉鸽布局", "roguelike布局", "unitylayoutroguelike"],
+    },
+    UnityChatCmd {
+        chip: "保存雏形场景",
+        slash: "/unity save playground",
+        action: UnityAction::SaveNamedScene,
+        eval: None,
+        phrases: &["保存雏形场景", "保存playground", "unitysaveplayground"],
+    },
+    UnityChatCmd {
+        chip: "重做",
+        slash: "/unity redo",
+        action: UnityAction::RedoLast,
+        eval: None,
+        phrases: &["重做", "unity重做", "unityredo"],
+    },
+    UnityChatCmd {
+        chip: "切到 Scene",
+        slash: "/unity scene",
+        action: UnityAction::FocusSceneView,
+        eval: None,
+        phrases: &["切到scene", "打开scene视图", "unityscene"],
+    },
+    UnityChatCmd {
+        chip: "复制选中",
+        slash: "/unity duplicate",
+        action: UnityAction::DuplicateSelection,
+        eval: None,
+        phrases: &["复制选中", "复制物体", "unityduplicate", "duplicate选中"],
+    },
+    UnityChatCmd {
+        chip: "删除选中",
+        slash: "/unity delete",
+        action: UnityAction::DeleteSelection,
+        eval: None,
+        phrases: &["删除选中", "删掉选中", "unitydelete"],
+    },
+    UnityChatCmd {
+        chip: "创建胶囊体",
+        slash: "/unity capsule",
+        action: UnityAction::Eval,
+        eval: Some(EVAL_CREATE_CAPSULE),
+        phrases: &["创建胶囊体", "新建胶囊体", "unitycapsule"],
+    },
+    UnityChatCmd {
+        chip: "创建平行光",
+        slash: "/unity light",
+        action: UnityAction::CreateDirectionalLight,
+        eval: None,
+        phrases: &["创建平行光", "创建灯光", "新建灯光", "unitylight"],
+    },
+    UnityChatCmd {
+        chip: "新建场景",
+        slash: "/unity newscene",
+        action: UnityAction::NewScene,
+        eval: None,
+        phrases: &["新建场景", "创建空场景", "unitynewscene"],
+    },
+    UnityChatCmd {
+        chip: "加载首场景",
+        slash: "/unity loadscene",
+        action: UnityAction::LoadFirstScene,
+        eval: None,
+        phrases: &["加载首场景", "打开首场景", "unityloadscene"],
+    },
+    UnityChatCmd {
+        chip: "场景根物体",
+        slash: "/unity hierarchy",
+        action: UnityAction::HierarchyRoots,
+        eval: None,
+        phrases: &["场景根物体", "列根物体", "unityhierarchy"],
+    },
+    UnityChatCmd {
+        chip: "当前场景",
+        slash: "/unity activescene",
+        action: UnityAction::ActiveSceneInfo,
+        eval: None,
+        phrases: &["当前场景", "活动场景", "unityactivescene"],
+    },
+    UnityChatCmd {
+        chip: "保存资源",
+        slash: "/unity saveassets",
+        action: UnityAction::SaveAssets,
+        eval: None,
+        phrases: &["保存资源", "存资源", "unitysaveassets"],
+    },
+    UnityChatCmd {
+        chip: "搜索资源",
+        slash: "/unity find",
+        action: UnityAction::FindAssets,
+        eval: None,
+        phrases: &["搜索资源", "查找预制体", "unityfind", "findassets"],
+    },
+    UnityChatCmd {
+        chip: "缺失脚本",
+        slash: "/unity missing",
+        action: UnityAction::FindMissingScripts,
+        eval: None,
+        phrases: &["缺失脚本", "丢失脚本", "unitymissing"],
+    },
+    UnityChatCmd {
+        chip: "列出包",
+        slash: "/unity packages",
+        action: UnityAction::ListPackages,
+        eval: None,
+        phrases: &["列出包", "包列表", "unitypackages"],
+    },
+    UnityChatCmd {
+        chip: "安装包",
+        slash: "/unity addpackage",
+        action: UnityAction::AddPackage,
+        eval: None,
+        phrases: &["安装包", "添加包", "unityaddpackage"],
+    },
+    UnityChatCmd {
+        chip: "选中闭环对象",
+        slash: "/unity selectloop",
+        action: UnityAction::SelectLoopObject,
+        eval: None,
+        phrases: &["选中闭环对象", "选中闭环", "unityselectloop"],
+    },
+    UnityChatCmd {
+        chip: "升级 Pipeline",
+        slash: "/unity pipeline upgrade",
+        action: UnityAction::UpgradePipeline,
+        eval: None,
+        phrases: &["升级pipeline", "pipeline升级", "unitypipelineupgrade"],
+    },
+    UnityChatCmd {
+        chip: "工程信息",
+        slash: "/unity info",
+        action: UnityAction::ProjectInfo,
+        eval: None,
+        phrases: &["工程信息", "项目信息", "unityinfo", "unityprojectinfo"],
+    },
+    UnityChatCmd {
+        chip: "收藏工程",
+        slash: "/unity pin",
+        action: UnityAction::PinProject,
+        eval: None,
+        phrases: &["收藏工程", "固定工程", "unitypin"],
+    },
+    UnityChatCmd {
+        chip: "LTS 版本",
+        slash: "/unity releases",
+        action: UnityAction::ListLtsReleases,
+        eval: None,
+        phrases: &["lts版本", "可用lts", "unityreleases", "unitylts"],
+    },
+    UnityChatCmd {
+        chip: "Hub 日志",
+        slash: "/unity logs",
+        action: UnityAction::HubLogs,
+        eval: None,
+        phrases: &["hub日志", "unity日志", "unitylogs"],
+    },
+    UnityChatCmd {
+        chip: "下载缓存",
+        slash: "/unity cache",
+        action: UnityAction::CacheInfo,
+        eval: None,
+        phrases: &["下载缓存", "unity缓存", "unitycache"],
+    },
+    UnityChatCmd {
+        chip: "重编译脚本",
+        slash: "/unity recompile",
+        action: UnityAction::RequestScriptReload,
+        eval: None,
+        phrases: &["重编译脚本", "强制重编译", "unityrecompile", "脚本重载"],
+    },
+    UnityChatCmd {
+        chip: "Hub 工程",
+        slash: "/unity projects",
+        action: UnityAction::ListProjects,
+        eval: None,
+        phrases: &["hub工程", "列出工程", "unityprojects", "工程列表"],
+    },
+    UnityChatCmd {
+        chip: "补齐编辑器",
+        slash: "/unity require",
+        action: UnityAction::RequireEditor,
+        eval: None,
+        phrases: &["补齐编辑器", "安装所需编辑器", "unityrequire"],
+    },
+    UnityChatCmd {
+        chip: "PlayMode 测试",
+        slash: "/unity test play",
+        action: UnityAction::RunPlayModeTests,
+        eval: None,
+        phrases: &["playmode测试", "跑playmode", "unitytestplay"],
     },
     UnityChatCmd {
         chip: "跑闭环",
@@ -285,10 +1158,6 @@ pub const UNITY_CHAT_CHIPS: &[UnityChatCmd] = &[
             "unitypipelineinstall",
         ],
     },
-];
-
-/// Extra slash / phrase matches not shown as chips.
-pub const UNITY_CHAT_EXTRA: &[UnityChatCmd] = &[
     UnityChatCmd {
         chip: "检测 CLI",
         slash: "/unity detect",
@@ -331,6 +1200,27 @@ pub const UNITY_CHAT_EXTRA: &[UnityChatCmd] = &[
         eval: Some(EVAL_PRESETS[0].1),
         phrases: &["查询播放状态", "查播放状态", "是否在play", "unityplaying"],
     },
+    UnityChatCmd {
+        chip: "环境诊断",
+        slash: "/unity doctor",
+        action: UnityAction::Doctor,
+        eval: None,
+        phrases: &["环境诊断", "unitydoctor", "unity诊断"],
+    },
+    UnityChatCmd {
+        chip: "Hub 环境",
+        slash: "/unity env",
+        action: UnityAction::EnvInfo,
+        eval: None,
+        phrases: &["hub环境", "unityenv", "unity环境路径"],
+    },
+    UnityChatCmd {
+        chip: "许可信息",
+        slash: "/unity license",
+        action: UnityAction::LicenseInfo,
+        eval: None,
+        phrases: &["许可信息", "unitylicense", "unity许可"],
+    },
 ];
 
 pub fn normalize_unity_chat(text: &str) -> String {
@@ -365,6 +1255,22 @@ pub fn parse_unity_chat_command(text: &str) -> Option<&'static UnityChatCmd> {
 /// rather than a growing list of exact phrases.
 pub fn compile_unity_scene_command(text: &str) -> Option<(String, String)> {
     let n = normalize_unity_chat(text);
+    // Sky presets (freer NL than exact chips).
+    if n.contains("晚霞") || n.contains("日落") || n.contains("夕阳") {
+        return Some(("晚霞天空".into(), EVAL_SETUP_SKY_SUNSET.into()));
+    }
+    if n.contains("夜空") || n.contains("夜晚天空") || (n.contains("黑夜") && n.contains("天")) {
+        return Some(("夜空".into(), EVAL_SETUP_SKY_NIGHT.into()));
+    }
+    if n.contains("白天天空")
+        || n.contains("蓝天")
+        || n.contains("晴空")
+        || n == "创建天空"
+        || n.contains("换个天空")
+        || n.contains("设置天空")
+    {
+        return Some(("白天天空".into(), EVAL_SETUP_SKY_DAY.into()));
+    }
     if n.contains("删除选中") || n.contains("删除这些") || n.contains("移除选中") {
         return Some((
             "删除选中对象".into(),
@@ -444,6 +1350,35 @@ pub fn compile_unity_scene_command(text: &str) -> Option<(String, String)> {
         .any(|verb| n.contains(verb))
     {
         return None;
+    }
+    if n.contains("npc") {
+        let ascii_count = n
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<usize>()
+            .ok();
+        let cn_count = [
+            ("十", 10),
+            ("九", 9),
+            ("八", 8),
+            ("七", 7),
+            ("六", 6),
+            ("五", 5),
+            ("四", 4),
+            ("三", 3),
+            ("二", 2),
+            ("两", 2),
+            ("一", 1),
+        ]
+        .iter()
+        .find_map(|(token, value)| n.contains(token).then_some(*value));
+        let count = ascii_count.or(cn_count).unwrap_or(1).clamp(1, 50);
+        let eval = format!(
+            "var created = new System.Collections.Generic.List<GameObject>(); int next = 1; for (int n = 0; n < {count}; n++) {{ string name; do {{ name = \"NPC_\" + next; next++; }} while (GameObject.Find(name) != null); var go = GameObject.CreatePrimitive(PrimitiveType.Capsule); go.name = name; go.transform.position = new Vector3((next - 2) * 2f, 0.5f, 2f); UnityEditor.Undo.RegisterCreatedObjectUndo(go, name); created.Add(go); UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(go.scene); }} UnityEditor.Selection.objects = created.ToArray(); return \"Created \" + created.Count + \" NPCs\";"
+        );
+        return Some((format!("创建 {count} 个 NPC"), eval));
     }
     let (cn_name, primitive) = if n.contains("球体") || n.contains("sphere") {
         ("球体", "Sphere")
@@ -567,7 +1502,19 @@ pub fn unity_chat_help_text() -> String {
         "在聊天输入框点 **Unity** 打开快捷指令，或直接发送：".to_string(),
         String::new(),
     ];
+    lines.push(
+        "提效常用：`搭小游戏雏形`、`白天天空`、`晚霞天空`、`保存场景`、`进入 Play`、`打开工程`。"
+            .into(),
+    );
+    lines.push(String::new());
+    lines.push(
+        "创作流水线：`/unity scaffold` 会按序新建场景 → 天空 → 地面 → 灯光 → 相机 → 玩家 → 存到 Assets/Scenes/BonyPlayground.unity → 进 Play。"
+            .into(),
+    );
+    lines.push(String::new());
     lines.push("自然语言场景操作支持数量和基础类型，例如：`创建3个球体`、`生成五个立方体`、`放两个胶囊体`。".into());
+    lines.push(String::new());
+    lines.push("闭环对象可在侧栏修改（默认 `Ground`）；搜索资源/安装包可先在 eval 框填过滤器或包名。".into());
     lines.push(String::new());
     lines.push("快捷命令：".into());
     lines.push(String::new());
@@ -576,7 +1523,7 @@ pub fn unity_chat_help_text() -> String {
     }
     lines.push(String::new());
     lines.push(
-        "首次使用请先在侧栏「Unity 控制」选好工程根并完成引导（CLI → Pipeline → 探测）。".into(),
+        "首次使用请先在侧栏「插件 → Unity 控制 → 打开设置」选好工程根并完成引导（CLI → Pipeline → 探测）。".into(),
     );
     lines.join("\n")
 }
@@ -675,6 +1622,8 @@ pub struct UnityState {
     pub editor_link: EditorLinkStatus,
     pub commands_summary: String,
     pub eval_input: String,
+    /// Object name used by observe/fix/select loop actions (default Ground).
+    pub loop_object: String,
     pub busy: bool,
     pub loop_phase: LoopPhase,
     pub demo_mode: bool,
@@ -692,6 +1641,10 @@ pub struct UnityState {
     pending_rx: Option<mpsc::Receiver<UnityWorkerMsg>>,
     guide_queue: Vec<UnityAction>,
     guide_next_at: Option<Instant>,
+    guide_kind: GuideKind,
+    guide_total: usize,
+    guide_genre: Option<GameGenre>,
+    scaffold_save_path: String,
 }
 
 impl Default for UnityState {
@@ -714,6 +1667,7 @@ impl Default for UnityState {
             editor_link: EditorLinkStatus::Unknown,
             commands_summary: "尚未探测".into(),
             eval_input: EVAL_PRESETS[0].1.into(),
+            loop_object: "Ground".into(),
             busy: false,
             loop_phase: LoopPhase::Observe,
             demo_mode: false,
@@ -728,6 +1682,10 @@ impl Default for UnityState {
             pending_rx: None,
             guide_queue: Vec::new(),
             guide_next_at: None,
+            guide_kind: GuideKind::None,
+            guide_total: 0,
+            guide_genre: None,
+            scaffold_save_path: GameGenre::Playground.scene_path().into(),
         };
         if let Some(path) = saved {
             if let Some(root) = resolve_unity_project_root(&path) {
@@ -836,7 +1794,65 @@ impl UnityState {
                     let summary = if ok {
                         match action {
                             UnityAction::ListEditors => summarize_editors_json(&stdout),
-                            UnityAction::Eval => summarize_eval_output(&stdout),
+                            UnityAction::Eval
+                            | UnityAction::SaveScene
+                            | UnityAction::RefreshAssets
+                            | UnityAction::RequestScriptReload
+                            | UnityAction::ClearConsole
+                            | UnityAction::PausePlayMode
+                            | UnityAction::StepPlayMode
+                            | UnityAction::UndoLast
+                            | UnityAction::RedoLast
+                            | UnityAction::FrameSelection
+                            | UnityAction::FocusGameView
+                            | UnityAction::FocusSceneView
+                            | UnityAction::DuplicateSelection
+                            | UnityAction::DeleteSelection
+                            | UnityAction::ListScenes
+                            | UnityAction::NewScene
+                            | UnityAction::LoadFirstScene
+                            | UnityAction::HierarchyRoots
+                            | UnityAction::ActiveSceneInfo
+                            | UnityAction::CreatePlane
+                            | UnityAction::CreateDirectionalLight
+                            | UnityAction::SelectLoopObject
+                            | UnityAction::SetupSkyDay
+                            | UnityAction::SetupSkySunset
+                            | UnityAction::SetupSkyNight
+                            | UnityAction::CreateGround
+                            | UnityAction::SetupMainCamera
+                            | UnityAction::CreatePlayerCapsule
+                            | UnityAction::CreateNpc
+                            | UnityAction::CreateNpcVendor
+                            | UnityAction::CreateNpcQuest
+                            | UnityAction::CreateSpawnPoint
+                            | UnityAction::CreatePortalZone
+                            | UnityAction::CreateEnemySpawn
+                            | UnityAction::InstallNpcAi
+                            | UnityAction::AttachNpcAi
+                            | UnityAction::LayoutRpg
+                            | UnityAction::LayoutMmo
+                            | UnityAction::LayoutRoguelike
+                            | UnityAction::SaveNamedScene
+                            | UnityAction::SaveAssets
+                            | UnityAction::FindAssets
+                            | UnityAction::ConsoleErrors
+                            | UnityAction::FindMissingScripts
+                            | UnityAction::ListPackages
+                            | UnityAction::AddPackage
+                            | UnityAction::BuildWindowsPlayer => summarize_eval_output(&stdout),
+                            UnityAction::EditorStatus => summarize_status_json(&stdout),
+                            UnityAction::ListProjects => summarize_projects_json(&stdout),
+                            UnityAction::ListLtsReleases => summarize_releases_json(&stdout),
+                            UnityAction::RunEditModeTests | UnityAction::RunPlayModeTests => {
+                                summarize_test_output(action, &stdout, &stderr)
+                            }
+                            UnityAction::Doctor
+                            | UnityAction::EnvInfo
+                            | UnityAction::LicenseInfo
+                            | UnityAction::ProjectInfo
+                            | UnityAction::HubLogs
+                            | UnityAction::CacheInfo => truncate_one_line(&stdout, 160),
                             _ => truncate_one_line(&stdout, 120),
                         }
                     } else {
@@ -871,11 +1887,29 @@ impl UnityState {
                     self.sync_setup_step();
                     if self.guide_queue.is_empty() {
                         if self.guide_label.is_some() {
-                            self.toast = Some("完整闭环完成 ✓".into());
+                            let done = match self.guide_kind {
+                                GuideKind::Scaffold => self
+                                    .guide_genre
+                                    .unwrap_or(GameGenre::Playground)
+                                    .done_toast(),
+                                GuideKind::NpcAi => "NPC AI 接入完成 ✓（进 Play 靠近 NPC 按 E 对话）",
+                                _ => "完整闭环完成 ✓",
+                            };
+                            self.toast = Some(done.into());
                         }
                         self.guide_label = None;
+                        self.guide_kind = GuideKind::None;
+                        self.guide_total = 0;
+                        self.guide_genre = None;
                     } else {
-                        self.guide_next_at = Some(Instant::now() + GUIDE_STEP_GAP);
+                        let gap = if self.guide_kind == GuideKind::NpcAi
+                            && self.guide_queue.first() == Some(&UnityAction::AttachNpcAi)
+                        {
+                            Duration::from_secs(4)
+                        } else {
+                            GUIDE_STEP_GAP
+                        };
+                        self.guide_next_at = Some(Instant::now() + gap);
                     }
                 }
             }
@@ -896,8 +1930,13 @@ impl UnityState {
             }
         }
         let next = self.guide_queue.remove(0);
+        let prefix = match self.guide_kind {
+            GuideKind::Scaffold => "创作",
+            GuideKind::NpcAi => "NPC AI",
+            _ => "闭环",
+        };
         self.guide_label = Some(format!(
-            "闭环 {}/{} · {}",
+            "{prefix} {}/{} · {}",
             self.guide_step_index(),
             self.guide_total_steps(),
             next.label()
@@ -908,12 +1947,16 @@ impl UnityState {
     }
 
     fn guide_total_steps(&self) -> usize {
-        // Full loop is always 3 steps; remaining + 1 currently starting.
-        self.guide_queue.len() + 1
+        if self.guide_total > 0 {
+            self.guide_total
+        } else {
+            self.guide_queue.len() + 1
+        }
     }
 
     fn guide_step_index(&self) -> usize {
-        3usize.saturating_sub(self.guide_queue.len())
+        let total = self.guide_total_steps();
+        total.saturating_sub(self.guide_queue.len())
     }
 
     fn apply_action_effects(&mut self, action: UnityAction, phase: LoopPhase, stdout: &str) {
@@ -985,13 +2028,16 @@ impl UnityState {
                 self.scene.is_playing = true;
                 self.scene.player_y = -2.4;
                 self.scene.last_eval_result = "false".into();
-                self.scene.note = "观察：GroundCollider 被禁用，玩家掉出地板".into();
+                self.scene.note = format!(
+                    "观察：{} 的 Collider 被禁用，玩家掉出地板",
+                    self.loop_object
+                );
                 self.loop_phase = LoopPhase::Act;
             }
             UnityAction::FixCollider => {
                 self.scene.ground_collider_enabled = true;
                 self.scene.last_eval_result = "true".into();
-                self.scene.note = "行动：已重新启用 GroundCollider".into();
+                self.scene.note = format!("行动：已重新启用 {} 的 Collider", self.loop_object);
                 self.loop_phase = LoopPhase::Verify;
             }
             UnityAction::EnterPlayMode => {
@@ -1010,14 +2056,124 @@ impl UnityState {
                 self.scene.note = "已退出 Play Mode".into();
                 self.scene.last_eval_result = "false".into();
             }
-            UnityAction::Eval => {
+            UnityAction::Eval
+            | UnityAction::SaveScene
+            | UnityAction::RefreshAssets
+            | UnityAction::RequestScriptReload
+            | UnityAction::ClearConsole
+            | UnityAction::PausePlayMode
+            | UnityAction::StepPlayMode
+            | UnityAction::UndoLast
+            | UnityAction::RedoLast
+            | UnityAction::FrameSelection
+            | UnityAction::FocusGameView
+            | UnityAction::FocusSceneView
+            | UnityAction::DuplicateSelection
+            | UnityAction::DeleteSelection
+            | UnityAction::ListScenes
+            | UnityAction::NewScene
+            | UnityAction::LoadFirstScene
+            | UnityAction::HierarchyRoots
+            | UnityAction::ActiveSceneInfo
+            | UnityAction::CreatePlane
+            | UnityAction::CreateDirectionalLight
+            | UnityAction::SelectLoopObject
+            | UnityAction::SetupSkyDay
+            | UnityAction::SetupSkySunset
+            | UnityAction::SetupSkyNight
+            | UnityAction::CreateGround
+            | UnityAction::SetupMainCamera
+            | UnityAction::CreatePlayerCapsule
+            | UnityAction::CreateNpc
+            | UnityAction::CreateNpcVendor
+            | UnityAction::CreateNpcQuest
+            | UnityAction::CreateSpawnPoint
+            | UnityAction::CreatePortalZone
+            | UnityAction::CreateEnemySpawn
+            | UnityAction::InstallNpcAi
+            | UnityAction::AttachNpcAi
+            | UnityAction::LayoutRpg
+            | UnityAction::LayoutMmo
+            | UnityAction::LayoutRoguelike
+            | UnityAction::SaveNamedScene
+            | UnityAction::SaveAssets
+            | UnityAction::FindAssets
+            | UnityAction::ConsoleErrors
+            | UnityAction::FindMissingScripts
+            | UnityAction::ListPackages
+            | UnityAction::AddPackage
+            | UnityAction::BuildWindowsPlayer => {
                 self.scene.last_eval_result = truncate_one_line(trimmed, 80);
-                self.scene.note = format!("Eval 完成（{}）", phase.label());
+                self.scene.note = format!("{} 完成（{}）", action.label(), phase.label());
                 if !trimmed.is_empty() && !trimmed.to_lowercase().contains("error") {
                     self.editor_link = EditorLinkStatus::Connected;
                 }
+                if matches!(action, UnityAction::PausePlayMode | UnityAction::StepPlayMode) {
+                    self.scene.is_playing = true;
+                }
+                if matches!(action, UnityAction::CreateGround) {
+                    self.scene.ground_collider_enabled = true;
+                    self.loop_object = "Ground".into();
+                }
+                if matches!(
+                    action,
+                    UnityAction::CreatePlayerCapsule
+                        | UnityAction::LayoutRpg
+                        | UnityAction::LayoutMmo
+                        | UnityAction::LayoutRoguelike
+                ) {
+                    self.scene.player_y = 1.1;
+                }
+                if matches!(action, UnityAction::BuildWindowsPlayer) {
+                    self.toast = Some(truncate_one_line(trimmed, 160));
+                }
             }
-            UnityAction::RefreshDetect | UnityAction::RunFullLoop => {}
+            UnityAction::EditorStatus => {
+                self.commands_summary = summarize_status_json(trimmed);
+                if let Some(connected) = status_has_instances(trimmed) {
+                    self.editor_link = if connected {
+                        EditorLinkStatus::Connected
+                    } else {
+                        EditorLinkStatus::Disconnected
+                    };
+                }
+            }
+            UnityAction::ListProjects => {
+                self.toast = Some(summarize_projects_json(trimmed));
+            }
+            UnityAction::OpenProject => {
+                self.toast = Some("已请求打开 Unity 工程".into());
+            }
+            UnityAction::RequireEditor => {
+                self.toast = Some(truncate_one_line(trimmed, 120));
+            }
+            UnityAction::UpgradePipeline => {
+                self.pipeline_detail = trimmed.to_string();
+                self.pipeline_summary = truncate_one_line(trimmed, 160);
+                self.toast = Some("Pipeline 升级完成，请等编辑器重编译".into());
+            }
+            UnityAction::RegisterProject | UnityAction::PinProject => {
+                self.toast = Some(truncate_one_line(trimmed, 120));
+            }
+            UnityAction::ProjectInfo
+            | UnityAction::ListLtsReleases
+            | UnityAction::HubLogs
+            | UnityAction::CacheInfo => {
+                self.toast = Some(truncate_one_line(trimmed, 120));
+            }
+            UnityAction::RunEditModeTests | UnityAction::RunPlayModeTests => {
+                self.toast = Some(summarize_test_output(action, trimmed, ""));
+            }
+            UnityAction::Doctor | UnityAction::EnvInfo | UnityAction::LicenseInfo => {
+                self.toast = Some(truncate_one_line(trimmed, 120));
+            }
+            UnityAction::RefreshDetect
+            | UnityAction::RunFullLoop
+            | UnityAction::ScaffoldMiniGame
+            | UnityAction::ScaffoldRpg
+            | UnityAction::ScaffoldMmo
+            | UnityAction::ScaffoldRoguelike
+            | UnityAction::EnableNpcAi => {}
         }
     }
 
@@ -1031,22 +2187,74 @@ impl UnityState {
             160,
         );
         match action {
-            UnityAction::InstallPipeline => {
+            UnityAction::InstallPipeline | UnityAction::UpgradePipeline => {
                 self.pipeline_status = PipelineStatus::Error;
                 self.pipeline_summary = msg.clone();
                 self.pipeline_detail = merge_streams(stdout, stderr);
-                self.toast = Some(format!("Pipeline 安装失败：{msg}"));
+                self.toast = Some(format!("{}失败：{msg}", action.label()));
             }
             UnityAction::ListPipeline => {
                 self.pipeline_status = PipelineStatus::Error;
                 self.pipeline_summary = msg;
             }
-            UnityAction::ListCommands | UnityAction::ProbeEditor | UnityAction::Eval => {
+            UnityAction::ListCommands
+            | UnityAction::ProbeEditor
+            | UnityAction::Eval
+            | UnityAction::SaveScene
+            | UnityAction::RefreshAssets
+            | UnityAction::RequestScriptReload
+            | UnityAction::ClearConsole
+            | UnityAction::PausePlayMode
+            | UnityAction::StepPlayMode
+            | UnityAction::UndoLast
+            | UnityAction::RedoLast
+            | UnityAction::FrameSelection
+            | UnityAction::FocusGameView
+            | UnityAction::FocusSceneView
+            | UnityAction::DuplicateSelection
+            | UnityAction::DeleteSelection
+            | UnityAction::ListScenes
+            | UnityAction::NewScene
+            | UnityAction::LoadFirstScene
+            | UnityAction::HierarchyRoots
+            | UnityAction::ActiveSceneInfo
+            | UnityAction::CreatePlane
+            | UnityAction::CreateDirectionalLight
+            | UnityAction::SelectLoopObject
+            | UnityAction::SetupSkyDay
+            | UnityAction::SetupSkySunset
+            | UnityAction::SetupSkyNight
+            | UnityAction::CreateGround
+            | UnityAction::SetupMainCamera
+            | UnityAction::CreatePlayerCapsule
+            | UnityAction::CreateNpc
+            | UnityAction::CreateNpcVendor
+            | UnityAction::CreateNpcQuest
+            | UnityAction::CreateSpawnPoint
+            | UnityAction::CreatePortalZone
+            | UnityAction::CreateEnemySpawn
+            | UnityAction::InstallNpcAi
+            | UnityAction::AttachNpcAi
+            | UnityAction::LayoutRpg
+            | UnityAction::LayoutMmo
+            | UnityAction::LayoutRoguelike
+            | UnityAction::SaveNamedScene
+            | UnityAction::SaveAssets
+            | UnityAction::FindAssets
+            | UnityAction::ConsoleErrors
+            | UnityAction::FindMissingScripts
+            | UnityAction::ListPackages
+            | UnityAction::AddPackage
+            | UnityAction::BuildWindowsPlayer => {
                 self.editor_link = EditorLinkStatus::Disconnected;
                 self.commands_summary = msg.clone();
                 if msg.to_lowercase().contains("pipeline") {
                     self.toast = Some("编辑器未响应：请先安装 Pipeline 并打开项目".into());
                 }
+            }
+            UnityAction::EditorStatus => {
+                self.editor_link = EditorLinkStatus::Disconnected;
+                self.commands_summary = msg;
             }
             _ => {}
         }
@@ -1093,6 +2301,9 @@ impl UnityState {
         self.loop_phase = LoopPhase::Observe;
         self.guide_queue.clear();
         self.guide_label = None;
+        self.guide_kind = GuideKind::None;
+        self.guide_total = 0;
+        self.guide_genre = None;
         self.toast = Some("场景快照已重置".into());
     }
 
@@ -1314,12 +2525,36 @@ impl UnityState {
     }
 
     pub fn run_action(&mut self, action: UnityAction) {
-        if self.busy && !matches!(action, UnityAction::RunFullLoop) {
+        if self.busy
+            && !matches!(
+                action,
+                UnityAction::RunFullLoop
+                    | UnityAction::ScaffoldMiniGame
+                    | UnityAction::ScaffoldRpg
+                    | UnityAction::ScaffoldMmo
+                    | UnityAction::ScaffoldRoguelike
+                    | UnityAction::EnableNpcAi
+            )
+        {
             return;
         }
 
         if matches!(action, UnityAction::RunFullLoop) {
             self.start_full_loop();
+            return;
+        }
+        if matches!(action, UnityAction::EnableNpcAi) {
+            self.start_enable_npc_ai();
+            return;
+        }
+        if let Some(genre) = match action {
+            UnityAction::ScaffoldMiniGame => Some(GameGenre::Playground),
+            UnityAction::ScaffoldRpg => Some(GameGenre::Rpg),
+            UnityAction::ScaffoldMmo => Some(GameGenre::Mmo),
+            UnityAction::ScaffoldRoguelike => Some(GameGenre::Roguelike),
+            _ => None,
+        } {
+            self.start_scaffold(genre);
             return;
         }
 
@@ -1331,15 +2566,43 @@ impl UnityState {
             return;
         }
 
-        if matches!(action, UnityAction::InstallPipeline) {
+        if matches!(
+            action,
+            UnityAction::InstallPipeline | UnityAction::UpgradePipeline
+        ) {
             self.pipeline_status = PipelineStatus::Installing;
-            self.pipeline_summary = "正在执行 unity pipeline install…".into();
+            self.pipeline_summary = if matches!(action, UnityAction::UpgradePipeline) {
+                "正在执行 unity pipeline upgrade…".into()
+            } else {
+                "正在执行 unity pipeline install…".into()
+            };
         }
         if matches!(action, UnityAction::ListPipeline) {
             self.pipeline_status = PipelineStatus::Checking;
         }
         if matches!(action, UnityAction::ListCommands | UnityAction::ProbeEditor) {
             self.editor_link = EditorLinkStatus::Checking;
+        }
+
+        if matches!(action, UnityAction::HubLogs) {
+            let path = hub_logs_dir_display();
+            self.busy = true;
+            let (tx, rx) = mpsc::channel();
+            self.pending_rx = Some(rx);
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(40));
+                let _ = tx.send(UnityWorkerMsg::CommandDone {
+                    action: UnityAction::HubLogs,
+                    title: "Hub 日志".into(),
+                    command: format!("open {path}"),
+                    phase: LoopPhase::Observe,
+                    ok: true,
+                    stdout: format!("Hub logs directory:\n{path}\n"),
+                    stderr: String::new(),
+                    elapsed_ms: 5,
+                });
+            });
+            return;
         }
 
         if self.demo_mode || self.status != CliStatus::Ready {
@@ -1352,13 +2615,14 @@ impl UnityState {
         };
 
         let project = self.project_path.clone();
-        let (title, args, phase) = action.to_cli_args(&self.eval_input, &project);
+        let (title, args, phase) = action.to_cli_args(
+            &self.eval_input,
+            &project,
+            &self.loop_object,
+            &self.scaffold_save_path,
+        );
         let command_display = format_command(&cli, &args);
-        let timeout = if matches!(action, UnityAction::InstallPipeline) {
-            INSTALL_TIMEOUT
-        } else {
-            CMD_TIMEOUT
-        };
+        let timeout = action.timeout();
         self.busy = true;
         let (tx, rx) = mpsc::channel();
         self.pending_rx = Some(rx);
@@ -1367,7 +2631,7 @@ impl UnityState {
             let result = run_unity_timeout(&cli, &args, timeout, Some(&project));
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let ok = result.ok
-                && (!matches!(action, UnityAction::Eval) || eval_output_succeeded(&result.stdout));
+                && (!action.is_eval_style() || eval_output_succeeded(&result.stdout));
             let _ = tx.send(UnityWorkerMsg::CommandDone {
                 action,
                 title,
@@ -1391,17 +2655,102 @@ impl UnityState {
             ground_collider_enabled: true,
             is_playing: false,
             last_eval_result: "—".into(),
-            note: "准备复现：玩家有时从地板掉落".into(),
+            note: format!(
+                "准备复现：检查对象「{}」的 Collider",
+                self.loop_object
+            ),
         };
         self.loop_phase = LoopPhase::Observe;
+        self.guide_kind = GuideKind::Loop;
         self.guide_queue = vec![
             UnityAction::ObserveCollider,
             UnityAction::FixCollider,
             UnityAction::EnterPlayMode,
         ];
-        self.guide_label = Some("闭环 0/3 · 准备中".into());
+        self.guide_total = self.guide_queue.len();
+        self.guide_label = Some(format!("闭环 0/{} · 准备中", self.guide_total));
         self.guide_next_at = Some(Instant::now());
         self.toast = Some("开始完整闭环演示".into());
+    }
+
+    fn start_scaffold(&mut self, genre: GameGenre) {
+        if self.busy || !self.guide_queue.is_empty() {
+            return;
+        }
+        self.demo_mode = self.status != CliStatus::Ready;
+        self.loop_phase = LoopPhase::Act;
+        self.guide_genre = Some(genre);
+        self.scaffold_save_path = genre.scene_path().into();
+        self.scene.note = format!(
+            "开始搭建 {}：共用底座 → 类型布局 → {}",
+            genre.label(),
+            genre.scene_path()
+        );
+        self.guide_kind = GuideKind::Scaffold;
+        let sky = match genre {
+            GameGenre::Roguelike => UnityAction::SetupSkyNight,
+            _ => UnityAction::SetupSkyDay,
+        };
+        let mut queue = vec![UnityAction::NewScene, sky];
+        match genre {
+            GameGenre::Playground => {
+                queue.extend([
+                    UnityAction::CreateGround,
+                    UnityAction::CreateDirectionalLight,
+                    UnityAction::SetupMainCamera,
+                    UnityAction::CreatePlayerCapsule,
+                ]);
+            }
+            GameGenre::Rpg => {
+                queue.extend([
+                    UnityAction::CreateGround,
+                    UnityAction::CreateDirectionalLight,
+                    UnityAction::SetupMainCamera,
+                    UnityAction::LayoutRpg,
+                ]);
+            }
+            GameGenre::Mmo => {
+                queue.extend([
+                    UnityAction::CreateDirectionalLight,
+                    UnityAction::SetupMainCamera,
+                    UnityAction::LayoutMmo,
+                ]);
+            }
+            GameGenre::Roguelike => {
+                queue.extend([
+                    UnityAction::CreateDirectionalLight,
+                    UnityAction::SetupMainCamera,
+                    UnityAction::LayoutRoguelike,
+                ]);
+            }
+        }
+        queue.extend([UnityAction::SaveNamedScene, UnityAction::EnterPlayMode]);
+        self.guide_queue = queue;
+        self.guide_total = self.guide_queue.len();
+        self.guide_label = Some(format!("创作 0/{} · 准备中", self.guide_total));
+        self.guide_next_at = Some(Instant::now());
+        self.toast = Some(genre.start_toast().into());
+    }
+
+    fn start_enable_npc_ai(&mut self) {
+        if self.busy || !self.guide_queue.is_empty() {
+            return;
+        }
+        self.demo_mode = self.status != CliStatus::Ready;
+        self.loop_phase = LoopPhase::Act;
+        self.guide_genre = None;
+        self.scene.note =
+            "接入 NPC AI：写入脚本 → 重编译 → 挂载到场景中所有 NPC_*".into();
+        self.guide_kind = GuideKind::NpcAi;
+        self.guide_queue = vec![
+            UnityAction::InstallNpcAi,
+            UnityAction::RequestScriptReload,
+            UnityAction::AttachNpcAi,
+        ];
+        self.guide_total = self.guide_queue.len();
+        self.guide_label = Some(format!("NPC AI 0/{} · 准备中", self.guide_total));
+        self.guide_next_at = Some(Instant::now());
+        self.toast = Some("开始给 NPC 接入 AI".into());
     }
 
     fn run_demo(&mut self, action: UnityAction) {
@@ -1496,13 +2845,542 @@ impl UnityState {
                 "{\n  \"isPlaying\": false\n}\n".into(),
                 "unity command eval \"UnityEditor.EditorApplication.isPlaying = false; return UnityEditor.EditorApplication.isPlaying;\"".into(),
             ),
-            UnityAction::RefreshDetect | UnityAction::RunFullLoop => return,
+            UnityAction::SaveScene => (
+                "保存场景".into(),
+                LoopPhase::Act,
+                true,
+                "demo: SaveOpenScenes → true".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval SaveOpenScenes".into(),
+            ),
+            UnityAction::RefreshAssets => (
+                "刷新资源".into(),
+                LoopPhase::Act,
+                true,
+                "demo: AssetDatabase.Refresh".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval AssetDatabase.Refresh".into(),
+            ),
+            UnityAction::RequestScriptReload => (
+                "重编译脚本".into(),
+                LoopPhase::Act,
+                true,
+                "demo: RequestScriptReload".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval RequestScriptReload".into(),
+            ),
+            UnityAction::ClearConsole => (
+                "清控制台".into(),
+                LoopPhase::Act,
+                true,
+                "demo: console cleared".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"cleared\"\n}\n".into(),
+                "unity command eval LogEntries.Clear".into(),
+            ),
+            UnityAction::PausePlayMode => (
+                "暂停/继续 Play".into(),
+                LoopPhase::Act,
+                true,
+                "demo: isPaused toggled".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval isPaused toggle".into(),
+            ),
+            UnityAction::StepPlayMode => (
+                "单帧步进".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Step()".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval Step".into(),
+            ),
+            UnityAction::UndoLast => (
+                "撤销".into(),
+                LoopPhase::Act,
+                true,
+                "demo: undo".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"undo\"\n}\n".into(),
+                "unity command eval Undo".into(),
+            ),
+            UnityAction::RedoLast => (
+                "重做".into(),
+                LoopPhase::Act,
+                true,
+                "demo: redo".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"redo\"\n}\n".into(),
+                "unity command eval Redo".into(),
+            ),
+            UnityAction::FrameSelection => (
+                "框选聚焦".into(),
+                LoopPhase::Act,
+                true,
+                "demo: FrameLastActiveSceneView".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Player\"\n}\n".into(),
+                "unity command eval Frame".into(),
+            ),
+            UnityAction::FocusGameView => (
+                "切到 Game".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Game view".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Game\"\n}\n".into(),
+                "unity command eval FocusGame".into(),
+            ),
+            UnityAction::FocusSceneView => (
+                "切到 Scene".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Scene view".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Scene\"\n}\n".into(),
+                "unity command eval FocusScene".into(),
+            ),
+            UnityAction::DuplicateSelection => (
+                "复制选中".into(),
+                LoopPhase::Act,
+                true,
+                "demo: duplicated 1".into(),
+                "{\n  \"ok\": true,\n  \"result\": 1\n}\n".into(),
+                "unity command eval Duplicate".into(),
+            ),
+            UnityAction::DeleteSelection => (
+                "删除选中".into(),
+                LoopPhase::Act,
+                true,
+                "demo: deleted 1".into(),
+                "{\n  \"ok\": true,\n  \"result\": 1\n}\n".into(),
+                "unity command eval Delete".into(),
+            ),
+            UnityAction::ListScenes => (
+                "列构建场景".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 2 build scenes".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"[x] Assets/Scenes/SampleScene.unity\"\n}\n".into(),
+                "unity command eval ListScenes".into(),
+            ),
+            UnityAction::NewScene => (
+                "新建场景".into(),
+                LoopPhase::Act,
+                true,
+                "demo: new scene".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Untitled\"\n}\n".into(),
+                "unity command eval NewScene".into(),
+            ),
+            UnityAction::LoadFirstScene => (
+                "加载首场景".into(),
+                LoopPhase::Act,
+                true,
+                "demo: loaded SampleScene".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Assets/Scenes/SampleScene.unity\"\n}\n".into(),
+                "unity command eval LoadFirstScene".into(),
+            ),
+            UnityAction::HierarchyRoots => (
+                "场景根物体".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: Main Camera, Directional Light".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Main Camera\\nDirectional Light\"\n}\n".into(),
+                "unity command eval HierarchyRoots".into(),
+            ),
+            UnityAction::ActiveSceneInfo => (
+                "当前场景".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: SampleScene".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Assets/Scenes/SampleScene.unity\"\n}\n".into(),
+                "unity command eval ActiveScene".into(),
+            ),
+            UnityAction::CreatePlane => (
+                "创建平面".into(),
+                LoopPhase::Act,
+                true,
+                "demo: BonyPlane".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"BonyPlane\"\n}\n".into(),
+                "unity command eval CreatePlane".into(),
+            ),
+            UnityAction::CreateDirectionalLight => (
+                "创建平行光".into(),
+                LoopPhase::Act,
+                true,
+                "demo: BonyDirectionalLight".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"BonyDirectionalLight\"\n}\n".into(),
+                "unity command eval CreateLight".into(),
+            ),
+            UnityAction::SetupSkyDay => (
+                "白天天空".into(),
+                LoopPhase::Act,
+                true,
+                "demo: day sky".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"day\"\n}\n".into(),
+                "unity command eval SetupSkyDay".into(),
+            ),
+            UnityAction::SetupSkySunset => (
+                "晚霞天空".into(),
+                LoopPhase::Act,
+                true,
+                "demo: sunset sky".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"sunset\"\n}\n".into(),
+                "unity command eval SetupSkySunset".into(),
+            ),
+            UnityAction::SetupSkyNight => (
+                "夜空".into(),
+                LoopPhase::Act,
+                true,
+                "demo: night sky".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"night\"\n}\n".into(),
+                "unity command eval SetupSkyNight".into(),
+            ),
+            UnityAction::CreateGround => (
+                "创建地面".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Ground".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Ground scale=(8,1,8)\"\n}\n".into(),
+                "unity command eval CreateGround".into(),
+            ),
+            UnityAction::SetupMainCamera => (
+                "设置主相机".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Main Camera".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Main Camera @ (0,5,-10)\"\n}\n".into(),
+                "unity command eval SetupMainCamera".into(),
+            ),
+            UnityAction::CreatePlayerCapsule => (
+                "创建玩家".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Player".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Player y=1.1\"\n}\n".into(),
+                "unity command eval CreatePlayer".into(),
+            ),
+            UnityAction::CreateNpc => (
+                "创建 NPC".into(),
+                LoopPhase::Act,
+                true,
+                "demo: NPC_1".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"NPC_1\"\n}\n".into(),
+                "unity command eval CreateNpc".into(),
+            ),
+            UnityAction::CreateNpcVendor => (
+                "创建商人 NPC".into(),
+                LoopPhase::Act,
+                true,
+                "demo: NPC_Vendor".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"NPC_Vendor\"\n}\n".into(),
+                "unity command eval CreateNpcVendor".into(),
+            ),
+            UnityAction::CreateNpcQuest => (
+                "创建任务 NPC".into(),
+                LoopPhase::Act,
+                true,
+                "demo: NPC_Quest".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"NPC_Quest\"\n}\n".into(),
+                "unity command eval CreateNpcQuest".into(),
+            ),
+            UnityAction::CreateSpawnPoint => (
+                "创建出生点".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Spawn_1".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Spawn_1\"\n}\n".into(),
+                "unity command eval CreateSpawnPoint".into(),
+            ),
+            UnityAction::CreatePortalZone => (
+                "创建传送门".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Portal_Zone".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Portal_Zone\"\n}\n".into(),
+                "unity command eval CreatePortalZone".into(),
+            ),
+            UnityAction::CreateEnemySpawn => (
+                "创建敌人点".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Enemy_Spawn_1".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Enemy_Spawn_1\"\n}\n".into(),
+                "unity command eval CreateEnemySpawn".into(),
+            ),
+            UnityAction::InstallNpcAi => (
+                "安装 NPC AI 脚本".into(),
+                LoopPhase::Act,
+                true,
+                "demo: installed Assets/Bony/NpcAi".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"installed Assets/Bony/NpcAi (BonyNpcBrain + BonyNpcDialogue)\"\n}\n".into(),
+                "unity command eval InstallNpcAi".into(),
+            ),
+            UnityAction::AttachNpcAi => (
+                "挂载 NPC AI".into(),
+                LoopPhase::Act,
+                true,
+                "demo: attached NPC AI".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"attached NPC AI to 2 objects\"\n}\n".into(),
+                "unity command eval AttachNpcAi".into(),
+            ),
+            UnityAction::LayoutRpg => (
+                "RPG 布局".into(),
+                LoopPhase::Act,
+                true,
+                "demo: RPG layout".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"rpg layout: NPC_Vendor NPC_Quest Spawn_Town HUD\"\n}\n".into(),
+                "unity command eval LayoutRpg".into(),
+            ),
+            UnityAction::LayoutMmo => (
+                "MMO 布局".into(),
+                LoopPhase::Act,
+                true,
+                "demo: MMO layout".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"mmo layout: World_Hub Spawn_A Spawn_B Spawn_C Portal_Zone ChatPanel MinimapFrame\"\n}\n".into(),
+                "unity command eval LayoutMmo".into(),
+            ),
+            UnityAction::LayoutRoguelike => (
+                "肉鸽布局".into(),
+                LoopPhase::Act,
+                true,
+                "demo: Roguelike layout".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"roguelike layout: rooms Enemy_Spawn Door_North RunManager RunHUD\"\n}\n".into(),
+                "unity command eval LayoutRoguelike".into(),
+            ),
+            UnityAction::SaveNamedScene => (
+                "保存雏形场景".into(),
+                LoopPhase::Act,
+                true,
+                format!("demo: {}", self.scaffold_save_path),
+                format!(
+                    "{{\n  \"ok\": true,\n  \"result\": \"{}\"\n}}\n",
+                    self.scaffold_save_path
+                ),
+                "unity command eval SaveNamedScene".into(),
+            ),
+            UnityAction::SelectLoopObject => (
+                "选中闭环对象".into(),
+                LoopPhase::Observe,
+                true,
+                format!("demo: selected {}", self.loop_object),
+                format!(
+                    "{{\n  \"ok\": true,\n  \"result\": \"{}\"\n}}\n",
+                    self.loop_object
+                ),
+                "unity command eval SelectLoop".into(),
+            ),
+            UnityAction::SaveAssets => (
+                "保存资源".into(),
+                LoopPhase::Act,
+                true,
+                "demo: SaveAssets".into(),
+                "{\n  \"ok\": true,\n  \"result\": true\n}\n".into(),
+                "unity command eval SaveAssets".into(),
+            ),
+            UnityAction::FindAssets => (
+                "搜索资源".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 3 prefabs".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"count=3\\nAssets/Prefabs/Player.prefab\"\n}\n".into(),
+                "unity command eval FindAssets".into(),
+            ),
+            UnityAction::ConsoleErrors => (
+                "控制台错误".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: errors=0".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"errors=0/0\\n\"\n}\n".into(),
+                "unity command eval ConsoleErrors".into(),
+            ),
+            UnityAction::FindMissingScripts => (
+                "缺失脚本".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: missing=0".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"missing=0\"\n}\n".into(),
+                "unity command eval MissingScripts".into(),
+            ),
+            UnityAction::ListPackages => (
+                "列出包".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 12 packages".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"count=12\\ncom.unity.pipeline@1.0.0\"\n}\n".into(),
+                "unity command eval ListPackages".into(),
+            ),
+            UnityAction::AddPackage => (
+                "安装包".into(),
+                LoopPhase::Act,
+                true,
+                "demo: package added".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"com.unity.ugui@2.0.0\"\n}\n".into(),
+                "unity command eval AddPackage".into(),
+            ),
+            UnityAction::BuildWindowsPlayer => (
+                "构建 Win64".into(),
+                LoopPhase::Verify,
+                true,
+                "demo: Succeeded Builds/Win64/Player.exe".into(),
+                "{\n  \"ok\": true,\n  \"result\": \"Succeeded C:/Demo/Builds/Win64/Player.exe\"\n}\n".into(),
+                "unity command eval BuildWin64".into(),
+            ),
+            UnityAction::EditorStatus => (
+                "编辑器状态".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 0 connected editors".into(),
+                DEMO_STATUS_JSON.into(),
+                "unity status --format json".into(),
+            ),
+            UnityAction::ListProjects => (
+                "Hub 工程列表".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 2 Hub projects".into(),
+                DEMO_PROJECTS_JSON.into(),
+                "unity projects list --json".into(),
+            ),
+            UnityAction::OpenProject => (
+                "打开工程".into(),
+                LoopPhase::Act,
+                true,
+                format!("demo: open {}", self.project_path.display()),
+                format!("Opening {}\n", self.project_path.display()),
+                format!("unity open {}", self.project_path.display()),
+            ),
+            UnityAction::RequireEditor => (
+                "补齐编辑器".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: required editor present".into(),
+                "Editor version already installed.\n".into(),
+                format!("unity projects require {}", self.project_path.display()),
+            ),
+            UnityAction::UpgradePipeline => (
+                "升级 Pipeline".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: Pipeline upgraded".into(),
+                "Pipeline package upgraded to latest.\n".into(),
+                "unity pipeline upgrade".into(),
+            ),
+            UnityAction::ProjectInfo => (
+                "工程信息".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: project info".into(),
+                format!(
+                    "{{\"title\":\"Demo\",\"path\":\"{}\"}}\n",
+                    self.project_path.display()
+                ),
+                format!("unity projects info {}", self.project_path.display()),
+            ),
+            UnityAction::RegisterProject => (
+                "注册到 Hub".into(),
+                LoopPhase::Act,
+                true,
+                "demo: project registered".into(),
+                "Registered project in Hub.\n".into(),
+                format!("unity projects add {}", self.project_path.display()),
+            ),
+            UnityAction::PinProject => (
+                "收藏工程".into(),
+                LoopPhase::Act,
+                true,
+                "demo: project pinned".into(),
+                "Pinned project in Hub.\n".into(),
+                format!("unity projects pin {}", self.project_path.display()),
+            ),
+            UnityAction::ListLtsReleases => (
+                "LTS 版本".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: 3 LTS releases".into(),
+                DEMO_RELEASES_JSON.into(),
+                "unity releases --lts --json --limit 10".into(),
+            ),
+            UnityAction::HubLogs => (
+                "Hub 日志".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: hub logs path".into(),
+                format!("Hub logs directory:\n{}\n", hub_logs_dir_display()),
+                format!("open {}", hub_logs_dir_display()),
+            ),
+            UnityAction::CacheInfo => (
+                "下载缓存".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: cache 1.2 GB".into(),
+                "path: ~/.unity/cache\nsize: 1.2 GB\n".into(),
+                "unity cache info".into(),
+            ),
+            UnityAction::RunEditModeTests => (
+                "EditMode 测试".into(),
+                LoopPhase::Verify,
+                true,
+                "demo: EditMode tests passed".into(),
+                "EditMode: 0 failures\n".into(),
+                format!(
+                    "unity test {} --mode EditMode",
+                    self.project_path.display()
+                ),
+            ),
+            UnityAction::RunPlayModeTests => (
+                "PlayMode 测试".into(),
+                LoopPhase::Verify,
+                true,
+                "demo: PlayMode tests passed".into(),
+                "PlayMode: 0 failures\n".into(),
+                format!(
+                    "unity test {} --mode PlayMode",
+                    self.project_path.display()
+                ),
+            ),
+            UnityAction::Doctor => (
+                "环境诊断".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: doctor ok".into(),
+                "CLI: ready\nHub: ready\n".into(),
+                "unity doctor --format json".into(),
+            ),
+            UnityAction::EnvInfo => (
+                "Hub 环境".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: env paths".into(),
+                "hubPath: demo\ncliPath: demo\n".into(),
+                "unity env --format json".into(),
+            ),
+            UnityAction::LicenseInfo => (
+                "许可信息".into(),
+                LoopPhase::Observe,
+                true,
+                "demo: license ok".into(),
+                "licenses: [Personal]\n".into(),
+                "unity license --format json".into(),
+            ),
+            UnityAction::RefreshDetect
+            | UnityAction::RunFullLoop
+            | UnityAction::ScaffoldMiniGame
+            | UnityAction::ScaffoldRpg
+            | UnityAction::ScaffoldMmo
+            | UnityAction::ScaffoldRoguelike
+            | UnityAction::EnableNpcAi => return,
         };
 
         self.demo_mode = true;
         self.busy = true;
-        let stdout = if matches!(action, UnityAction::ListEditors) {
-            DEMO_EDITORS_JSON.to_string()
+        let stdout = if matches!(
+            action,
+            UnityAction::ListEditors
+                | UnityAction::EditorStatus
+                | UnityAction::ListProjects
+                | UnityAction::ListLtsReleases
+        ) {
+            match action {
+                UnityAction::ListEditors => DEMO_EDITORS_JSON.to_string(),
+                UnityAction::EditorStatus => DEMO_STATUS_JSON.to_string(),
+                UnityAction::ListProjects => DEMO_PROJECTS_JSON.to_string(),
+                UnityAction::ListLtsReleases => DEMO_RELEASES_JSON.to_string(),
+                _ => format!("{summary}\n{detail}"),
+            }
         } else {
             format!("{summary}\n{detail}")
         };
@@ -1554,14 +3432,28 @@ impl UnityState {
 }
 
 impl UnityAction {
-    fn to_cli_args(self, eval_input: &str, project: &PathBuf) -> (String, Vec<String>, LoopPhase) {
+    fn to_cli_args(
+        self,
+        eval_input: &str,
+        project: &PathBuf,
+        loop_object: &str,
+        save_scene_path: &str,
+    ) -> (String, Vec<String>, LoopPhase) {
         // `Path::canonicalize` returns an extended-length `\\?\C:\...` path on
         // Windows. Unity Pipeline registers editor instances under the normal
         // DOS/UNC spelling, so passing the extended spelling makes the CLI
         // miss an otherwise running editor.
         let project_s = path_for_unity_cli(project);
+        let loop_name = csharp_string_literal(loop_object);
         match self {
-            Self::RefreshDetect | Self::RunFullLoop => {
+            Self::RefreshDetect
+            | Self::RunFullLoop
+            | Self::ScaffoldMiniGame
+            | Self::ScaffoldRpg
+            | Self::ScaffoldMmo
+            | Self::ScaffoldRoguelike
+            | Self::EnableNpcAi
+            | Self::HubLogs => {
                 ("重新检测 CLI".into(), vec!["--help".into()], LoopPhase::Observe)
             }
             Self::ListEditors => (
@@ -1587,84 +3479,411 @@ impl UnityAction {
                 };
                 (
                     title.into(),
-                    vec![
-                        "command".into(),
-                        format!("--project-path={project_s}"),
-                    ],
+                    vec!["command".into(), format!("--project-path={project_s}")],
                     LoopPhase::Observe,
                 )
             }
-            Self::Eval => (
-                "Eval C# 表达式".into(),
-                vec![
-                    "--format".into(),
-                    "json".into(),
-                    "command".into(),
-                    format!("--project-path={project_s}"),
-                    "eval".into(),
-                    "--".into(),
-                    "--code".into(),
-                    eval_input.to_string(),
-                ],
+            Self::Eval => eval_cli_args("Eval C# 表达式", &project_s, eval_input, LoopPhase::Act),
+            Self::ObserveCollider => eval_cli_args(
+                "观察碰撞体",
+                &project_s,
+                &format!(
+                    "var go = GameObject.Find(\"{loop_name}\"); var c = go != null ? go.GetComponent<Collider>() : null; return c != null && c.enabled;"
+                ),
+                LoopPhase::Observe,
+            ),
+            Self::FixCollider => eval_cli_args(
+                "修复碰撞体",
+                &project_s,
+                &format!(
+                    "var go = GameObject.Find(\"{loop_name}\"); var c = go != null ? go.GetComponent<Collider>() : null; if (c != null) c.enabled = true; return c != null && c.enabled;"
+                ),
                 LoopPhase::Act,
             ),
-            Self::ObserveCollider => (
-                "观察碰撞体".into(),
+            Self::SelectLoopObject => eval_cli_args(
+                "选中闭环对象",
+                &project_s,
+                &format!(
+                    "var go = GameObject.Find(\"{loop_name}\"); UnityEditor.Selection.activeGameObject = go; return go != null ? go.name : \"missing:{loop_name}\";"
+                ),
+                LoopPhase::Observe,
+            ),
+            Self::EnterPlayMode => eval_cli_args(
+                "进入 Play Mode",
+                &project_s,
+                "UnityEditor.EditorApplication.isPlaying = true; return UnityEditor.EditorApplication.isPlaying;",
+                LoopPhase::Verify,
+            ),
+            Self::ExitPlayMode => eval_cli_args(
+                "退出 Play Mode",
+                &project_s,
+                "UnityEditor.EditorApplication.isPlaying = false; return UnityEditor.EditorApplication.isPlaying;",
+                LoopPhase::Verify,
+            ),
+            Self::SaveScene => {
+                eval_cli_args("保存场景", &project_s, EVAL_SAVE_SCENE, LoopPhase::Act)
+            }
+            Self::RefreshAssets => {
+                eval_cli_args("刷新资源", &project_s, EVAL_REFRESH_ASSETS, LoopPhase::Act)
+            }
+            Self::RequestScriptReload => {
+                eval_cli_args("重编译脚本", &project_s, EVAL_SCRIPT_RELOAD, LoopPhase::Act)
+            }
+            Self::ClearConsole => {
+                eval_cli_args("清控制台", &project_s, EVAL_CLEAR_CONSOLE, LoopPhase::Act)
+            }
+            Self::PausePlayMode => {
+                eval_cli_args("暂停/继续 Play", &project_s, EVAL_PAUSE_PLAY, LoopPhase::Act)
+            }
+            Self::StepPlayMode => {
+                eval_cli_args("单帧步进", &project_s, EVAL_STEP_PLAY, LoopPhase::Act)
+            }
+            Self::UndoLast => eval_cli_args("撤销", &project_s, EVAL_UNDO, LoopPhase::Act),
+            Self::RedoLast => eval_cli_args("重做", &project_s, EVAL_REDO, LoopPhase::Act),
+            Self::FrameSelection => {
+                eval_cli_args("框选聚焦", &project_s, EVAL_FRAME_SELECTION, LoopPhase::Act)
+            }
+            Self::FocusGameView => {
+                eval_cli_args("切到 Game", &project_s, EVAL_FOCUS_GAME, LoopPhase::Act)
+            }
+            Self::FocusSceneView => {
+                eval_cli_args("切到 Scene", &project_s, EVAL_FOCUS_SCENE, LoopPhase::Act)
+            }
+            Self::DuplicateSelection => eval_cli_args(
+                "复制选中",
+                &project_s,
+                EVAL_DUPLICATE_SELECTION,
+                LoopPhase::Act,
+            ),
+            Self::DeleteSelection => {
+                eval_cli_args("删除选中", &project_s, EVAL_DELETE_SELECTION, LoopPhase::Act)
+            }
+            Self::ListScenes => {
+                eval_cli_args("列构建场景", &project_s, EVAL_LIST_SCENES, LoopPhase::Observe)
+            }
+            Self::NewScene => eval_cli_args("新建场景", &project_s, EVAL_NEW_SCENE, LoopPhase::Act),
+            Self::LoadFirstScene => {
+                eval_cli_args("加载首场景", &project_s, EVAL_LOAD_FIRST_SCENE, LoopPhase::Act)
+            }
+            Self::HierarchyRoots => {
+                eval_cli_args("场景根物体", &project_s, EVAL_HIERARCHY_ROOTS, LoopPhase::Observe)
+            }
+            Self::ActiveSceneInfo => {
+                eval_cli_args("当前场景", &project_s, EVAL_ACTIVE_SCENE, LoopPhase::Observe)
+            }
+            Self::CreatePlane => {
+                eval_cli_args("创建平面", &project_s, EVAL_CREATE_PLANE, LoopPhase::Act)
+            }
+            Self::CreateDirectionalLight => {
+                eval_cli_args("创建平行光", &project_s, EVAL_CREATE_LIGHT, LoopPhase::Act)
+            }
+            Self::SetupSkyDay => {
+                eval_cli_args("白天天空", &project_s, EVAL_SETUP_SKY_DAY, LoopPhase::Act)
+            }
+            Self::SetupSkySunset => {
+                eval_cli_args("晚霞天空", &project_s, EVAL_SETUP_SKY_SUNSET, LoopPhase::Act)
+            }
+            Self::SetupSkyNight => {
+                eval_cli_args("夜空", &project_s, EVAL_SETUP_SKY_NIGHT, LoopPhase::Act)
+            }
+            Self::CreateGround => {
+                eval_cli_args("创建地面", &project_s, EVAL_CREATE_GROUND, LoopPhase::Act)
+            }
+            Self::SetupMainCamera => {
+                eval_cli_args("设置主相机", &project_s, EVAL_SETUP_MAIN_CAMERA, LoopPhase::Act)
+            }
+            Self::CreatePlayerCapsule => {
+                eval_cli_args("创建玩家", &project_s, EVAL_CREATE_PLAYER, LoopPhase::Act)
+            }
+            Self::CreateNpc => {
+                eval_cli_args("创建 NPC", &project_s, EVAL_CREATE_NPC, LoopPhase::Act)
+            }
+            Self::CreateNpcVendor => {
+                eval_cli_args("创建商人 NPC", &project_s, EVAL_CREATE_NPC_VENDOR, LoopPhase::Act)
+            }
+            Self::CreateNpcQuest => {
+                eval_cli_args("创建任务 NPC", &project_s, EVAL_CREATE_NPC_QUEST, LoopPhase::Act)
+            }
+            Self::CreateSpawnPoint => {
+                eval_cli_args("创建出生点", &project_s, EVAL_CREATE_SPAWN_POINT, LoopPhase::Act)
+            }
+            Self::CreatePortalZone => {
+                eval_cli_args("创建传送门", &project_s, EVAL_CREATE_PORTAL_ZONE, LoopPhase::Act)
+            }
+            Self::CreateEnemySpawn => {
+                eval_cli_args("创建敌人点", &project_s, EVAL_CREATE_ENEMY_SPAWN, LoopPhase::Act)
+            }
+            Self::InstallNpcAi => {
+                let code = crate::npc_ai::eval_install_npc_ai_scripts();
+                eval_cli_args("安装 NPC AI 脚本", &project_s, &code, LoopPhase::Act)
+            }
+            Self::AttachNpcAi => {
+                eval_cli_args(
+                    "挂载 NPC AI",
+                    &project_s,
+                    crate::npc_ai::EVAL_ATTACH_NPC_AI,
+                    LoopPhase::Act,
+                )
+            }
+            Self::LayoutRpg => {
+                eval_cli_args("RPG 布局", &project_s, EVAL_LAYOUT_RPG, LoopPhase::Act)
+            }
+            Self::LayoutMmo => {
+                eval_cli_args("MMO 布局", &project_s, EVAL_LAYOUT_MMO, LoopPhase::Act)
+            }
+            Self::LayoutRoguelike => {
+                eval_cli_args("肉鸽布局", &project_s, EVAL_LAYOUT_ROGUELIKE, LoopPhase::Act)
+            }
+            Self::SaveNamedScene => {
+                let path = if save_scene_path.trim().is_empty() {
+                    GameGenre::Playground.scene_path()
+                } else {
+                    save_scene_path
+                };
+                let code = eval_save_named_scene(path);
+                eval_cli_args("保存雏形场景", &project_s, &code, LoopPhase::Act)
+            }
+            Self::SaveAssets => {
+                eval_cli_args("保存资源", &project_s, EVAL_SAVE_ASSETS, LoopPhase::Act)
+            }
+            Self::FindAssets => {
+                let filter = sanitize_asset_filter(eval_input);
+                let code = format!(
+                    "var guids = UnityEditor.AssetDatabase.FindAssets(\"{filter}\"); int n = guids == null ? 0 : System.Math.Min(guids.Length, 30); var sb = new System.Text.StringBuilder(); sb.Append(\"count=\").Append(guids == null ? 0 : guids.Length); for (int i = 0; i < n; i++) {{ sb.Append('\\n').Append(UnityEditor.AssetDatabase.GUIDToAssetPath(guids[i])); }} return sb.ToString();"
+                );
+                eval_cli_args("搜索资源", &project_s, &code, LoopPhase::Observe)
+            }
+            Self::ConsoleErrors => {
+                eval_cli_args("控制台错误", &project_s, EVAL_CONSOLE_ERRORS, LoopPhase::Observe)
+            }
+            Self::FindMissingScripts => {
+                eval_cli_args("缺失脚本", &project_s, EVAL_MISSING_SCRIPTS, LoopPhase::Observe)
+            }
+            Self::ListPackages => {
+                eval_cli_args("列出包", &project_s, EVAL_LIST_PACKAGES, LoopPhase::Observe)
+            }
+            Self::AddPackage => {
+                let pkg = sanitize_package_id(eval_input);
+                let code = format!(
+                    "var req = UnityEditor.PackageManager.Client.Add(\"{pkg}\"); while (!req.IsCompleted) System.Threading.Thread.Sleep(50); if (req.Status == UnityEditor.PackageManager.StatusCode.Success) return req.Result.packageId; return req.Error != null ? req.Error.message : \"Add failed\";"
+                );
+                eval_cli_args("安装包", &project_s, &code, LoopPhase::Act)
+            }
+            Self::BuildWindowsPlayer => {
+                eval_cli_args("构建 Win64", &project_s, EVAL_BUILD_WIN64, LoopPhase::Verify)
+            }
+            Self::EditorStatus => (
+                "编辑器状态".into(),
+                vec!["status".into(), "--format".into(), "json".into()],
+                LoopPhase::Observe,
+            ),
+            Self::ListProjects => (
+                "Hub 工程列表".into(),
                 vec![
-                    "--format".into(),
-                    "json".into(),
-                    "command".into(),
-                    format!("--project-path={project_s}"),
-                    "eval".into(),
-                    "--".into(),
-                    "--code".into(),
-                    "var go = GameObject.Find(\"Ground\"); var c = go != null ? go.GetComponent<Collider>() : null; return c != null && c.enabled;".into(),
+                    "projects".into(),
+                    "list".into(),
+                    "--json".into(),
+                    "--all".into(),
                 ],
                 LoopPhase::Observe,
             ),
-            Self::FixCollider => (
-                "修复碰撞体".into(),
+            Self::OpenProject => (
+                "打开工程".into(),
+                vec!["open".into(), project_s.clone()],
+                LoopPhase::Act,
+            ),
+            Self::RequireEditor => (
+                "补齐所需编辑器".into(),
+                vec!["projects".into(), "require".into(), project_s.clone()],
+                LoopPhase::Observe,
+            ),
+            Self::UpgradePipeline => (
+                "升级 Pipeline".into(),
+                vec!["pipeline".into(), "upgrade".into()],
+                LoopPhase::Observe,
+            ),
+            Self::ProjectInfo => (
+                "工程信息".into(),
                 vec![
-                    "--format".into(),
-                    "json".into(),
-                    "command".into(),
-                    format!("--project-path={project_s}"),
-                    "eval".into(),
-                    "--".into(),
-                    "--code".into(),
-                    "var go = GameObject.Find(\"Ground\"); var c = go != null ? go.GetComponent<Collider>() : null; if (c != null) c.enabled = true; return c != null && c.enabled;".into(),
+                    "projects".into(),
+                    "info".into(),
+                    project_s.clone(),
+                    "--json".into(),
+                ],
+                LoopPhase::Observe,
+            ),
+            Self::RegisterProject => (
+                "注册到 Hub".into(),
+                vec![
+                    "projects".into(),
+                    "add".into(),
+                    project_s.clone(),
+                    "--json".into(),
                 ],
                 LoopPhase::Act,
             ),
-            Self::EnterPlayMode => (
-                "进入 Play Mode".into(),
+            Self::PinProject => (
+                "收藏工程".into(),
                 vec![
-                    "--format".into(),
-                    "json".into(),
-                    "command".into(),
-                    format!("--project-path={project_s}"),
-                    "eval".into(),
-                    "--".into(),
-                    "--code".into(),
-                    "UnityEditor.EditorApplication.isPlaying = true; return UnityEditor.EditorApplication.isPlaying;".into(),
+                    "projects".into(),
+                    "pin".into(),
+                    project_s.clone(),
+                    "--json".into(),
                 ],
-                LoopPhase::Verify,
+                LoopPhase::Act,
             ),
-            Self::ExitPlayMode => (
-                "退出 Play Mode".into(),
+            Self::ListLtsReleases => (
+                "LTS 版本".into(),
                 vec![
+                    "editors".into(),
+                    "--releases".into(),
                     "--format".into(),
                     "json".into(),
-                    "command".into(),
-                    format!("--project-path={project_s}"),
-                    "eval".into(),
-                    "--".into(),
-                    "--code".into(),
-                    "UnityEditor.EditorApplication.isPlaying = false; return UnityEditor.EditorApplication.isPlaying;".into(),
                 ],
-                LoopPhase::Verify,
+                LoopPhase::Observe,
+            ),
+            Self::CacheInfo => (
+                "下载缓存".into(),
+                vec!["cache".into(), "info".into()],
+                LoopPhase::Observe,
+            ),
+            Self::RunEditModeTests => {
+                let out = path_for_unity_cli(
+                    &crate::usage::usage_dir().join("unity-edit-results.xml"),
+                );
+                (
+                    "EditMode 测试".into(),
+                    vec![
+                        "test".into(),
+                        project_s.clone(),
+                        "--mode".into(),
+                        "EditMode".into(),
+                        "--output".into(),
+                        out,
+                    ],
+                    LoopPhase::Verify,
+                )
+            }
+            Self::RunPlayModeTests => {
+                let out = path_for_unity_cli(
+                    &crate::usage::usage_dir().join("unity-play-results.xml"),
+                );
+                (
+                    "PlayMode 测试".into(),
+                    vec![
+                        "test".into(),
+                        project_s.clone(),
+                        "--mode".into(),
+                        "PlayMode".into(),
+                        "--output".into(),
+                        out,
+                    ],
+                    LoopPhase::Verify,
+                )
+            }
+            Self::Doctor => (
+                "环境诊断".into(),
+                vec!["doctor".into(), "--format".into(), "json".into()],
+                LoopPhase::Observe,
+            ),
+            Self::EnvInfo => (
+                "Hub 环境".into(),
+                vec!["env".into(), "--format".into(), "json".into()],
+                LoopPhase::Observe,
+            ),
+            Self::LicenseInfo => (
+                "许可信息".into(),
+                vec!["license".into(), "--format".into(), "json".into()],
+                LoopPhase::Observe,
             ),
         }
+    }
+}
+
+fn eval_cli_args(
+    title: &str,
+    project_s: &str,
+    code: &str,
+    phase: LoopPhase,
+) -> (String, Vec<String>, LoopPhase) {
+    (
+        title.into(),
+        vec![
+            "--format".into(),
+            "json".into(),
+            "command".into(),
+            format!("--project-path={project_s}"),
+            "eval".into(),
+            "--".into(),
+            "--code".into(),
+            code.to_string(),
+        ],
+        phase,
+    )
+}
+
+fn csharp_string_literal(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let safe = if trimmed.is_empty() { "Ground" } else { trimmed };
+    safe.chars()
+        .filter(|c| *c != '\0' && *c != '\n' && *c != '\r')
+        .take(64)
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn sanitize_asset_filter(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let candidate = if trimmed.is_empty()
+        || trimmed.contains(';')
+        || trimmed.to_ascii_lowercase().contains("return ")
+    {
+        "t:Prefab"
+    } else {
+        trimmed
+    };
+    candidate
+        .chars()
+        .filter(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | ' ' | '/' | '*')
+        })
+        .take(80)
+        .collect::<String>()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn sanitize_package_id(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let candidate = if trimmed.is_empty()
+        || trimmed.contains(';')
+        || trimmed.to_ascii_lowercase().contains("return ")
+    {
+        "com.unity.ugui"
+    } else {
+        trimmed
+    };
+    candidate
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '@'))
+        .take(120)
+        .collect()
+}
+
+fn hub_logs_dir_display() -> String {
+    if cfg!(windows) {
+        std::env::var("USERPROFILE")
+            .map(|home| format!(r"{home}\AppData\Roaming\UnityHub\logs"))
+            .unwrap_or_else(|_| r"%UserProfile%\AppData\Roaming\UnityHub\logs".into())
+    } else if cfg!(target_os = "macos") {
+        std::env::var("HOME")
+            .map(|home| format!("{home}/Library/Application Support/UnityHub/logs"))
+            .unwrap_or_else(|_| "~/Library/Application Support/UnityHub/logs".into())
+    } else {
+        std::env::var("HOME")
+            .map(|home| format!("{home}/.config/UnityHub/logs"))
+            .unwrap_or_else(|_| "~/.config/UnityHub/logs".into())
     }
 }
 
@@ -1722,7 +3941,7 @@ fn detect_cli() -> DetectResult {
         }
     }
 
-    match Command::new("unity").arg("--help").output() {
+    match crate::process::command("unity").arg("--help").output() {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -1791,7 +4010,7 @@ fn candidate_bins() -> Vec<PathBuf> {
 fn which_unity() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        let output = Command::new("where.exe").arg("unity").output().ok()?;
+        let output = crate::process::command("where.exe").arg("unity").output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -1800,7 +4019,7 @@ fn which_unity() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        let output = Command::new("sh")
+        let output = crate::process::command("sh")
             .args(["-c", "command -v unity"])
             .output()
             .ok()?;
@@ -1823,7 +4042,7 @@ fn run_unity_timeout(
     timeout: Duration,
     cwd: Option<&PathBuf>,
 ) -> RunResult {
-    let mut cmd = Command::new(bin);
+    let mut cmd = crate::process::command(bin);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1920,6 +4139,185 @@ fn summarize_editors_json(raw: &str) -> String {
         return format!("{} 个：{}", arr.len(), versions.join(", "));
     }
     truncate_one_line(raw, 120)
+}
+
+fn summarize_status_json(raw: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return truncate_one_line(raw, 120);
+    };
+    let data = value.get("data").unwrap_or(&value);
+    let count = data
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            data.get("instances")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len() as u64)
+        })
+        .unwrap_or(0);
+    if count == 0 {
+        return "无已连接编辑器（需打开工程并安装 Pipeline）".into();
+    }
+    let mut parts = Vec::new();
+    if let Some(arr) = data.get("instances").and_then(|v| v.as_array()) {
+        for inst in arr.iter().take(3) {
+            let project = inst
+                .get("project")
+                .or_else(|| inst.get("projectPath"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let version = inst
+                .get("version")
+                .or_else(|| inst.get("editorVersion"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let state = inst
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("connected");
+            parts.push(format!(
+                "{} · {} · {}",
+                truncate_one_line(project, 40),
+                version,
+                state
+            ));
+        }
+    }
+    if parts.is_empty() {
+        format!("{count} 个已连接编辑器")
+    } else {
+        format!("{count} 个：{}", parts.join("；"))
+    }
+}
+
+fn status_has_instances(raw: &str) -> Option<bool> {
+    let value = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let data = value.get("data").unwrap_or(&value);
+    let count = data.get("count").and_then(|v| v.as_u64()).or_else(|| {
+        data.get("instances")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len() as u64)
+    })?;
+    Some(count > 0)
+}
+
+fn summarize_projects_json(raw: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return truncate_one_line(raw, 160);
+    };
+    let arr = value
+        .as_array()
+        .or_else(|| value.get("projects").and_then(|v| v.as_array()))
+        .or_else(|| value.get("data").and_then(|v| v.as_array()))
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|d| d.get("projects"))
+                .and_then(|v| v.as_array())
+        });
+    let Some(arr) = arr else {
+        return truncate_one_line(raw, 160);
+    };
+    if arr.is_empty() {
+        return "Hub 中无已注册工程".into();
+    }
+    let mut lines = vec![format!("Hub 工程 {} 个：", arr.len())];
+    for p in arr.iter().take(8) {
+        let name = p
+            .get("title")
+            .or_else(|| p.get("name"))
+            .or_else(|| p.get("Name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let path = p
+            .get("path")
+            .or_else(|| p.get("Path"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let ver = p
+            .get("version")
+            .or_else(|| p.get("editorVersion"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if path.is_empty() {
+            lines.push(format!("· {name} {ver}"));
+        } else {
+            lines.push(format!(
+                "· {name} ({ver}) — 可用聊天设工程：{}",
+                truncate_one_line(path, 60)
+            ));
+        }
+    }
+    if arr.len() > 8 {
+        lines.push(format!("…另有 {} 个", arr.len() - 8));
+    }
+    lines.join("\n")
+}
+
+fn summarize_test_output(action: UnityAction, stdout: &str, stderr: &str) -> String {
+    let mode = match action {
+        UnityAction::RunEditModeTests => "EditMode",
+        UnityAction::RunPlayModeTests => "PlayMode",
+        _ => "Test",
+    };
+    let blob = if !stdout.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
+    let lower = blob.to_lowercase();
+    let out_hint = if matches!(action, UnityAction::RunEditModeTests) {
+        "unity-edit-results.xml"
+    } else {
+        "unity-play-results.xml"
+    };
+    if lower.contains("fail") || lower.contains("error") {
+        format!("{mode} 测试有失败/错误 · 详见 ~/.bony-build/{out_hint}")
+    } else if blob.trim().is_empty() {
+        format!("{mode} 测试已结束 · 结果 ~/.bony-build/{out_hint}")
+    } else {
+        format!(
+            "{mode} · {} · ~/.bony-build/{out_hint}",
+            truncate_one_line(blob, 80)
+        )
+    }
+}
+
+fn summarize_releases_json(raw: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return truncate_one_line(raw, 160);
+    };
+    let arr = value
+        .as_array()
+        .or_else(|| value.get("releases").and_then(|v| v.as_array()))
+        .or_else(|| value.get("data").and_then(|v| v.as_array()))
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|d| d.get("releases"))
+                .and_then(|v| v.as_array())
+        });
+    let Some(arr) = arr else {
+        return truncate_one_line(raw, 160);
+    };
+    if arr.is_empty() {
+        return "无可用 LTS 版本".into();
+    }
+    let versions: Vec<String> = arr
+        .iter()
+        .filter_map(|v| {
+            v.get("version")
+                .or_else(|| v.get("Version"))
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+        })
+        .take(5)
+        .collect();
+    if versions.is_empty() {
+        format!("{} 个 LTS 版本", arr.len())
+    } else {
+        format!("LTS {} 个：{}", arr.len(), versions.join(", "))
+    }
 }
 
 fn summarize_pipeline_list(raw: &str) -> String {
@@ -2223,15 +4621,81 @@ const DEMO_EDITORS_JSON: &str = r#"[
   {"version":"6000.0.28f1","modules":["android"]}
 ]"#;
 
+const DEMO_STATUS_JSON: &str = r#"{
+  "success": true,
+  "command": "status",
+  "data": {
+    "count": 1,
+    "instances": [
+      {
+        "project": "C:/Demo/UnityProject",
+        "version": "6000.2.10f1",
+        "state": "ready",
+        "port": 39000
+      }
+    ]
+  },
+  "errors": [],
+  "warnings": []
+}"#;
+
+const DEMO_PROJECTS_JSON: &str = r#"[
+  {"title":"Demo Game","path":"C:/Demo/UnityProject","version":"6000.2.10f1"},
+  {"title":"Sandbox","path":"C:/Demo/Sandbox","version":"6000.0.28f1"}
+]"#;
+
+const DEMO_RELEASES_JSON: &str = r#"[
+  {"version":"6000.0.28f1","stream":"lts"},
+  {"version":"2022.3.50f1","stream":"lts"},
+  {"version":"2021.3.45f1","stream":"lts"}
+]"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn summarize_demo_editors() {
-        let s = summarize_editors_json(DEMO_EDITORS_JSON);
-        assert!(s.contains("6000.2.10f1"));
-        assert!(s.contains("2"));
+    fn summarize_demo_status_and_projects() {
+        let status = summarize_status_json(DEMO_STATUS_JSON);
+        assert!(status.contains("1"));
+        assert!(status_has_instances(DEMO_STATUS_JSON) == Some(true));
+        let projects = summarize_projects_json(DEMO_PROJECTS_JSON);
+        assert!(projects.contains("Demo Game"));
+        assert!(projects.contains("Sandbox"));
+        let releases = summarize_releases_json(DEMO_RELEASES_JSON);
+        assert!(releases.contains("LTS"));
+        assert!(releases.contains("6000.0.28f1"));
+    }
+
+    #[test]
+    fn productivity_actions_map_to_cli() {
+        let project = PathBuf::from(r"C:\Unity\Project");
+        let playground = GameGenre::Playground.scene_path();
+        let (_, args, _) = UnityAction::SaveScene.to_cli_args("", &project, "Ground", playground);
+        assert!(args.iter().any(|a| a == "eval"));
+        let (_, args, _) = UnityAction::UndoLast.to_cli_args("", &project, "Ground", playground);
+        assert!(args.iter().any(|a| a == "eval"));
+        let (_, args, _) = UnityAction::ListScenes.to_cli_args("", &project, "Ground", playground);
+        assert!(args.iter().any(|a| a == "eval"));
+        let (_, args, _) = UnityAction::BuildWindowsPlayer.to_cli_args("", &project, "Floor", playground);
+        assert!(args.iter().any(|a| a == "eval"));
+        let (_, args, _) = UnityAction::ObserveCollider.to_cli_args("", &project, "Floor", playground);
+        let code = args.last().cloned().unwrap_or_default();
+        assert!(code.contains("Floor"));
+        let (_, args, _) = UnityAction::EditorStatus.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[0], "status");
+        let (_, args, _) = UnityAction::ListProjects.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[0], "projects");
+        let (_, args, _) = UnityAction::UpgradePipeline.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[..2], ["pipeline".to_string(), "upgrade".to_string()]);
+        let (_, args, _) = UnityAction::RegisterProject.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[1], "add");
+        let (_, args, _) = UnityAction::ListLtsReleases.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[0], "editors");
+        assert!(args.iter().any(|a| a == "--releases"));
+        let (_, args, _) = UnityAction::RunEditModeTests.to_cli_args("", &project, "Ground", playground);
+        assert_eq!(args[0], "test");
+        assert!(args.iter().any(|a| a == "EditMode"));
     }
 
     #[test]
@@ -2242,6 +4706,206 @@ mod tests {
         state.run_action(UnityAction::RunFullLoop);
         assert_eq!(state.guide_queue.len(), 3);
         assert!(state.guide_label.is_some());
+        assert_eq!(state.guide_kind, GuideKind::Loop);
+    }
+
+    #[test]
+    fn scaffold_mini_game_queues_creation_pipeline() {
+        let mut state = UnityState::default();
+        state.status = CliStatus::Missing;
+        state.demo_mode = true;
+        state.run_action(UnityAction::ScaffoldMiniGame);
+        assert_eq!(state.guide_total, 8);
+        assert_eq!(state.guide_queue.len(), 8);
+        assert_eq!(state.guide_kind, GuideKind::Scaffold);
+        assert_eq!(state.guide_genre, Some(GameGenre::Playground));
+        assert_eq!(
+            state.scaffold_save_path,
+            GameGenre::Playground.scene_path()
+        );
+        assert_eq!(state.guide_queue[0], UnityAction::NewScene);
+        assert_eq!(state.guide_queue[1], UnityAction::SetupSkyDay);
+        assert_eq!(state.guide_queue[2], UnityAction::CreateGround);
+        assert_eq!(state.guide_queue[3], UnityAction::CreateDirectionalLight);
+        assert_eq!(state.guide_queue[4], UnityAction::SetupMainCamera);
+        assert_eq!(state.guide_queue[5], UnityAction::CreatePlayerCapsule);
+        assert_eq!(state.guide_queue[6], UnityAction::SaveNamedScene);
+        assert_eq!(state.guide_queue[7], UnityAction::EnterPlayMode);
+        assert!(state.guide_label.as_deref().unwrap_or("").contains("创作"));
+    }
+
+    #[test]
+    fn scaffold_rpg_queues_layout_and_save_path() {
+        let mut state = UnityState::default();
+        state.status = CliStatus::Missing;
+        state.demo_mode = true;
+        state.run_action(UnityAction::ScaffoldRpg);
+        assert_eq!(state.guide_total, 8);
+        assert_eq!(state.guide_genre, Some(GameGenre::Rpg));
+        assert_eq!(state.scaffold_save_path, GameGenre::Rpg.scene_path());
+        assert_eq!(state.guide_queue[0], UnityAction::NewScene);
+        assert_eq!(state.guide_queue[1], UnityAction::SetupSkyDay);
+        assert_eq!(state.guide_queue[5], UnityAction::LayoutRpg);
+        assert_eq!(state.guide_queue[6], UnityAction::SaveNamedScene);
+        assert_eq!(state.guide_queue[7], UnityAction::EnterPlayMode);
+    }
+
+    #[test]
+    fn scaffold_mmo_queues_hub_layout() {
+        let mut state = UnityState::default();
+        state.status = CliStatus::Missing;
+        state.demo_mode = true;
+        state.run_action(UnityAction::ScaffoldMmo);
+        assert_eq!(state.guide_total, 7);
+        assert_eq!(state.guide_genre, Some(GameGenre::Mmo));
+        assert_eq!(state.scaffold_save_path, GameGenre::Mmo.scene_path());
+        assert_eq!(state.guide_queue[0], UnityAction::NewScene);
+        assert_eq!(state.guide_queue[1], UnityAction::SetupSkyDay);
+        assert_eq!(state.guide_queue[2], UnityAction::CreateDirectionalLight);
+        assert_eq!(state.guide_queue[3], UnityAction::SetupMainCamera);
+        assert_eq!(state.guide_queue[4], UnityAction::LayoutMmo);
+        assert_eq!(state.guide_queue[5], UnityAction::SaveNamedScene);
+        assert_eq!(state.guide_queue[6], UnityAction::EnterPlayMode);
+    }
+
+    #[test]
+    fn scaffold_roguelike_uses_night_sky() {
+        let mut state = UnityState::default();
+        state.status = CliStatus::Missing;
+        state.demo_mode = true;
+        state.run_action(UnityAction::ScaffoldRoguelike);
+        assert_eq!(state.guide_total, 7);
+        assert_eq!(state.guide_genre, Some(GameGenre::Roguelike));
+        assert_eq!(
+            state.scaffold_save_path,
+            GameGenre::Roguelike.scene_path()
+        );
+        assert_eq!(state.guide_queue[0], UnityAction::NewScene);
+        assert_eq!(state.guide_queue[1], UnityAction::SetupSkyNight);
+        assert_eq!(state.guide_queue[4], UnityAction::LayoutRoguelike);
+        assert_eq!(state.guide_queue[5], UnityAction::SaveNamedScene);
+        assert_eq!(state.guide_queue[6], UnityAction::EnterPlayMode);
+    }
+
+    #[test]
+    fn genre_layout_evals_contain_markers() {
+        assert!(EVAL_LAYOUT_RPG.contains("NPC_Quest"));
+        assert!(EVAL_LAYOUT_RPG.contains("NPC_Vendor"));
+        assert!(EVAL_LAYOUT_RPG.contains("Spawn_Town"));
+        assert!(EVAL_LAYOUT_MMO.contains("Spawn_A"));
+        assert!(EVAL_LAYOUT_MMO.contains("Portal_Zone"));
+        assert!(EVAL_LAYOUT_MMO.contains("ChatPanel"));
+        assert!(EVAL_LAYOUT_ROGUELIKE.contains("Door_North"));
+        assert!(EVAL_LAYOUT_ROGUELIKE.contains("Enemy_Spawn"));
+        assert!(EVAL_LAYOUT_ROGUELIKE.contains("RunManager"));
+        let playground = GameGenre::Playground.scene_path();
+        let (_, args, _) = UnityAction::SaveNamedScene.to_cli_args(
+            "",
+            &PathBuf::from(r"C:\Unity\P"),
+            "Ground",
+            GameGenre::Rpg.scene_path(),
+        );
+        let code = args.last().cloned().unwrap_or_default();
+        assert!(code.contains(GameGenre::Rpg.scene_path()));
+        let _ = playground;
+    }
+
+    #[test]
+    fn enable_npc_ai_queues_install_reload_attach() {
+        let mut state = UnityState::default();
+        state.status = CliStatus::Missing;
+        state.demo_mode = true;
+        state.run_action(UnityAction::EnableNpcAi);
+        assert_eq!(state.guide_kind, GuideKind::NpcAi);
+        assert_eq!(state.guide_total, 3);
+        assert_eq!(state.guide_queue[0], UnityAction::InstallNpcAi);
+        assert_eq!(state.guide_queue[1], UnityAction::RequestScriptReload);
+        assert_eq!(state.guide_queue[2], UnityAction::AttachNpcAi);
+        assert_eq!(
+            parse_unity_chat_command("给npc接入ai").unwrap().action,
+            UnityAction::EnableNpcAi
+        );
+        let code = crate::npc_ai::eval_install_npc_ai_scripts();
+        assert!(code.contains("BonyNpcBrain.cs"));
+        assert!(code.contains("BonyNpcDialogue.cs"));
+        assert!(crate::npc_ai::SCRIPT_NPC_BRAIN.contains("BonyNpcBrain"));
+        assert!(crate::npc_ai::SCRIPT_NPC_DIALOGUE.contains("api.x.ai"));
+        assert!(crate::npc_ai::EVAL_ATTACH_NPC_AI.contains("NPC_"));
+        assert!(crate::npc_ai::EVAL_ATTACH_NPC_AI.contains("BonyNpcDialogue"));
+    }
+
+    #[test]
+    fn routes_npc_and_marker_natural_language() {
+        assert_eq!(
+            parse_unity_chat_command("创建npc").unwrap().action,
+            UnityAction::CreateNpc
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建商人").unwrap().action,
+            UnityAction::CreateNpcVendor
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建任务npc").unwrap().action,
+            UnityAction::CreateNpcQuest
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建出生点").unwrap().action,
+            UnityAction::CreateSpawnPoint
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建传送门").unwrap().action,
+            UnityAction::CreatePortalZone
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建敌人点").unwrap().action,
+            UnityAction::CreateEnemySpawn
+        );
+        let (label, eval) = compile_unity_scene_command("创建3个npc").unwrap();
+        assert_eq!(label, "创建 3 个 NPC");
+        assert!(eval.contains("NPC_"));
+        assert!(eval.contains("i < 3") || eval.contains("n < 3"));
+        assert!(EVAL_CREATE_NPC.contains("NPC_"));
+        assert!(EVAL_CREATE_NPC_VENDOR.contains("NPC_Vendor"));
+        assert!(EVAL_CREATE_NPC_QUEST.contains("NPC_Quest"));
+        assert!(EVAL_CREATE_SPAWN_POINT.contains("Spawn_"));
+        assert!(EVAL_CREATE_PORTAL_ZONE.contains("Portal_Zone"));
+        assert!(EVAL_CREATE_ENEMY_SPAWN.contains("Enemy_Spawn_"));
+    }
+
+    #[test]
+    fn routes_scaffold_and_sky_natural_language() {
+        let cmd = parse_unity_chat_command("帮我搭一个基础场景").unwrap();
+        assert_eq!(cmd.action, UnityAction::ScaffoldMiniGame);
+        assert_eq!(
+            parse_unity_chat_command("做一个rpg").unwrap().action,
+            UnityAction::ScaffoldRpg
+        );
+        assert_eq!(
+            parse_unity_chat_command("搭mmo大厅").unwrap().action,
+            UnityAction::ScaffoldMmo
+        );
+        assert_eq!(
+            parse_unity_chat_command("创建肉鸽关卡").unwrap().action,
+            UnityAction::ScaffoldRoguelike
+        );
+        assert_eq!(
+            parse_unity_chat_command("roguelike雏形").unwrap().action,
+            UnityAction::ScaffoldRoguelike
+        );
+        let (label, eval) = compile_unity_scene_command("换个蓝天").unwrap();
+        assert!(label.contains("白天"));
+        assert!(eval.contains("RenderSettings"));
+        let (label, eval) = compile_unity_scene_command("来个晚霞天空").unwrap();
+        assert!(label.contains("晚霞"));
+        assert!(eval.contains("RenderSettings"));
+        let (_, args, _) = UnityAction::SetupSkyDay.to_cli_args(
+            "",
+            &PathBuf::from(r"C:\Unity\P"),
+            "Ground",
+            GameGenre::Playground.scene_path(),
+        );
+        assert!(args.iter().any(|a| a == "eval"));
+        assert!(args.iter().any(|a| a.contains("RenderSettings") || a == EVAL_SETUP_SKY_DAY));
     }
 
     #[test]
@@ -2383,7 +5047,12 @@ mod tests {
     #[test]
     fn eval_uses_named_code_argument_and_json_output() {
         let (_, args, _) =
-            UnityAction::Eval.to_cli_args("return 42;", &PathBuf::from(r"C:\Unity\Project"));
+            UnityAction::Eval.to_cli_args(
+                "return 42;",
+                &PathBuf::from(r"C:\Unity\Project"),
+                "Ground",
+                GameGenre::Playground.scene_path(),
+            );
         assert_eq!(&args[0..2], &["--format", "json"]);
         assert!(args.windows(2).any(|pair| pair == ["--code", "return 42;"]));
         assert!(args.iter().any(|arg| arg == "--"));

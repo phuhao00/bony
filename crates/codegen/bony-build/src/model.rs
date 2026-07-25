@@ -82,7 +82,7 @@ impl MainNav {
             Self::Chat => "",
             Self::Unity => "",
             Self::Scheduled => "定时任务与提醒将出现在这里。当前版本尚未接入调度能力。",
-            Self::Plugins => "浏览并启用扩展插件。插件市场即将推出。",
+            Self::Plugins => "启用或关闭本地扩展能力，例如 Unity 编辑器控制。",
             Self::Sites => "管理预览站点与部署入口。站点功能即将推出。",
             Self::PullRequests => "查看与处理拉取请求。Git 集成即将推出。",
         }
@@ -163,7 +163,7 @@ impl AppModel {
             current_model_id,
             current_model_name,
             available_models: catalog.models,
-            task_title: "新任务".into(),
+            task_title: "新对话".into(),
             display_name: default_display_name(),
             history_turns: load_recent_turns(80),
             cwd: Some(initial_cwd),
@@ -316,8 +316,8 @@ impl AppModel {
                 {
                     m.turn_usage = Some(record.usage_delta.clone());
                 }
-                if self.task_title == "新任务" && !record.user_text.is_empty() {
-                    self.task_title = truncate_chars(&record.user_text, 42);
+                if is_default_task_title(&self.task_title) && !record.user_text.is_empty() {
+                    self.task_title = truncate_chars(&record.user_text, 28);
                 }
                 self.history_turns.push(record);
                 if self.history_turns.len() > 200 {
@@ -340,8 +340,8 @@ impl AppModel {
 
     pub fn push_user(&mut self, text: String) {
         self.ensure_live_view();
-        if self.task_title == "新任务" {
-            self.task_title = truncate_chars(&text, 42);
+        if is_default_task_title(&self.task_title) {
+            self.task_title = truncate_chars(&text, 28);
         }
         self.usage.begin_turn(&text);
         self.timeline.push(TimelineItem::Message(ChatMessage {
@@ -388,7 +388,7 @@ impl AppModel {
         self.usage.pending_user_text.clear();
         self.usage.pending_started_at.clear();
         // Keep cumulative session token totals across "new task" clears.
-        self.task_title = "新任务".into();
+        self.task_title = "新对话".into();
         self.draft.clear();
         self.pending_permission = None;
         self.auto_scroll = true;
@@ -479,7 +479,7 @@ impl AppModel {
                     _ => None,
                 })
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "新任务".into());
+                .unwrap_or_else(|| "新对话".into());
         }
     }
 
@@ -620,6 +620,13 @@ mod stream_merge_tests {
         merge_stream_text(&mut text, &full);
         assert_eq!(text, full);
     }
+}
+
+fn is_default_task_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "" | "新任务" | "新对话" | "未命名对话" | "未命名任务"
+    )
 }
 
 fn default_display_name() -> String {

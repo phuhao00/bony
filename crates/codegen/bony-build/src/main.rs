@@ -11,6 +11,8 @@ mod fonts;
 mod git_workspace;
 mod markdown;
 mod model;
+mod npc_ai;
+mod process;
 mod task;
 mod unity;
 mod usage;

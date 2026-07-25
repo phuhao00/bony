@@ -1,7 +1,6 @@
 //! Read-mostly Git integration and isolated task worktrees.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -51,7 +50,7 @@ impl GitWorkspaceService {
     }
 
     pub fn diff(path: &Path, file: Option<&Path>, staged: bool) -> Result<String, String> {
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::process::command("git");
         cmd.current_dir(path)
             .arg("diff")
             .arg("--no-ext-diff")
@@ -78,7 +77,7 @@ impl GitWorkspaceService {
         let parent = worktree_parent(&root)?;
         let path = parent.join(short);
         let branch_ref = format!("refs/heads/{branch}");
-        let exists = Command::new("git")
+        let exists = crate::process::command("git")
             .current_dir(&root)
             .args(["show-ref", "--verify", "--quiet", &branch_ref])
             .status()
@@ -87,7 +86,7 @@ impl GitWorkspaceService {
         if exists {
             return Err(format!("任务分支已存在：{branch}"));
         }
-        let out = Command::new("git")
+        let out = crate::process::command("git")
             .current_dir(&root)
             .args(["-c", "core.longpaths=true", "worktree", "add", "-b"])
             .arg(&branch)
@@ -147,19 +146,19 @@ fn worktree_parent(root: &Path) -> Result<PathBuf, String> {
 }
 
 fn rollback_failed_worktree(root: &Path, managed_parent: &Path, path: &Path, branch: &str) {
-    let _ = Command::new("git")
+    let _ = crate::process::command("git")
         .current_dir(root)
         .args(["worktree", "remove", "--force"])
         .arg(path)
         .status();
-    let _ = Command::new("git")
+    let _ = crate::process::command("git")
         .current_dir(root)
         .args(["worktree", "prune"])
         .status();
     if path.parent() == Some(managed_parent) && path.is_dir() {
         let _ = std::fs::remove_dir_all(path);
     }
-    let _ = Command::new("git")
+    let _ = crate::process::command("git")
         .current_dir(root)
         .args(["branch", "-D", branch])
         .status();
@@ -171,7 +170,7 @@ struct GitOutput {
     stderr: String,
 }
 fn git<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<GitOutput, String> {
-    let out = Command::new("git")
+    let out = crate::process::command("git")
         .current_dir(cwd)
         .args(args)
         .output()
@@ -187,7 +186,7 @@ fn git_write<const N: usize>(
     args: [&str; N],
     file: Option<&Path>,
 ) -> Result<(), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::command("git");
     cmd.current_dir(cwd).args(args);
     if let Some(file) = file {
         cmd.arg("--").arg(file);
@@ -280,7 +279,7 @@ mod tests {
     fn creates_isolated_worktree_and_reads_changes() {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
-            Command::new("git")
+            crate::process::command("git")
                 .current_dir(dir.path())
                 .args(args)
                 .output()
@@ -311,7 +310,7 @@ mod tests {
         let changes = GitWorkspaceService::changes(&worktree.path).unwrap();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].kind, ChangeKind::Modified);
-        let _ = Command::new("git")
+        let _ = crate::process::command("git")
             .current_dir(dir.path())
             .args(["worktree", "remove", "--force"])
             .arg(&worktree.path)

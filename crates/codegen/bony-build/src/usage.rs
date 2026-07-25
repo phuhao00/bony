@@ -140,6 +140,60 @@ pub fn projects_path() -> PathBuf {
     usage_dir().join("projects.json")
 }
 
+pub fn plugins_path() -> PathBuf {
+    usage_dir().join("plugins.json")
+}
+
+/// How the main chat composer routes input for the current conversation.
+/// Session-only — not persisted (Codex-style: add via 「+」, dismiss via chip).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatInteraction {
+    #[default]
+    Agent,
+    Unity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginPrefs {
+    /// Installed / available in the 「+」 menu (plugins page toggle).
+    #[serde(default = "default_true")]
+    pub unity_enabled: bool,
+    /// Legacy field ignored; conversation plugins are session-only.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
+    chat_interaction: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PluginPrefs {
+    fn default() -> Self {
+        Self {
+            unity_enabled: true,
+            chat_interaction: None,
+        }
+    }
+}
+
+pub fn load_plugin_prefs() -> PluginPrefs {
+    let Ok(text) = std::fs::read_to_string(plugins_path()) else {
+        return PluginPrefs::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_plugin_prefs(prefs: &PluginPrefs) {
+    let dir = usage_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(prefs) {
+        let _ = std::fs::write(plugins_path(), text);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct ProjectsFile {
     recent: Vec<PathBuf>,
@@ -190,6 +244,21 @@ pub fn remember_project(projects: &mut Vec<PathBuf>, path: &Path) {
     if projects.len() > 12 {
         projects.truncate(12);
     }
+    save_recent_projects(projects);
+}
+
+/// Remove a project from the recent list and persist.
+pub fn forget_project(projects: &mut Vec<PathBuf>, path: &Path) {
+    let canonical = path.canonicalize().ok();
+    projects.retain(|p| {
+        if p == path {
+            return false;
+        }
+        match (&canonical, p.canonicalize()) {
+            (Some(a), Ok(b)) => a != &b,
+            _ => true,
+        }
+    });
     save_recent_projects(projects);
 }
 
