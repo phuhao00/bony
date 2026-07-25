@@ -3,7 +3,8 @@
 use std::sync::mpsc;
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, Frame, Margin, RichText, Shadow, Stroke, Vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, Frame, Margin, Pos2, RichText, Shadow, Stroke,
+    Vec2,
 };
 use tokio::sync::mpsc as tokio_mpsc;
 
@@ -142,6 +143,10 @@ pub struct BonyBuildApp {
     expanded_archived: std::collections::HashSet<String>,
     /// After soft cancel, next Stop click force-kills the agent.
     stop_armed_force: bool,
+    /// Manual title-bar window move (screen-absolute on Windows).
+    window_dragging: bool,
+    /// Cursor offset from window outer origin at drag start (points).
+    window_drag_grab: Option<Vec2>,
 }
 
 impl BonyBuildApp {
@@ -241,6 +246,8 @@ impl BonyBuildApp {
             collapsed_projects: std::collections::HashSet::new(),
             expanded_archived: std::collections::HashSet::new(),
             stop_armed_force: false,
+            window_dragging: false,
+            window_drag_grab: None,
         }
     }
 
@@ -759,6 +766,18 @@ impl eframe::App for BonyBuildApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_started(ctx);
         self.drain_events();
+        self.tick_window_drag(ctx);
+
+        // Lightweight frame while dragging: title chrome only. Full UI tessellation
+        // on every mouse-move is what makes OuterPosition drags feel "jumpy".
+        if self.window_dragging {
+            self.title_bar(ctx);
+            egui::CentralPanel::default()
+                .frame(Frame::NONE.fill(BG))
+                .show(ctx, |_| {});
+            return;
+        }
+
         self.unity.ensure_detecting();
         // Only auto-bind agent cwd when it actually is (or sits inside) a Unity project.
         // Task worktrees like ~/.bony-worktrees/.../task-* must NOT override a chosen Unity root.
@@ -1064,7 +1083,7 @@ impl BonyBuildApp {
                             });
                         }
 
-                        // —— Right cluster (same row): panel toggle + window controls ——
+                        // —— Right cluster + middle drag strip ——
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if win_chrome_btn(ui, WinChrome::Close) {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1099,25 +1118,93 @@ impl BonyBuildApp {
                                 self.model.show_right_panel = !right_on;
                             }
 
-                            // Drag the empty middle.
+                            // Explicitly own the remaining middle strip so hit-testing
+                            // cannot fall through / get stolen by the panel background.
                             let drag_rect = ui.available_rect_before_wrap();
-                            let drag_resp = ui.interact(
-                                drag_rect,
-                                ui.id().with("title_drag"),
-                                egui::Sense::click_and_drag(),
-                            );
-                            if drag_resp.drag_started_by(egui::PointerButton::Primary) {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-                            }
-                            if drag_resp.double_clicked() {
-                                let maximized =
-                                    ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-                            }
+                            let drag_resp =
+                                ui.allocate_rect(drag_rect, egui::Sense::click_and_drag());
+                            self.on_title_drag_response(ctx, &drag_resp);
                         });
                     },
                 );
             });
+    }
+
+    /// Start / cursor affordance for the title-bar drag strip.
+    fn on_title_drag_response(&mut self, ctx: &egui::Context, resp: &egui::Response) {
+        if resp.hovered() || self.window_dragging {
+            ctx.set_cursor_icon(if self.window_dragging {
+                CursorIcon::Grabbing
+            } else {
+                CursorIcon::Grab
+            });
+        }
+
+        if resp.double_clicked() {
+            let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            self.window_dragging = false;
+            self.window_drag_grab = None;
+            return;
+        }
+
+        if resp.is_pointer_button_down_on() && ctx.input(|i| i.pointer.primary_pressed()) {
+            if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+            }
+            let ppp = ctx.pixels_per_point().max(1e-3);
+            let outer_min = ctx
+                .input(|i| i.viewport().outer_rect.map(|r| r.min))
+                .unwrap_or(Pos2::ZERO);
+            // Prefer real screen cursor so grab offset stays stable across DPI.
+            let grab = screen_cursor_pos_points(ppp)
+                .map(|screen| screen - outer_min)
+                .or_else(|| ctx.input(|i| i.pointer.latest_pos().map(|p| p.to_vec2())))
+                .unwrap_or(Vec2::ZERO);
+            self.window_drag_grab = Some(grab);
+            self.window_dragging = true;
+            ctx.request_repaint();
+        }
+    }
+
+    /// Pin the window under the cursor via screen-absolute coordinates.
+    ///
+    /// Avoids `pointer.delta()` (fights the moving window) and avoids relying on
+    /// raw device-motion unit scaling.
+    fn tick_window_drag(&mut self, ctx: &egui::Context) {
+        if !self.window_dragging {
+            return;
+        }
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.window_dragging = false;
+            self.window_drag_grab = None;
+            return;
+        }
+
+        let Some(grab) = self.window_drag_grab else {
+            return;
+        };
+        let ppp = ctx.pixels_per_point().max(1e-3);
+
+        let new_outer = if let Some(screen) = screen_cursor_pos_points(ppp) {
+            screen - grab
+        } else {
+            // Non-Windows / fallback: integrate raw motion when available.
+            let outer_min = ctx
+                .input(|i| i.viewport().outer_rect.map(|r| r.min))
+                .unwrap_or(Pos2::ZERO);
+            let delta = ctx.input(|i| {
+                i.pointer
+                    .motion()
+                    .map(|m| m / ppp)
+                    .unwrap_or_else(|| i.pointer.delta())
+            });
+            outer_min + delta
+        };
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(new_outer));
+        ctx.set_cursor_icon(CursorIcon::Grabbing);
+        ctx.request_repaint();
     }
 
     fn sidebar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -3587,47 +3674,50 @@ impl BonyBuildApp {
         let unity_installed = self.plugin_prefs.unity_enabled;
         let unity_active = self.unity_chat_mode && unity_installed;
 
+        // Open upward from the + button so the menu does not bury the draft.
         let area = egui::Area::new(egui::Id::new("composer_plus_menu"))
             .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(anchor.left(), anchor.bottom() + 6.0))
+            .pivot(Align2::LEFT_BOTTOM)
+            .fixed_pos(egui::pos2(anchor.left(), anchor.top() - 8.0))
             .constrain(true)
             .show(ctx, |ui| {
                 Frame::new()
-                    .fill(Color32::from_rgb(28, 28, 32))
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .corner_radius(CornerRadius::same(14))
+                    .fill(Color32::from_rgb(24, 24, 28))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(62, 62, 72)))
+                    .corner_radius(CornerRadius::same(12))
                     .shadow(Shadow {
-                        offset: [0, 8],
-                        blur: 28,
+                        offset: [0, 10],
+                        blur: 32,
                         spread: 0,
-                        color: Color32::from_black_alpha(120),
+                        color: Color32::from_black_alpha(140),
                     })
-                    .inner_margin(Margin::symmetric(8, 8))
+                    .inner_margin(Margin::symmetric(6, 6))
                     .show(ui, |ui| {
-                        ui.set_min_width(260.0);
+                        ui.set_width(272.0);
+
                         if plus_menu_row(
                             ui,
                             SidebarGlyph::Doc,
                             "添加文件",
-                            "把文件放进当前对话上下文",
+                            "加入当前对话上下文",
+                            false,
                         ) {
                             add_files = true;
                             close = true;
                         }
+
                         ui.add_space(2.0);
-                        ui.label(
-                            RichText::new("插件")
-                                .size(11.0)
-                                .color(MUTED),
-                        );
-                        ui.add_space(4.0);
+                        plus_menu_divider(ui, "插件");
+                        ui.add_space(2.0);
+
                         if unity_installed {
-                            let (title, sub) = if unity_active {
-                                ("Unity 控制", "已用于此对话 · 再点可取消")
+                            let sub = if unity_active {
+                                "已启用 · 再点关闭"
                             } else {
-                                ("Unity 控制", "本地 CLI 驱动编辑器，不经 Agent")
+                                "本地 CLI，不经 Agent"
                             };
-                            if plus_menu_row(ui, SidebarGlyph::Unity, title, sub) {
+                            if plus_menu_row(ui, SidebarGlyph::Unity, "Unity 控制", sub, unity_active)
+                            {
                                 toggle_unity = true;
                                 close = true;
                             }
@@ -3635,16 +3725,28 @@ impl BonyBuildApp {
                             ui,
                             SidebarGlyph::Unity,
                             "Unity 控制",
-                            "未启用 · 前往插件页开启",
+                            "未启用 · 去插件页开启",
+                            false,
                         ) {
                             open_plugins = true;
                             close = true;
                         }
+
                         ui.add_space(4.0);
-                        ui.separator();
-                        ui.add_space(4.0);
-                        if plus_menu_row(ui, SidebarGlyph::Plug, "管理插件", "安装、启用或关闭扩展")
-                        {
+                        ui.painter().hline(
+                            ui.max_rect().x_range().shrink(6.0),
+                            ui.cursor().top() + 0.5,
+                            Stroke::new(1.0, Color32::from_rgb(48, 48, 56)),
+                        );
+                        ui.add_space(8.0);
+
+                        if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Plug,
+                            "管理插件",
+                            "安装、启用或关闭",
+                            false,
+                        ) {
                             open_plugins = true;
                             close = true;
                         }
@@ -5343,25 +5445,46 @@ fn paint_sidebar_glyph(ui: &mut egui::Ui, glyph: SidebarGlyph, color: Color32) {
 /// Larger, clearer 「+」 control (ChatGPT / Codex style).
 fn composer_plus_btn(ui: &mut egui::Ui, open: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(30.0), egui::Sense::click());
-    let resp = resp.on_hover_text("添加文件或插件");
-    let fill = if open || resp.hovered() {
+    let resp = resp.on_hover_text(if open {
+        "关闭菜单"
+    } else {
+        "添加文件或插件"
+    });
+    let fill = if open {
+        Color32::from_rgb(52, 54, 64)
+    } else if resp.hovered() {
         SELECTED
     } else {
         PANEL_2
     };
-    ui.painter()
-        .circle_filled(rect.center(), 13.0, fill);
+    ui.painter().circle_filled(rect.center(), 13.0, fill);
     ui.painter().circle_stroke(
         rect.center(),
         13.0,
         Stroke::new(1.0, if open { TEXT } else { BORDER }),
     );
-    paint_sidebar_glyph_at(
-        ui.painter(),
-        rect.center(),
-        SidebarGlyph::Plus,
-        if open || resp.hovered() { TEXT } else { MUTED },
-    );
+    // Rotate + into × when open for clearer affordance.
+    let color = if open || resp.hovered() { TEXT } else { MUTED };
+    let stroke = Stroke::new(1.4, color);
+    if open {
+        let o = 4.2;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.center().x - o, rect.center().y - o),
+                egui::pos2(rect.center().x + o, rect.center().y + o),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.center().x + o, rect.center().y - o),
+                egui::pos2(rect.center().x - o, rect.center().y + o),
+            ],
+            stroke,
+        );
+    } else {
+        paint_sidebar_glyph_at(ui.painter(), rect.center(), SidebarGlyph::Plus, color);
+    }
     resp
 }
 
@@ -5616,27 +5739,100 @@ fn task_row_meta(task: &TaskState) -> String {
     parts.join(" · ")
 }
 
-fn plus_menu_row(ui: &mut egui::Ui, glyph: SidebarGlyph, title: &str, subtitle: &str) -> bool {
+fn plus_menu_divider(ui: &mut egui::Ui, label: &str) {
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(label)
+                .size(11.0)
+                .color(Color32::from_rgb(120, 122, 132)),
+        );
+    });
+    ui.add_space(2.0);
+}
+
+fn plus_menu_row(
+    ui: &mut egui::Ui,
+    glyph: SidebarGlyph,
+    title: &str,
+    subtitle: &str,
+    active: bool,
+) -> bool {
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 48.0), egui::Sense::click());
-    if resp.hovered() {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 44.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    if hovered || active {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(9),
+            if hovered {
+                Color32::from_rgb(38, 40, 48)
+            } else {
+                Color32::from_rgb(32, 34, 42)
+            },
+        );
+    }
+    if active {
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 2.0, rect.top() + 10.0),
+            Vec2::new(2.5, rect.height() - 20.0),
+        );
         ui.painter()
-            .rect_filled(rect, CornerRadius::same(10), SELECTED);
+            .rect_filled(bar, CornerRadius::same(2), UNITY_ACCENT);
+    }
+    if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let mut content = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(10.0, 8.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+
+    let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
+    let icon_bg = egui::Rect::from_center_size(icon_c, Vec2::splat(28.0));
+    ui.painter().rect_filled(
+        icon_bg,
+        CornerRadius::same(8),
+        if active {
+            Color32::from_rgb(20, 48, 56)
+        } else {
+            Color32::from_rgb(34, 36, 44)
+        },
     );
-    content.horizontal(|ui| {
-        paint_sidebar_glyph(ui, glyph, MUTED);
-        ui.add_space(10.0);
-        ui.vertical(|ui| {
-            ui.label(RichText::new(title).size(13.5).color(TEXT));
-            ui.label(RichText::new(subtitle).size(11.5).color(MUTED));
-        });
-    });
+    paint_sidebar_glyph_at(
+        ui.painter(),
+        icon_c,
+        glyph,
+        if active { UNITY_ACCENT } else { MUTED },
+    );
+
+    let text_left = rect.left() + 44.0;
+    ui.painter().text(
+        egui::pos2(text_left, rect.top() + 10.0),
+        Align2::LEFT_TOP,
+        title,
+        egui::FontId::proportional(13.5),
+        TEXT,
+    );
+    ui.painter().text(
+        egui::pos2(text_left, rect.top() + 26.0),
+        Align2::LEFT_TOP,
+        subtitle,
+        egui::FontId::proportional(11.0),
+        MUTED,
+    );
+
+    if active {
+        // Small check on the right.
+        let c = egui::pos2(rect.right() - 16.0, rect.center().y);
+        let s = Stroke::new(1.6, UNITY_ACCENT);
+        ui.painter().line_segment(
+            [egui::pos2(c.x - 4.0, c.y), egui::pos2(c.x - 1.0, c.y + 3.5)],
+            s,
+        );
+        ui.painter().line_segment(
+            [egui::pos2(c.x - 1.0, c.y + 3.5), egui::pos2(c.x + 5.0, c.y - 4.0)],
+            s,
+        );
+    }
+
     resp.clicked()
 }
 
@@ -5716,6 +5912,41 @@ fn truncate_chars(s: &str, max: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Screen-space cursor in egui points (monitor coordinates).
+/// Used for title-bar dragging so the window stays glued to the cursor.
+#[cfg(target_os = "windows")]
+fn screen_cursor_pos_points(pixels_per_point: f32) -> Option<Pos2> {
+    windows_sys_get_cursor_pos().map(|(x, y)| {
+        Pos2::new(x as f32 / pixels_per_point, y as f32 / pixels_per_point)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_sys_get_cursor_pos() -> Option<(i32, i32)> {
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetCursorPos(lp_point: *mut Point) -> i32;
+    }
+    let mut pt = Point { x: 0, y: 0 };
+    // SAFETY: GetCursorPos writes a POINT; failure returns 0.
+    let ok = unsafe { GetCursorPos(&mut pt) };
+    if ok != 0 {
+        Some((pt.x, pt.y))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn screen_cursor_pos_points(_pixels_per_point: f32) -> Option<Pos2> {
+    None
 }
 
 fn short_status(status: &str) -> &str {
