@@ -500,23 +500,58 @@ impl BonyBuildApp {
         }
     }
 
-    fn create_task(&mut self, ctx: &egui::Context) {
-        // 「新建对话」= current / main project. Per-project「新建」uses create_task_in_project.
-        let project = self
-            .active_task_id
-            .as_ref()
-            .and_then(|id| self.tasks.iter().find(|t| &t.id == id))
-            .map(|t| canonical_project_root(&t.project_path))
-            .unwrap_or_else(|| {
-                canonical_project_root(
-                    &self
-                        .model
-                        .cwd
-                        .clone()
-                        .unwrap_or_else(|| self.config.cwd.clone()),
-                )
-            });
-        self.create_task_for(ctx, project);
+    fn create_task(&mut self, _ctx: &egui::Context) {
+        // Top-level「新建对话」: blank chat with nothing selected in the sidebar.
+        // Do not bind to / highlight a project. Per-project「新建」still uses
+        // create_task_in_project. A real task is created lazily on first send.
+        self.pending_worktree_rx = None;
+        self.active_task_id = None;
+        self.attachments.clear();
+        self.changes.clear();
+        self.selected_diff = None;
+        self.clear_session_plugins();
+        self.sidebar_groups_cache = None;
+        self.model.new_task();
+        self.model.focus_composer = true;
+        if self.model.connected && !self.model.needs_login {
+            self.model.status = "Ready".into();
+        }
+    }
+
+    /// When the user sends from an unscoped new chat, create a task under the
+    /// current working directory so the turn can be titled and listed later.
+    fn ensure_task_for_send(&mut self) {
+        if self.active_task_id.is_some() {
+            return;
+        }
+        let project = canonical_project_root(
+            &self
+                .model
+                .cwd
+                .clone()
+                .unwrap_or_else(|| self.config.cwd.clone()),
+        );
+        let project = GitWorkspaceService::primary_repo_root(&project)
+            .ok()
+            .flatten()
+            .unwrap_or(project);
+        let mut task = TaskState::draft(project.clone(), self.model.current_model_id.clone());
+        task.worktree_path = self
+            .model
+            .cwd
+            .clone()
+            .unwrap_or_else(|| project.clone());
+        task.isolated = false;
+        if let Some(repo) = &self.task_repo {
+            if let Err(e) = repo.save(&task) {
+                self.task_error = Some(e);
+                return;
+            }
+        }
+        self.active_task_id = Some(task.id.clone());
+        self.model.task_title = task.title.clone();
+        self.tasks.insert(0, task);
+        self.sidebar_groups_cache = None;
     }
 
     /// Create a new task under an explicit project root (used by per-project 「新建」).
@@ -741,6 +776,7 @@ impl BonyBuildApp {
         } else {
             text.clone()
         };
+        self.ensure_task_for_send();
         self.maybe_autotitle_active_task(&title_src);
         if let Some(id) = self.active_task_id.clone()
             && let Some(task) = self.tasks.iter_mut().find(|t| t.id == id)
@@ -5661,6 +5697,7 @@ impl BonyBuildApp {
         self.task_list_filter.hash(&mut h);
         self.model.cwd.hash(&mut h);
         self.model.recent_projects.hash(&mut h);
+        self.active_task_id.hash(&mut h);
         self.tasks.len().hash(&mut h);
         for t in &self.tasks {
             t.id.hash(&mut h);
@@ -5709,11 +5746,14 @@ impl BonyBuildApp {
             });
         }
 
-        let current_key = self
-            .model
-            .cwd
-            .as_ref()
-            .map(|p| project_group_key(&canonical_project_root(p)));
+        // Highlight a project only when a conversation in it is active.
+        // Unscoped「新建对话」leaves active_task_id = None → nothing selected.
+        let current_key = self.active_task_id.as_ref().and_then(|id| {
+            self.tasks
+                .iter()
+                .find(|t| &t.id == id)
+                .map(|t| project_group_key(&canonical_project_root(&t.project_path)))
+        });
 
         for (idx, task) in self.tasks.iter().enumerate() {
             if !title_filter.is_empty()
