@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -11,14 +12,17 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use xai_acp_lib::LineBufferedRead;
 
-use crate::events::{AgentEvent, ModeChoice, ModelChoice, PermissionOptionView, UiCommand};
+use crate::events::{
+    AgentEvent, ModeChoice, ModelChoice, PermissionOptionView, PlanEntryView, UiCommand,
+};
 use crate::usage::parse_usage_from_meta;
 
 #[derive(Clone)]
 pub struct BridgeConfig {
     pub grok_bin: PathBuf,
     pub cwd: PathBuf,
-    pub always_approve: bool,
+    /// Live switch — UI can flip Full Control without reconnecting.
+    pub always_approve: Arc<AtomicBool>,
     pub resume_session_id: Option<String>,
 }
 
@@ -29,7 +33,7 @@ struct PendingPermission {
 struct DesktopAcpClient {
     event_tx: std::sync::mpsc::Sender<AgentEvent>,
     pending: Arc<Mutex<Option<PendingPermission>>>,
-    always_approve: bool,
+    always_approve: Arc<AtomicBool>,
     egui_ctx: egui::Context,
     terminals: Arc<Mutex<HashMap<String, LocalTerminal>>>,
     seen_event_ids: Arc<Mutex<HashSet<String>>>,
@@ -55,7 +59,7 @@ impl acp::Client for DesktopAcpClient {
         &self,
         args: acp::RequestPermissionRequest,
     ) -> acp::Result<acp::RequestPermissionResponse> {
-        if self.always_approve {
+        if self.always_approve.load(Ordering::Relaxed) {
             let outcome = pick_allow(&args.options)
                 .map(|o| {
                     acp::RequestPermissionOutcome::Selected(acp::SelectedPermissionOutcome::new(
@@ -268,10 +272,41 @@ impl acp::Client for DesktopAcpClient {
                     self.emit(AgentEvent::AssistantDelta(text.text));
                 }
             }
+            acp::SessionUpdate::AgentThoughtChunk(acp::ContentChunk { content, .. }) => {
+                if let acp::ContentBlock::Text(text) = content
+                    && !text.text.is_empty()
+                {
+                    self.emit(AgentEvent::ThoughtDelta(text.text));
+                }
+            }
+            acp::SessionUpdate::Plan(plan) => {
+                let entries = plan
+                    .entries
+                    .into_iter()
+                    .map(|e| PlanEntryView {
+                        content: e.content,
+                        status: format!("{:?}", e.status),
+                    })
+                    .collect();
+                self.emit(AgentEvent::PlanUpdate { entries });
+            }
             acp::SessionUpdate::ToolCall(tc) => {
                 let id = tc.tool_call_id.0.to_string();
                 let title = tc.title.clone();
-                self.emit(AgentEvent::ToolStart { id, title });
+                let kind = format!("{:?}", tc.kind);
+                let detail = format_tool_detail(
+                    None,
+                    tc.raw_input.as_ref(),
+                    None,
+                    &tc.locations,
+                    &tc.content,
+                );
+                self.emit(AgentEvent::ToolStart {
+                    id,
+                    title,
+                    kind,
+                    detail,
+                });
             }
             acp::SessionUpdate::ToolCallUpdate(update) => {
                 let id = update.tool_call_id.0.to_string();
@@ -280,27 +315,26 @@ impl acp::Client for DesktopAcpClient {
                     .status
                     .map(|s| format!("{s:?}"))
                     .unwrap_or_default();
-                let mut detail = update.fields.title.clone().unwrap_or_default();
-                if let Some(blocks) = update.fields.content.as_ref() {
-                    let texts: Vec<String> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            acp::ToolCallContent::Content(c) => match &c.content {
-                                acp::ContentBlock::Text(t) => Some(t.text.clone()),
-                                _ => None,
-                            },
-                            acp::ToolCallContent::Diff(d) => Some(d.path.display().to_string()),
-                            _ => None,
-                        })
-                        .collect();
-                    if !texts.is_empty() {
-                        if !detail.is_empty() {
-                            detail.push('\n');
-                        }
-                        detail.push_str(&texts.join("\n"));
-                    }
-                }
-                self.emit(AgentEvent::ToolUpdate { id, status, detail });
+                let kind = update
+                    .fields
+                    .kind
+                    .map(|k| format!("{k:?}"))
+                    .unwrap_or_default();
+                let locations = update.fields.locations.as_deref().unwrap_or(&[]);
+                let content = update.fields.content.as_deref().unwrap_or(&[]);
+                let detail = format_tool_detail(
+                    update.fields.title.as_deref(),
+                    update.fields.raw_input.as_ref(),
+                    update.fields.raw_output.as_ref(),
+                    locations,
+                    content,
+                );
+                self.emit(AgentEvent::ToolUpdate {
+                    id,
+                    status,
+                    kind,
+                    detail,
+                });
             }
             acp::SessionUpdate::UsageUpdate(u) => {
                 self.emit(AgentEvent::ContextUsage {
@@ -312,6 +346,68 @@ impl acp::Client for DesktopAcpClient {
         }
         Ok(())
     }
+}
+
+const TOOL_DETAIL_MAX: usize = 4_000;
+
+fn format_tool_detail(
+    title: Option<&str>,
+    raw_input: Option<&serde_json::Value>,
+    raw_output: Option<&serde_json::Value>,
+    locations: &[acp::ToolCallLocation],
+    content: &[acp::ToolCallContent],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(t) = title.filter(|s| !s.is_empty()) {
+        parts.push(t.to_string());
+    }
+    if !locations.is_empty() {
+        let paths: Vec<String> = locations
+            .iter()
+            .map(|l| l.path.display().to_string())
+            .collect();
+        parts.push(format!("paths: {}", paths.join(", ")));
+    }
+    if let Some(input) = raw_input {
+        parts.push(format!("input:\n{}", pretty_json_truncated(input)));
+    }
+    if !content.is_empty() {
+        let texts: Vec<String> = content
+            .iter()
+            .filter_map(|b| match b {
+                acp::ToolCallContent::Content(c) => match &c.content {
+                    acp::ContentBlock::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                },
+                acp::ToolCallContent::Diff(d) => {
+                    Some(format!("diff: {}", d.path.display()))
+                }
+                _ => None,
+            })
+            .collect();
+        if !texts.is_empty() {
+            parts.push(texts.join("\n"));
+        }
+    }
+    if let Some(output) = raw_output {
+        parts.push(format!("output:\n{}", pretty_json_truncated(output)));
+    }
+    let joined = parts.join("\n\n");
+    truncate_chars(&joined, TOOL_DETAIL_MAX)
+}
+
+fn pretty_json_truncated(value: &serde_json::Value) -> String {
+    let raw = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    truncate_chars(&raw, TOOL_DETAIL_MAX / 2)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 fn update_exit(terminal: &mut LocalTerminal) -> acp::Result<()> {
@@ -489,7 +585,7 @@ async fn run_session(
     let client = DesktopAcpClient {
         event_tx: event_tx.clone(),
         pending: pending.clone(),
-        always_approve: config.always_approve,
+        always_approve: config.always_approve.clone(),
         egui_ctx: egui_ctx.clone(),
         terminals: Arc::new(Mutex::new(HashMap::new())),
         seen_event_ids: Arc::new(Mutex::new(HashSet::new())),
