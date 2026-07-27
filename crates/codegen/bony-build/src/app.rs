@@ -11,7 +11,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use crate::agent_bridge::{self, BridgeConfig};
 use crate::charts;
 use crate::events::{AgentEvent, AttachmentPayload, UiCommand};
-use crate::git_workspace::{ChangeKind, FileChange, GitWorkspaceService};
+use crate::git_workspace::{ChangeKind, CommitDetail, FileChange, GitWorkspaceService};
 use crate::markdown;
 use crate::model::{AppModel, MainNav, Role, TimelineItem, UsageTab};
 use crate::task::{
@@ -53,7 +53,17 @@ const OM_ACCENT: Color32 = Color32::from_rgb(232, 120, 72);
 const BEVY_ACCENT: Color32 = Color32::from_rgb(230, 126, 34);
 const MAX_CHAT_W: f32 = 860.0;
 const SIDEBAR_W: f32 = 248.0;
-const RIGHT_PANEL_W: f32 = 280.0;
+const RIGHT_PANEL_W: f32 = 320.0;
+const RIGHT_PANEL_MIN_W: f32 = 280.0;
+const RIGHT_PANEL_MAX_W: f32 = 900.0;
+const DIFF_ADD: Color32 = Color32::from_rgb(120, 200, 140);
+const DIFF_DEL: Color32 = Color32::from_rgb(230, 120, 120);
+const DIFF_HUNK: Color32 = Color32::from_rgb(120, 160, 230);
+const CHANGE_MOD: Color32 = Color32::from_rgb(220, 180, 90);
+const DIFF_ADD_BG: Color32 = Color32::from_rgba_premultiplied(28, 52, 34, 255);
+const DIFF_DEL_BG: Color32 = Color32::from_rgba_premultiplied(58, 28, 28, 255);
+const DIFF_HUNK_BG: Color32 = Color32::from_rgba_premultiplied(28, 36, 56, 255);
+const FILE_SELECTED: Color32 = Color32::from_rgb(58, 52, 36);
 const TITLE_BAR_H: f32 = 36.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -113,7 +123,35 @@ pub struct BonyBuildApp {
     changes: Vec<FileChange>,
     selected_diff: Option<(std::path::PathBuf, String)>,
     task_error: Option<String>,
-    pending_git_action: Option<(bool, std::path::PathBuf)>,
+    /// Confirm restore of a working-copy file.
+    pending_restore: Option<std::path::PathBuf>,
+    /// Recent `git log --oneline` rows (hash, subject).
+    vcs_log: Vec<(String, String)>,
+    /// Cached branch name for the VCS panel.
+    vcs_branch: String,
+    /// Commit message draft for the describe/commit modal.
+    vcs_commit_message: String,
+    show_vcs_commit_modal: bool,
+    /// Avoid re-probing git every frame when the working copy is clean.
+    vcs_loaded: bool,
+    /// Whether the VCS scan path is inside a Git work tree (soft; no modal on false).
+    vcs_has_repo: bool,
+    /// Path used for status/diff/commit (primary project checkout, not agent worktree).
+    vcs_root: std::path::PathBuf,
+    /// Throttle automatic VCS refresh while the details panel is open.
+    vcs_last_refresh: Option<std::time::Instant>,
+    /// Agent/session branch (worktree), may differ from `vcs_branch` on the project checkout.
+    vcs_session_branch: String,
+    /// Selected commit detail from history (hash → show).
+    selected_commit: Option<CommitDetail>,
+    /// File selected inside the open commit (Fork Changes tab).
+    selected_commit_file: Option<std::path::PathBuf>,
+    /// Cached per-file patch for `selected_commit_file`.
+    selected_commit_diff: Option<String>,
+    /// User-resized right panel width.
+    right_panel_w: f32,
+    /// Next frame: write egui PanelState so width change applies (default_width alone won't).
+    force_right_panel_w: bool,
     task_list_filter: TaskListFilter,
     rename_task: Option<(String, String)>,
     delete_task: Option<String>,
@@ -283,7 +321,21 @@ impl BonyBuildApp {
             changes: Vec::new(),
             selected_diff: None,
             task_error: init_error,
-            pending_git_action: None,
+            pending_restore: None,
+            vcs_log: Vec::new(),
+            vcs_branch: String::new(),
+            vcs_commit_message: String::new(),
+            show_vcs_commit_modal: false,
+            vcs_loaded: false,
+            vcs_has_repo: false,
+            vcs_root: std::path::PathBuf::new(),
+            vcs_last_refresh: None,
+            vcs_session_branch: String::new(),
+            selected_commit: None,
+            selected_commit_file: None,
+            selected_commit_diff: None,
+            right_panel_w: RIGHT_PANEL_W,
+            force_right_panel_w: false,
             task_list_filter: TaskListFilter::All,
             rename_task: None,
             delete_task: None,
@@ -383,6 +435,7 @@ impl BonyBuildApp {
         self.cmd_tx = None;
         self.config.cwd = path.clone();
         self.config.resume_session_id = None;
+        self.invalidate_vcs();
         self.awaiting_project_choice = false;
         if keep_new_chat {
             self.bind_active_new_chat_to_project(&root, &path);
@@ -546,8 +599,10 @@ impl BonyBuildApp {
             AgentEvent::PermissionRequest { .. } => task.status = TaskStatus::WaitingApproval,
             AgentEvent::TurnDone { .. } => {
                 task.status = TaskStatus::Completed;
-                self.changes =
-                    GitWorkspaceService::changes(&task.worktree_path).unwrap_or_default();
+                let wt = task.worktree_path.clone();
+                self.changes = GitWorkspaceService::changes(&wt).unwrap_or_default();
+                self.vcs_branch = GitWorkspaceService::current_branch(&wt).unwrap_or_default();
+                self.vcs_log = GitWorkspaceService::log_oneline(&wt, 20).unwrap_or_default();
             }
             AgentEvent::Error(_) => task.status = TaskStatus::Failed,
             _ => return,
@@ -584,6 +639,7 @@ impl BonyBuildApp {
         task.worktree_path = provisional;
         task.isolated = false;
         task.from_new_chat = true;
+        task.project_chosen = false;
         if let Some(repo) = &self.task_repo {
             if let Err(e) = repo.save(&task) {
                 self.task_error = Some(e);
@@ -657,6 +713,7 @@ impl BonyBuildApp {
         };
         task.project_path = root.to_path_buf();
         task.worktree_path = worktree.to_path_buf();
+        task.project_chosen = true;
         task.updated_at = unix_time();
         if let Some(repo) = &self.task_repo {
             let _ = repo.save(task);
@@ -701,6 +758,7 @@ impl BonyBuildApp {
         task.worktree_path = project.clone();
         task.isolated = false;
         task.from_new_chat = false;
+        task.project_chosen = true;
         if let Some(repo) = &self.task_repo {
             if let Err(e) = repo.save(&task) {
                 self.task_error = Some(e);
@@ -734,13 +792,15 @@ impl BonyBuildApp {
 
     /// Apply chat chrome for a task without (re)starting the agent bridge.
     fn activate_task_ui_only(&mut self, task: TaskState) {
-        self.awaiting_project_choice = false;
+        self.awaiting_project_choice = task.from_new_chat && !task.project_chosen;
         self.active_task_id = Some(task.id.clone());
-        remember_project(
-            &mut self.model.recent_projects,
-            &canonical_project_root(&task.project_path),
-        );
-        self.model.cwd = Some(task.worktree_path.clone());
+        if task.project_chosen || !task.from_new_chat {
+            remember_project(
+                &mut self.model.recent_projects,
+                &canonical_project_root(&task.project_path),
+            );
+            self.model.cwd = Some(task.worktree_path.clone());
+        }
         self.model.connected = false;
         self.model.session_id = None;
         self.model.needs_login = false;
@@ -778,15 +838,17 @@ impl BonyBuildApp {
             && task.session_id.is_none()
             && self.config.resume_session_id.is_none()
         {
-            self.awaiting_project_choice = false;
+            self.awaiting_project_choice = task.from_new_chat && !task.project_chosen;
             self.active_task_id = Some(task.id.clone());
-            remember_project(
-                &mut self.model.recent_projects,
-                &canonical_project_root(&task.project_path),
-            );
+            if task.project_chosen || !task.from_new_chat {
+                remember_project(
+                    &mut self.model.recent_projects,
+                    &canonical_project_root(&task.project_path),
+                );
+                self.model.cwd = Some(task.worktree_path.clone());
+            }
             self.model.new_task();
             self.model.task_title = task.title;
-            self.model.cwd = Some(task.worktree_path);
             self.model.go_chat();
             if self.model.connected && !self.model.needs_login {
                 self.model.status = "Ready".into();
@@ -801,6 +863,7 @@ impl BonyBuildApp {
         self.cmd_tx = None;
         self.config.cwd = task.worktree_path.clone();
         self.config.resume_session_id = task.session_id.clone();
+        self.invalidate_vcs();
         self.activate_task_ui_only(task);
         let tx =
             agent_bridge::spawn_bridge(self.config.clone(), ctx.clone(), self.event_tx.clone());
@@ -1199,9 +1262,32 @@ impl eframe::App for BonyBuildApp {
         }
 
         if self.model.show_right_panel {
+            // Wider grab strip so left-edge drag feels easy to catch.
+            ctx.style_mut(|s| {
+                s.interaction.resize_grab_radius_side = 10.0;
+            });
+            if self.force_right_panel_w {
+                self.force_right_panel_w = false;
+                let id = egui::Id::new("codex_right");
+                let screen = ctx.screen_rect();
+                let w = self
+                    .right_panel_w
+                    .clamp(RIGHT_PANEL_MIN_W, RIGHT_PANEL_MAX_W)
+                    .min(screen.width() * 0.72);
+                let rect = egui::Rect::from_min_max(
+                    Pos2::new(screen.max.x - w, screen.min.y),
+                    screen.max,
+                );
+                ctx.data_mut(|d| {
+                    d.insert_persisted(id, egui::containers::panel::PanelState { rect });
+                });
+            }
+            let mut panel_w = self.right_panel_w;
             egui::SidePanel::right("codex_right")
-                .exact_width(RIGHT_PANEL_W)
-                .resizable(false)
+                .resizable(true)
+                .default_width(panel_w)
+                .width_range(RIGHT_PANEL_MIN_W..=RIGHT_PANEL_MAX_W)
+                .show_separator_line(true)
                 .frame(
                     Frame::NONE
                         .fill(SIDEBAR)
@@ -1209,8 +1295,20 @@ impl eframe::App for BonyBuildApp {
                         .stroke(Stroke::new(1.0, BORDER)),
                 )
                 .show(ctx, |ui| {
-                    self.right_panel(ui);
+                    panel_w = ui.max_rect().width().clamp(RIGHT_PANEL_MIN_W, RIGHT_PANEL_MAX_W);
+                    // Content must expand with panel width so egui resize stays responsive.
+                    ui.set_min_width(panel_w - 28.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("right_panel_scroll")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            self.right_panel(ui);
+                        });
                 });
+            if !self.force_right_panel_w {
+                self.right_panel_w = panel_w;
+            }
         }
 
         let on_chat = self.model.main_nav == MainNav::Chat;
@@ -1370,6 +1468,7 @@ impl eframe::App for BonyBuildApp {
         self.delete_task_modal(ctx);
         self.task_error_modal(ctx);
         self.git_confirmation_modal(ctx);
+        self.vcs_commit_modal(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -1544,10 +1643,31 @@ impl BonyBuildApp {
     /// (chat / plugins / history) regardless of sidebar state. Click to
     /// switch, hover to see the full path.
     fn project_chip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let cwd = self.model.cwd.clone().unwrap_or_else(|| self.config.cwd.clone());
-        let root = canonical_project_root(&cwd);
-        let name = AppModel::project_label(&root);
-        let full_path = root.display().to_string();
+        let active = self
+            .active_task_id
+            .as_ref()
+            .and_then(|id| self.tasks.iter().find(|t| &t.id == id));
+        let unbound_new_chat = self.awaiting_project_choice
+            || active.is_some_and(|t| t.from_new_chat && !t.project_chosen);
+
+        let (name, full_path, tip) = if unbound_new_chat {
+            (
+                self.t("chip.pick_project").to_owned(),
+                String::new(),
+                self.t("chip.pick_project_tip").to_owned(),
+            )
+        } else {
+            let cwd = active
+                .map(|t| t.project_path.clone())
+                .or_else(|| self.model.cwd.clone())
+                .unwrap_or_else(|| self.config.cwd.clone());
+            let root = canonical_project_root(&cwd);
+            let name = AppModel::project_label(&root);
+            let full_path = root.display().to_string();
+            let tip = format!("{full_path}\n{}", self.t("chip.switch_project_tip"));
+            (name, full_path, tip)
+        };
+
         let resp = Frame::new()
             .fill(PANEL_2)
             .corner_radius(CornerRadius::same(8))
@@ -1557,12 +1677,21 @@ impl BonyBuildApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     paint_sidebar_glyph(ui, SidebarGlyph::Folder, MUTED);
-                    ui.label(RichText::new(name).size(12.5).color(TEXT).strong());
+                    ui.label(
+                        RichText::new(&name)
+                            .size(12.5)
+                            .color(if unbound_new_chat { MUTED } else { TEXT })
+                            .strong(),
+                    );
                 });
             })
             .response
             .interact(egui::Sense::click())
-            .on_hover_text(format!("{full_path}\n点击切换项目"));
+            .on_hover_text(if full_path.is_empty() {
+                tip
+            } else {
+                tip
+            });
         if resp.hovered() {
             ctx.set_cursor_icon(CursorIcon::PointingHand);
         }
@@ -1820,39 +1949,47 @@ impl BonyBuildApp {
                         } else {
                             Color32::TRANSPARENT
                         };
-                        let header = Frame::new()
-                            .fill(header_fill)
-                            .corner_radius(CornerRadius::same(8))
-                            .stroke(Stroke::new(
-                                1.0,
-                                if hovered { BORDER } else { Color32::TRANSPARENT },
-                            ))
-                            .inner_margin(Margin::symmetric(6, 5))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    if icon_btn(
-                                        ui,
-                                        if expanded {
-                                            SidebarGlyph::ChevronDown
-                                        } else {
-                                            SidebarGlyph::ChevronRight
-                                        },
-                                        if expanded { "折叠项目" } else { "展开项目" },
-                                        false,
-                                    )
-                                    .clicked()
-                                    {
-                                        toggle = true;
-                                    }
-                                    paint_sidebar_glyph(
-                                        ui,
-                                        SidebarGlyph::Folder,
-                                        if is_current || hovered { TEXT } else { MUTED },
-                                    );
-                                    ui.add_space(6.0);
-                                    let name_resp = ui
-                                        .add(
+                        // Chevron must sit *outside* the row's `.interact()` layer.
+                        // Otherwise the full-row click sense overlaps the chevron and
+                        // either swallows the click or treats it as switch-project —
+                        // so the expand/collapse control appears broken.
+                        let mut row_hovered = false;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let chevron_resp = icon_btn(
+                                ui,
+                                if expanded {
+                                    SidebarGlyph::ChevronDown
+                                } else {
+                                    SidebarGlyph::ChevronRight
+                                },
+                                if expanded { "折叠项目" } else { "展开项目" },
+                                false,
+                            );
+                            if chevron_resp.clicked() {
+                                toggle = true;
+                            }
+                            row_hovered |= chevron_resp.hovered();
+
+                            let mut new_resp_rect: Option<egui::Rect> = None;
+                            let header = Frame::new()
+                                .fill(header_fill)
+                                .corner_radius(CornerRadius::same(8))
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if hovered { BORDER } else { Color32::TRANSPARENT },
+                                ))
+                                .inner_margin(Margin::symmetric(6, 5))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        paint_sidebar_glyph(
+                                            ui,
+                                            SidebarGlyph::Folder,
+                                            if is_current || hovered { TEXT } else { MUTED },
+                                        );
+                                        ui.add_space(6.0);
+                                        ui.add(
                                             egui::Label::new(
                                                 RichText::new(&name)
                                                     .size(13.0)
@@ -1863,93 +2000,100 @@ impl BonyBuildApp {
                                                     })
                                                     .strong(),
                                             )
-                                            .sense(egui::Sense::click())
                                             .truncate(),
                                         )
                                         .on_hover_text(format!(
                                             "{}\n点击切换到此项目",
                                             project_path.display()
                                         ));
-                                    if name_resp.clicked() {
-                                        if !is_current {
-                                            switch_to = true;
-                                        } else {
-                                            toggle = true;
-                                        }
-                                    }
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let new_resp = ui
-                                                .add(
-                                                    egui::Button::new(
-                                                        RichText::new("新建")
-                                                            .size(11.5)
-                                                            .color(if is_current || hovered {
-                                                                TEXT
-                                                            } else {
-                                                                MUTED
-                                                            }),
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let new_resp = ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            RichText::new("新建")
+                                                                .size(11.5)
+                                                                .color(
+                                                                    if is_current || hovered {
+                                                                        TEXT
+                                                                    } else {
+                                                                        MUTED
+                                                                    },
+                                                                ),
+                                                        )
+                                                        .fill(if hovered {
+                                                            PANEL_2
+                                                        } else {
+                                                            Color32::TRANSPARENT
+                                                        })
+                                                        .stroke(Stroke::new(1.0, BORDER))
+                                                        .corner_radius(CornerRadius::same(6))
+                                                        .min_size(Vec2::new(40.0, 22.0)),
                                                     )
-                                                    .fill(if hovered {
-                                                        PANEL_2
-                                                    } else {
-                                                        Color32::TRANSPARENT
-                                                    })
-                                                    .stroke(Stroke::new(1.0, BORDER))
-                                                    .corner_radius(CornerRadius::same(6))
-                                                    .min_size(Vec2::new(40.0, 22.0)),
-                                                )
-                                                .on_hover_text("在此项目新建任务");
-                                            if new_resp.clicked() {
-                                                new_task_here = true;
-                                            }
-                                            if count > 0 {
-                                                ui.label(
-                                                    RichText::new(count.to_string())
-                                                        .size(11.0)
-                                                        .color(MUTED),
-                                                );
-                                            }
-                                        },
-                                    );
+                                                    .on_hover_text("在此项目新建任务");
+                                                new_resp_rect = Some(new_resp.rect);
+                                                if new_resp.clicked() {
+                                                    new_task_here = true;
+                                                }
+                                                if count > 0 {
+                                                    ui.label(
+                                                        RichText::new(count.to_string())
+                                                            .size(11.0)
+                                                            .color(MUTED),
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    });
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            row_hovered |= header.hovered();
+                            if header.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            // Row interact can steal the「新建」click — recover via pointer.
+                            if header.clicked() && !toggle && !new_task_here {
+                                let on_new = new_resp_rect.is_some_and(|r| {
+                                    ui.input(|i| {
+                                        i.pointer
+                                            .interact_pos()
+                                            .is_some_and(|p| r.contains(p))
+                                    })
                                 });
-                            })
-                            .response
-                            .interact(egui::Sense::click());
+                                if on_new {
+                                    new_task_here = true;
+                                } else if !is_current {
+                                    switch_to = true;
+                                } else {
+                                    toggle = true;
+                                }
+                            }
+                            header.context_menu(|ui| {
+                                if ui.button("在此项目新建任务").clicked() {
+                                    new_task_here = true;
+                                    ui.close_menu();
+                                }
+                                if !is_current
+                                    && ui.button(self.t("sidebar.switch_project")).clicked()
+                                {
+                                    switch_to = true;
+                                    ui.close_menu();
+                                }
+                                if ui.button(self.t("sidebar.remove_from_list")).clicked() {
+                                    forget = true;
+                                    ui.close_menu();
+                                }
+                            });
+                        });
                         ui.ctx()
-                            .data_mut(|d| d.insert_temp(hover_id, header.hovered()));
-                        if header.hovered() != hovered {
+                            .data_mut(|d| d.insert_temp(hover_id, row_hovered));
+                        if row_hovered != hovered {
                             // Same-frame hover chrome: force a follow-up paint now,
                             // otherwise the highlight waits for an unrelated repaint.
                             ui.ctx().request_repaint();
                         }
-                        if header.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if header.clicked() && !toggle && !new_task_here && !switch_to {
-                            if !is_current {
-                                switch_to = true;
-                            } else {
-                                toggle = true;
-                            }
-                        }
-                        header.context_menu(|ui| {
-                            if ui.button("在此项目新建任务").clicked() {
-                                new_task_here = true;
-                                ui.close_menu();
-                            }
-                            if !is_current
-                                && ui.button(self.t("sidebar.switch_project")).clicked()
-                            {
-                                switch_to = true;
-                                ui.close_menu();
-                            }
-                            if ui.button(self.t("sidebar.remove_from_list")).clicked() {
-                                forget = true;
-                                ui.close_menu();
-                            }
-                        });
                     });
 
                     if toggle {
@@ -2293,6 +2437,7 @@ impl BonyBuildApp {
     }
 
     fn right_panel(&mut self, ui: &mut egui::Ui) {
+        self.ensure_vcs_fresh();
         ui.horizontal(|ui| {
             ui.label(RichText::new("详情").size(15.0).strong().color(TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2365,79 +2510,674 @@ impl BonyBuildApp {
         }
 
         ui.add_space(18.0);
+        self.vcs_panel(ui);
+    }
+
+    fn invalidate_vcs(&mut self) {
+        self.vcs_loaded = false;
+        self.vcs_has_repo = false;
+        self.vcs_root.clear();
+        self.vcs_last_refresh = None;
+        self.vcs_session_branch.clear();
+        self.changes.clear();
+        self.vcs_branch.clear();
+        self.vcs_log.clear();
+        self.selected_diff = None;
+        self.clear_commit_detail();
+    }
+
+    /// Primary project checkout for VCS UI — never the isolated agent worktree.
+    /// Task worktrees are clean by design; user edits usually live in `project_path`.
+    fn vcs_scan_path(&self) -> std::path::PathBuf {
+        if let Some(id) = &self.active_task_id {
+            if let Some(task) = self.tasks.iter().find(|t| &t.id == id) {
+                if let Ok(Some(root)) =
+                    GitWorkspaceService::primary_repo_root(&task.project_path)
+                {
+                    return root;
+                }
+                if task.project_path.exists() {
+                    return task.project_path.clone();
+                }
+            }
+        }
+        GitWorkspaceService::primary_repo_root(&self.config.cwd)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| self.config.cwd.clone())
+    }
+
+    fn ensure_vcs_fresh(&mut self) {
+        let stale = self
+            .vcs_last_refresh
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(2))
+            .unwrap_or(true);
+        if !self.vcs_loaded || stale {
+            self.refresh_vcs();
+        }
+    }
+
+    fn refresh_vcs(&mut self) {
+        let cwd = self.vcs_scan_path();
+        self.vcs_root = cwd.clone();
+        // Session/agent worktree branch (for display only).
+        self.vcs_session_branch =
+            GitWorkspaceService::current_branch(&self.config.cwd).unwrap_or_default();
+
+        // Non-git project dirs are normal when switching chats — never modal-spam.
+        let is_repo = matches!(GitWorkspaceService::repo_root(&cwd), Ok(Some(_)));
+        self.vcs_has_repo = is_repo;
+        if !is_repo {
+            self.changes.clear();
+            self.vcs_branch.clear();
+            self.vcs_log.clear();
+            self.selected_diff = None;
+            self.clear_commit_detail();
+            self.vcs_loaded = true;
+            self.vcs_last_refresh = Some(std::time::Instant::now());
+            return;
+        }
+
+        match GitWorkspaceService::changes(&cwd) {
+            Ok(v) => self.changes = v,
+            Err(e) if e.to_lowercase().contains("not a git repository") => {
+                self.vcs_has_repo = false;
+                self.changes.clear();
+            }
+            Err(e) => self.task_error = Some(e),
+        }
+        self.vcs_branch = GitWorkspaceService::current_branch(&cwd).unwrap_or_default();
+        self.vcs_log = GitWorkspaceService::log_oneline(&cwd, 20).unwrap_or_default();
+        if let Some((path, _)) = &self.selected_diff {
+            let path = path.clone();
+            match GitWorkspaceService::working_diff(&cwd, &path) {
+                Ok(diff) => self.selected_diff = Some((path, diff)),
+                Err(_) => self.selected_diff = None,
+            }
+        }
+        // Keep commit detail in sync if the selected file still exists in this commit.
+        if let (Some(detail), Some(file)) = (
+            self.selected_commit.as_ref().map(|c| c.hash.clone()),
+            self.selected_commit_file.clone(),
+        ) {
+            match GitWorkspaceService::commit_file_diff(&cwd, &detail, &file) {
+                Ok(diff) => self.selected_commit_diff = Some(diff),
+                Err(_) => {}
+            }
+        }
+        self.vcs_loaded = true;
+        self.vcs_last_refresh = Some(std::time::Instant::now());
+    }
+
+    fn clear_commit_detail(&mut self) {
+        self.selected_commit = None;
+        self.selected_commit_file = None;
+        self.selected_commit_diff = None;
+    }
+
+    fn open_commit(&mut self, hash: &str) {
+        self.selected_diff = None;
+        let root = self.vcs_scan_path();
+        match GitWorkspaceService::show_commit(&root, hash) {
+            Ok(detail) => {
+                let first = detail.files.first().map(|f| f.path.clone());
+                self.selected_commit = Some(detail);
+                self.selected_commit_file = None;
+                self.selected_commit_diff = None;
+                if let Some(path) = first {
+                    self.load_commit_file_diff(path);
+                }
+                if self.right_panel_w < 520.0 {
+                    self.right_panel_w = 640.0;
+                    self.force_right_panel_w = true;
+                }
+            }
+            Err(e) => self.task_error = Some(e),
+        }
+    }
+
+    fn load_commit_file_diff(&mut self, path: std::path::PathBuf) {
+        let Some(detail) = self.selected_commit.as_ref() else {
+            return;
+        };
+        let hash = detail.hash.clone();
+        let root = self.vcs_scan_path();
+        match GitWorkspaceService::commit_file_diff(&root, &hash, &path) {
+            Ok(diff) => {
+                self.selected_commit_file = Some(path);
+                self.selected_commit_diff = Some(diff);
+            }
+            Err(e) => self.task_error = Some(e),
+        }
+    }
+
+    fn paint_colored_diff(ui: &mut egui::Ui, text: &str, empty_label: &str) {
+        if text.trim().is_empty() {
+            ui.label(RichText::new(empty_label).size(12.0).color(MUTED));
+            return;
+        }
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + 2.0;
+        for line in text.lines() {
+            let (fg, bg) = if line.starts_with("+++") || line.starts_with("---") {
+                (MUTED, None)
+            } else if line.starts_with('+') {
+                (DIFF_ADD, Some(DIFF_ADD_BG))
+            } else if line.starts_with('-') {
+                (DIFF_DEL, Some(DIFF_DEL_BG))
+            } else if line.starts_with("@@") {
+                (DIFF_HUNK, Some(DIFF_HUNK_BG))
+            } else if line.starts_with("diff ")
+                || line.starts_with("index ")
+                || line.starts_with("new file")
+                || line.starts_with("deleted file")
+                || line.starts_with("rename ")
+                || line.starts_with("similarity ")
+            {
+                (MUTED, None)
+            } else {
+                (TEXT, None)
+            };
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width().max(120.0), row_h),
+                egui::Sense::hover(),
+            );
+            if let Some(bg) = bg {
+                ui.painter().rect_filled(rect, 0.0, bg);
+            }
+            ui.painter().text(
+                rect.left_top() + Vec2::new(6.0, 1.0),
+                egui::Align2::LEFT_TOP,
+                line,
+                egui::FontId::monospace(11.5),
+                fg,
+            );
+        }
+    }
+
+    fn paint_stat_bar(ui: &mut egui::Ui, additions: u32, deletions: u32) {
+        let total = (additions + deletions).max(1) as f32;
+        let w = 56.0;
+        let h = 8.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(2), PANEL_2);
+        let add_w = w * (additions as f32 / total);
+        let del_w = w * (deletions as f32 / total);
+        if additions > 0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, Vec2::new(add_w, h)),
+                CornerRadius::same(2),
+                DIFF_ADD,
+            );
+        }
+        if deletions > 0 {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(
+                    Pos2::new(rect.min.x + add_w, rect.min.y),
+                    Vec2::new(del_w, h),
+                ),
+                CornerRadius::same(2),
+                DIFF_DEL,
+            );
+        }
+    }
+
+    fn vcs_panel(&mut self, ui: &mut egui::Ui) {
+        // Keep status fresh while the panel is open (edits land in the project checkout).
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(2));
+
+        let branch = if self.vcs_branch.is_empty() {
+            "—".into()
+        } else {
+            self.vcs_branch.clone()
+        };
+        let session_branch = self.vcs_session_branch.clone();
+        let scan_path = if self.vcs_root.as_os_str().is_empty() {
+            self.vcs_scan_path()
+        } else {
+            self.vcs_root.clone()
+        };
+        let title = self.t("vcs.working_copy").to_owned();
+        let refresh = self.t("vcs.refresh").to_owned();
+        let commit = self.t("vcs.commit").to_owned();
+        let restore = self.t("vcs.restore").to_owned();
+        let empty = self.t("vcs.empty_changes").to_owned();
+        let no_repo = self.t("vcs.no_repo").to_owned();
+        let history = self.t("vcs.history").to_owned();
+        let no_history = self.t("vcs.empty_history").to_owned();
+        let commit_tip = self.t("vcs.commit_open_tip").to_owned();
+        let changes_tab = self.t("vcs.changes_tab").to_owned();
+        let close_detail = self.t("vcs.close_detail").to_owned();
+        let empty_diff_label = self.t("vcs.empty_diff").to_owned();
+        let pick_file = self.t("vcs.pick_file").to_owned();
+        let n = self.changes.len();
+        let viewing_commit = self.selected_commit.is_some();
+
+        // —— Working copy (compact when drilling into a commit) ——
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(format!("Changes ({})", self.changes.len()))
+                RichText::new(format!("{title} · {n}"))
                     .size(13.0)
                     .strong()
                     .color(TEXT),
             );
-            if ui.small_button("刷新").clicked() {
-                match GitWorkspaceService::changes(&self.config.cwd) {
-                    Ok(v) => self.changes = v,
-                    Err(e) => self.task_error = Some(e),
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(&refresh).clicked() {
+                    self.refresh_vcs();
                 }
-            }
+            });
         });
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical()
-            .id_salt("changes")
-            .max_height(220.0)
-            .show(ui, |ui| {
-                for change in self.changes.clone() {
-                    let mark = match change.kind {
-                        ChangeKind::Added => "A",
-                        ChangeKind::Modified => "M",
-                        ChangeKind::Deleted => "D",
-                        ChangeKind::Renamed => "R",
-                        ChangeKind::Untracked => "?",
-                        ChangeKind::Conflicted => "!",
+        ui.label(
+            RichText::new(format!("{} {branch}", self.t("vcs.branch")))
+                .size(11.5)
+                .color(MUTED),
+        );
+        if !session_branch.is_empty()
+            && session_branch != branch
+            && session_branch != "—"
+        {
+            ui.label(
+                RichText::new(format!(
+                    "{} {session_branch}",
+                    self.t("vcs.session_branch")
+                ))
+                .size(11.0)
+                .color(MUTED),
+            );
+        }
+        ui.label(
+            RichText::new(scan_path.display().to_string())
+                .size(10.5)
+                .color(MUTED),
+        );
+
+        if !self.vcs_has_repo {
+            ui.add_space(10.0);
+            ui.label(RichText::new(&no_repo).size(12.0).color(MUTED));
+            return;
+        }
+
+        if !viewing_commit {
+            ui.add_space(8.0);
+            if !self.changes.is_empty() {
+                let hint = self.t("vcs.commit_hint").to_owned();
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.vcs_commit_message)
+                        .id_salt("vcs_inline_describe")
+                        .desired_width(ui.available_width())
+                        .desired_rows(2)
+                        .hint_text(RichText::new(hint).color(MUTED))
+                        .frame(true),
+                );
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let can_commit = !self.vcs_commit_message.trim().is_empty();
+                    let need_msg = self.t("vcs.commit_need_message").to_owned();
+                    let resp = ui.add_enabled(
+                        can_commit,
+                        egui::Button::new(RichText::new(&commit).size(12.0).color(TEXT))
+                            .fill(if can_commit { PANEL_2 } else { PANEL })
+                            .corner_radius(CornerRadius::same(8))
+                            .min_size(Vec2::new(0.0, 28.0)),
+                    );
+                    let resp = if can_commit {
+                        resp
+                    } else {
+                        resp.on_hover_text(need_msg)
                     };
-                    let label = format!("{mark}  {}", change.path.display());
-                    if ui
-                        .selectable_label(
-                            self.selected_diff
-                                .as_ref()
-                                .is_some_and(|(p, _)| p == &change.path),
-                            label,
-                        )
-                        .clicked()
-                    {
-                        match GitWorkspaceService::diff(&self.config.cwd, Some(&change.path), false)
-                        {
-                            Ok(diff) => self.selected_diff = Some((change.path.clone(), diff)),
+                    if resp.clicked() {
+                        let msg = self.vcs_commit_message.trim().to_string();
+                        match GitWorkspaceService::commit_all(&self.vcs_scan_path(), &msg) {
+                            Ok(()) => {
+                                self.vcs_commit_message.clear();
+                                self.selected_diff = None;
+                                self.refresh_vcs();
+                                self.model.status = "已提交变更".into();
+                            }
                             Err(e) => self.task_error = Some(e),
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let action = if change.staged {
-                            "取消暂存"
-                        } else {
-                            "暂存"
-                        };
-                        if ui.small_button(action).clicked() {
-                            self.pending_git_action = Some((!change.staged, change.path.clone()));
+                });
+                ui.add_space(8.0);
+            } else {
+                ui.add_space(4.0);
+            }
+
+            if self.changes.is_empty() {
+                ui.label(RichText::new(&empty).size(12.0).color(MUTED));
+            } else {
+                let list_h = (ui.available_height() * 0.22).clamp(100.0, 220.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("vcs_changes")
+                    .max_height(list_h)
+                    .show(ui, |ui| {
+                        for change in self.changes.clone() {
+                            let (mark, mark_color) = match change.kind {
+                                ChangeKind::Added => ("A", DIFF_ADD),
+                                ChangeKind::Modified => ("M", CHANGE_MOD),
+                                ChangeKind::Deleted => ("D", DIFF_DEL),
+                                ChangeKind::Renamed => ("R", DIFF_HUNK),
+                                ChangeKind::Untracked => ("?", MUTED),
+                                ChangeKind::Conflicted => ("!", DANGER),
+                            };
+                            let selected = self
+                                .selected_diff
+                                .as_ref()
+                                .is_some_and(|(p, _)| p == &change.path);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(mark)
+                                        .monospace()
+                                        .size(12.0)
+                                        .strong()
+                                        .color(mark_color),
+                                );
+                                let path_label = change.path.display().to_string();
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        RichText::new(&path_label).size(12.0).color(TEXT),
+                                    )
+                                    .on_hover_text(&path_label)
+                                    .clicked()
+                                {
+                                    self.clear_commit_detail();
+                                    let root = self.vcs_scan_path();
+                                    match GitWorkspaceService::working_diff(&root, &change.path) {
+                                        Ok(diff) => {
+                                            self.selected_diff = Some((change.path.clone(), diff));
+                                        }
+                                        Err(e) => self.task_error = Some(e),
+                                    }
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button(&restore).clicked() {
+                                            self.pending_restore = Some(change.path.clone());
+                                        }
+                                    },
+                                );
+                            });
                         }
                     });
-                }
-            });
-        if let Some((path, diff)) = &self.selected_diff {
-            ui.separator();
-            ui.label(
-                RichText::new(path.display().to_string())
-                    .size(12.0)
-                    .strong(),
-            );
-            egui::ScrollArea::both()
-                .id_salt("diff_preview")
-                .max_height(260.0)
-                .show(ui, |ui| {
-                    ui.monospace(if diff.is_empty() {
-                        "未跟踪文件暂无 diff"
-                    } else {
-                        diff
+            }
+
+            if let Some((path, diff)) = self.selected_diff.clone() {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(
+                    RichText::new(path.display().to_string())
+                        .size(12.0)
+                        .strong(),
+                );
+                let diff_h = (ui.available_height() * 0.36).clamp(140.0, 360.0);
+                egui::ScrollArea::both()
+                    .id_salt("diff_preview")
+                    .max_height(diff_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        Self::paint_colored_diff(ui, &diff, &empty_diff_label);
                     });
+            }
+        }
+
+        // —— History ——
+        ui.add_space(if viewing_commit { 8.0 } else { 14.0 });
+        ui.label(RichText::new(&history).size(13.0).strong().color(TEXT));
+        ui.add_space(6.0);
+        if self.vcs_log.is_empty() {
+            ui.label(RichText::new(&no_history).size(12.0).color(MUTED));
+        } else {
+            let log_h = if viewing_commit {
+                132.0
+            } else {
+                (ui.available_height() * 0.22).clamp(100.0, 180.0)
+            };
+            let mut open_hash: Option<String> = None;
+            egui::ScrollArea::vertical()
+                .id_salt("vcs_log")
+                .max_height(log_h)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (hash, subject) in &self.vcs_log {
+                        let selected = self.selected_commit.as_ref().is_some_and(|c| {
+                            c.hash == *hash
+                                || hash.starts_with(&c.hash)
+                                || c.hash.starts_with(hash)
+                        });
+                        let tip = format!("{commit_tip}\n{hash}  {subject}");
+                        if paint_vcs_log_row(ui, hash, subject, selected, &tip) {
+                            open_hash = Some(hash.clone());
+                        }
+                    }
                 });
+            if let Some(hash) = open_hash {
+                self.open_commit(&hash);
+            }
+        }
+
+        // —— Commit Changes (Fork-style: files | diff) ——
+        if let Some(detail) = self.selected_commit.clone() {
+            ui.add_space(10.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(&changes_tab)
+                        .size(12.5)
+                        .strong()
+                        .color(TEXT),
+                );
+                ui.label(
+                    RichText::new(format!("· {}", detail.files.len()))
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button(&close_detail).clicked() {
+                        self.clear_commit_detail();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new(&detail.subject).size(13.0).strong().color(TEXT));
+            if !detail.body.is_empty() {
+                ui.label(RichText::new(&detail.body).size(11.5).color(MUTED));
+            }
+            ui.label(
+                RichText::new(format!(
+                    "{}  ·  {}  ·  {}",
+                    detail.hash, detail.author, detail.date
+                ))
+                .size(11.0)
+                .color(MUTED),
+            );
+            ui.label(RichText::new(&detail.summary).size(11.0).color(MUTED));
+            ui.add_space(8.0);
+
+            let split = ui.available_width() >= 520.0;
+            let body_h = (ui.available_height() - 4.0).clamp(220.0, 620.0);
+            let mut pick: Option<std::path::PathBuf> = None;
+
+            if split {
+                ui.horizontal(|ui| {
+                    // File list
+                    ui.allocate_ui_with_layout(
+                        Vec2::new((ui.available_width() * 0.34).clamp(160.0, 260.0), body_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(ui.available_width());
+                            Frame::NONE
+                                .fill(PANEL)
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(Margin::same(8))
+                                .show(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("commit_files")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 2.0;
+                                            for f in &detail.files {
+                                                let selected = self
+                                                    .selected_commit_file
+                                                    .as_ref()
+                                                    .is_some_and(|p| p == &f.path);
+                                                let name = f
+                                                    .path
+                                                    .file_name()
+                                                    .map(|s| s.to_string_lossy().into_owned())
+                                                    .unwrap_or_else(|| {
+                                                        f.path.display().to_string()
+                                                    });
+                                                let status_color = match f.status {
+                                                    'A' => DIFF_ADD,
+                                                    'D' => DIFF_DEL,
+                                                    'R' | 'C' => DIFF_HUNK,
+                                                    _ => CHANGE_MOD,
+                                                };
+                                                if paint_vcs_file_row(
+                                                    ui,
+                                                    f.status,
+                                                    status_color,
+                                                    &name,
+                                                    f.additions,
+                                                    f.deletions,
+                                                    selected,
+                                                    &f.path.display().to_string(),
+                                                ) {
+                                                    pick = Some(f.path.clone());
+                                                }
+                                            }
+                                        });
+                                });
+                        },
+                    );
+
+                    ui.add_space(8.0);
+
+                    // Diff pane
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(ui.available_width(), body_h),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            Frame::NONE
+                                .fill(PANEL)
+                                .stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(CornerRadius::same(8))
+                                .inner_margin(Margin::same(8))
+                                .show(ui, |ui| {
+                                    if let Some(path) = &self.selected_commit_file {
+                                        ui.label(
+                                            RichText::new(path.display().to_string())
+                                                .size(11.5)
+                                                .strong()
+                                                .color(MUTED),
+                                        );
+                                        ui.add_space(4.0);
+                                    }
+                                    egui::ScrollArea::both()
+                                        .id_salt("commit_file_diff")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            if let Some(diff) = &self.selected_commit_diff {
+                                                Self::paint_colored_diff(
+                                                    ui,
+                                                    diff,
+                                                    &empty_diff_label,
+                                                );
+                                            } else {
+                                                ui.label(
+                                                    RichText::new(&pick_file)
+                                                        .size(12.0)
+                                                        .color(MUTED),
+                                                );
+                                            }
+                                        });
+                                });
+                        },
+                    );
+                });
+            } else {
+                // Narrow: stacked files then diff
+                let files_h = (body_h * 0.32).clamp(100.0, 180.0);
+                Frame::NONE
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("commit_files_narrow")
+                            .max_height(files_h)
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                for f in &detail.files {
+                                    let selected = self
+                                        .selected_commit_file
+                                        .as_ref()
+                                        .is_some_and(|p| p == &f.path);
+                                    let status_color = match f.status {
+                                        'A' => DIFF_ADD,
+                                        'D' => DIFF_DEL,
+                                        'R' | 'C' => DIFF_HUNK,
+                                        _ => CHANGE_MOD,
+                                    };
+                                    let label = f.path.display().to_string();
+                                    if paint_vcs_file_row(
+                                        ui,
+                                        f.status,
+                                        status_color,
+                                        &label,
+                                        f.additions,
+                                        f.deletions,
+                                        selected,
+                                        &label,
+                                    ) {
+                                        pick = Some(f.path.clone());
+                                    }
+                                }
+                            });
+                    });
+                ui.add_space(8.0);
+                let diff_h = (body_h - files_h - 16.0).max(140.0);
+                Frame::NONE
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        if let Some(path) = &self.selected_commit_file {
+                            ui.label(
+                                RichText::new(path.display().to_string())
+                                    .size(11.5)
+                                    .strong()
+                                    .color(MUTED),
+                            );
+                            ui.add_space(4.0);
+                        }
+                        egui::ScrollArea::both()
+                            .id_salt("commit_file_diff_narrow")
+                            .max_height(diff_h)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if let Some(diff) = &self.selected_commit_diff {
+                                    Self::paint_colored_diff(ui, diff, &empty_diff_label);
+                                } else {
+                                    ui.label(
+                                        RichText::new(&pick_file).size(12.0).color(MUTED),
+                                    );
+                                }
+                            });
+                    });
+            }
+
+            if let Some(path) = pick {
+                self.load_commit_file_diff(path);
+            }
         }
     }
 
@@ -5536,41 +6276,145 @@ impl BonyBuildApp {
     }
 
     fn git_confirmation_modal(&mut self, ctx: &egui::Context) {
-        let Some((stage, path)) = self.pending_git_action.clone() else {
+        let Some(path) = self.pending_restore.clone() else {
             return;
         };
-        egui::Window::new(if stage {
-            "确认暂存"
-        } else {
-            "确认取消暂存"
-        })
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.label(format!("将对 {} 执行显式 Git 写操作。", path.display()));
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.button("取消").clicked() {
-                    self.pending_git_action = None;
-                }
-                if ui.button("确认").clicked() {
-                    let result = if stage {
-                        GitWorkspaceService::stage(&self.config.cwd, &path)
-                    } else {
-                        GitWorkspaceService::unstage(&self.config.cwd, &path)
-                    };
-                    match result {
-                        Ok(()) => {
-                            self.changes =
-                                GitWorkspaceService::changes(&self.config.cwd).unwrap_or_default()
-                        }
-                        Err(e) => self.task_error = Some(e),
+        let title = self.t("vcs.restore_confirm_title").to_owned();
+        let body = self.t("vcs.restore_confirm_body").to_owned();
+        let cancel = self.t("common.cancel").to_owned();
+        let ok = self.t("vcs.restore").to_owned();
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("{body}\n{}", path.display()));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button(cancel).clicked() {
+                        self.pending_restore = None;
                     }
-                    self.pending_git_action = None;
+                    if ui.button(ok).clicked() {
+                        match GitWorkspaceService::restore_file(&self.vcs_scan_path(), &path) {
+                            Ok(()) => {
+                                if self
+                                    .selected_diff
+                                    .as_ref()
+                                    .is_some_and(|(p, _)| p == &path)
+                                {
+                                    self.selected_diff = None;
+                                }
+                                self.refresh_vcs();
+                            }
+                            Err(e) => self.task_error = Some(e),
+                        }
+                        self.pending_restore = None;
+                    }
+                });
+            });
+    }
+
+    fn vcs_commit_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_vcs_commit_modal {
+            return;
+        }
+        let title = self.t("vcs.commit_title").to_owned();
+        let hint = self.t("vcs.commit_hint").to_owned();
+        let cancel = self.t("common.cancel").to_owned();
+        let ok = self.t("vcs.commit").to_owned();
+        let mut dismiss = false;
+
+        egui::Area::new(egui::Id::new("vcs_commit_dim"))
+            .order(egui::Order::Middle)
+            .interactable(true)
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                let screen = ctx.screen_rect();
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter()
+                    .rect_filled(screen, 0.0, Color32::from_black_alpha(160));
+                if resp.clicked() {
+                    dismiss = true;
                 }
             });
-        });
+
+        let mut open = true;
+        egui::Window::new(&title)
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .order(egui::Order::Foreground)
+            .frame(
+                Frame::new()
+                    .fill(PANEL)
+                    .corner_radius(CornerRadius::same(16))
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::same(18))
+                    .shadow(Shadow {
+                        offset: [0, 12],
+                        blur: 36,
+                        spread: 0,
+                        color: Color32::from_black_alpha(160),
+                    }),
+            )
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+                ui.label(
+                    RichText::new(&title).size(16.0).strong().color(TEXT),
+                );
+                ui.add_space(10.0);
+                let edit = ui.add(
+                    egui::TextEdit::multiline(&mut self.vcs_commit_message)
+                        .id_salt("vcs_commit_modal_edit")
+                        .desired_width(ui.available_width())
+                        .desired_rows(4)
+                        .hint_text(RichText::new(&hint).color(MUTED)),
+                );
+                edit.request_focus();
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(&cancel).size(13.0).color(TEXT))
+                                .fill(PANEL_2)
+                                .corner_radius(CornerRadius::same(8))
+                                .min_size(Vec2::new(72.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        dismiss = true;
+                    }
+                    ui.add_space(8.0);
+                    let can = !self.vcs_commit_message.trim().is_empty();
+                    if ui
+                        .add_enabled(
+                            can,
+                            egui::Button::new(RichText::new(&ok).size(13.0).color(TEXT))
+                                .fill(PANEL_2)
+                                .corner_radius(CornerRadius::same(8))
+                                .min_size(Vec2::new(100.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        let msg = self.vcs_commit_message.trim().to_string();
+                        match GitWorkspaceService::commit_all(&self.vcs_scan_path(), &msg) {
+                            Ok(()) => {
+                                dismiss = true;
+                                self.vcs_commit_message.clear();
+                                self.selected_diff = None;
+                                self.refresh_vcs();
+                                self.model.status = "已提交变更".into();
+                            }
+                            Err(e) => self.task_error = Some(e),
+                        }
+                    }
+                });
+            });
+        if dismiss || !open {
+            self.show_vcs_commit_modal = false;
+        }
     }
 
     /// Centered usage sheet: clean single card, tabs, no nested sidebar.
@@ -6007,11 +6851,16 @@ impl BonyBuildApp {
             // Only top-level「新建对话」entries — never per-project「新建」.
             .filter(|t| t.status != TaskStatus::Archived && t.from_new_chat)
             .map(|t| {
+                let project = if t.project_chosen {
+                    AppModel::project_label(&canonical_project_root(&t.project_path))
+                } else {
+                    String::new()
+                };
                 (
                     t.updated_at,
                     t.id.clone(),
                     display_task_title(t),
-                    AppModel::project_label(&canonical_project_root(&t.project_path)),
+                    project,
                 )
             })
             .collect();
@@ -7904,6 +8753,145 @@ fn nav_row(ui: &mut egui::Ui, glyph: SidebarGlyph, label: &str, selected: bool) 
     resp.clicked()
 }
 
+/// Full-row hit target for VCS history — paint only, no child widgets stealing clicks.
+fn paint_vcs_log_row(
+    ui: &mut egui::Ui,
+    hash: &str,
+    subject: &str,
+    selected: bool,
+    tip: &str,
+) -> bool {
+    let width = ui.available_width().max(80.0);
+    let row_h = 28.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
+    let hovered = resp.hovered() || resp.contains_pointer();
+    if selected || hovered {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(6),
+            if selected { SELECTED } else { HOVER },
+        );
+    }
+    if selected {
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(6),
+            Stroke::new(1.0, Color32::from_rgb(70, 72, 84)),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let hash_font = egui::FontId::monospace(11.5);
+    let sub_font = egui::FontId::proportional(12.0);
+    let hash_color = if selected || hovered { ACCENT_BAR } else { MUTED };
+    let sub_color = if selected || hovered { TEXT } else { MUTED };
+
+    let hash_galley = ui.fonts(|f| f.layout_no_wrap(hash.to_owned(), hash_font, hash_color));
+    let hash_w = hash_galley.size().x;
+    let pad = 8.0;
+    let gap = 10.0;
+    let hash_pos = egui::pos2(rect.min.x + pad, rect.center().y - hash_galley.size().y * 0.5);
+    ui.painter().galley(hash_pos, hash_galley, hash_color);
+
+    let sub_max_w = (rect.width() - pad * 2.0 - hash_w - gap).max(20.0);
+    let sub_galley = ui.fonts(|f| {
+        f.layout(
+            subject.to_owned(),
+            sub_font,
+            sub_color,
+            sub_max_w,
+        )
+    });
+    let sub_pos = egui::pos2(
+        rect.min.x + pad + hash_w + gap,
+        rect.center().y - sub_galley.size().y * 0.5,
+    );
+    ui.painter().galley(sub_pos, sub_galley, sub_color);
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.on_hover_text(tip).clicked()
+}
+
+/// Full-row hit target for commit changed-file list.
+fn paint_vcs_file_row(
+    ui: &mut egui::Ui,
+    status: char,
+    status_color: Color32,
+    name: &str,
+    additions: u32,
+    deletions: u32,
+    selected: bool,
+    tip: &str,
+) -> bool {
+    let width = ui.available_width().max(60.0);
+    let row_h = 30.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
+    let hovered = resp.hovered() || resp.contains_pointer();
+    if selected || hovered {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(5),
+            if selected { FILE_SELECTED } else { HOVER },
+        );
+    }
+
+    let pad = 8.0;
+    let status_font = egui::FontId::monospace(11.0);
+    let name_font = egui::FontId::proportional(12.0);
+    let status_galley =
+        ui.fonts(|f| f.layout_no_wrap(status.to_string(), status_font, status_color));
+    let status_pos =
+        egui::pos2(rect.min.x + pad, rect.center().y - status_galley.size().y * 0.5);
+    let status_w = status_galley.size().x;
+    ui.painter().galley(status_pos, status_galley, status_color);
+
+    // Mini +/- bar on the right
+    let bar_w = 48.0;
+    let bar_h = 7.0;
+    let bar_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.max.x - pad - bar_w * 0.5, rect.center().y),
+        Vec2::new(bar_w, bar_h),
+    );
+    let total = (additions + deletions).max(1) as f32;
+    ui.painter()
+        .rect_filled(bar_rect, CornerRadius::same(2), PANEL_2);
+    let add_w = bar_w * (additions as f32 / total);
+    let del_w = bar_w * (deletions as f32 / total);
+    if additions > 0 {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(bar_rect.min, Vec2::new(add_w, bar_h)),
+            CornerRadius::same(2),
+            DIFF_ADD,
+        );
+    }
+    if deletions > 0 {
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(
+                Pos2::new(bar_rect.min.x + add_w, bar_rect.min.y),
+                Vec2::new(del_w, bar_h),
+            ),
+            CornerRadius::same(2),
+            DIFF_DEL,
+        );
+    }
+
+    let name_max_w = (bar_rect.min.x - (rect.min.x + pad + status_w + 8.0) - 6.0).max(20.0);
+    let name_color = if selected || hovered { TEXT } else { MUTED };
+    let name_galley = ui.fonts(|f| f.layout(name.to_owned(), name_font, name_color, name_max_w));
+    let name_pos = egui::pos2(
+        rect.min.x + pad + status_w + 8.0,
+        rect.center().y - name_galley.size().y * 0.5,
+    );
+    ui.painter().galley(name_pos, name_galley, name_color);
+
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.on_hover_text(tip).clicked()
+}
+
 fn render_recent_inbox_row(
     ui: &mut egui::Ui,
     task_id: &str,
@@ -7913,7 +8901,8 @@ fn render_recent_inbox_row(
     selected: bool,
 ) -> (bool, bool) {
     let width = ui.available_width();
-    let row_h = 44.0;
+    let has_project = !project.is_empty();
+    let row_h = if has_project { 44.0 } else { 32.0 };
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
     let hovered = resp.hovered() || resp.contains_pointer();
     let show_chrome = selected || hovered;
@@ -7952,8 +8941,8 @@ fn render_recent_inbox_row(
             egui::StrokeKind::Inside,
         );
         let bar = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 4.0, rect.top() + 10.0),
-            Vec2::new(3.0, rect.height() - 20.0),
+            egui::pos2(rect.left() + 4.0, rect.top() + 8.0),
+            Vec2::new(3.0, rect.height() - 16.0),
         );
         ui.painter().rect_filled(
             bar,
@@ -7980,20 +8969,27 @@ fn render_recent_inbox_row(
     let text_left = rect.left() + 36.0;
     let text_right = close_rect.left() - 4.0;
     let text_w = (text_right - text_left).max(40.0);
+    let title_y = if has_project {
+        rect.top() + 8.0
+    } else {
+        rect.center().y - 7.0
+    };
     ui.painter().text(
-        egui::pos2(text_left, rect.top() + 8.0),
+        egui::pos2(text_left, title_y),
         egui::Align2::LEFT_TOP,
         truncate_chip_label(title, ((text_w / 7.0) as usize).max(8)),
         egui::FontId::proportional(12.5),
         fg,
     );
-    ui.painter().text(
-        egui::pos2(text_left, rect.top() + 24.0),
-        egui::Align2::LEFT_TOP,
-        truncate_chip_label(project, ((text_w / 6.5) as usize).max(8)),
-        egui::FontId::proportional(10.5),
-        MUTED,
-    );
+    if has_project {
+        ui.painter().text(
+            egui::pos2(text_left, rect.top() + 24.0),
+            egui::Align2::LEFT_TOP,
+            truncate_chip_label(project, ((text_w / 6.5) as usize).max(8)),
+            egui::FontId::proportional(10.5),
+            MUTED,
+        );
+    }
 
     if show_chrome {
         if close_resp.hovered() {

@@ -116,6 +116,8 @@ pub struct TaskState {
     pub isolated: bool,
     /// Created via top-level「新建对话」(not per-project「新建」).
     pub from_new_chat: bool,
+    /// User explicitly chose a project for a「新建对话」draft (via project chip / row).
+    pub project_chosen: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -136,6 +138,7 @@ impl TaskState {
             status: TaskStatus::Draft,
             isolated: false,
             from_new_chat: false,
+            project_chosen: false,
             created_at: now,
             updated_at: now,
         }
@@ -175,6 +178,7 @@ impl SqliteTaskRepository {
                status TEXT NOT NULL,
                isolated INTEGER NOT NULL DEFAULT 0,
                from_new_chat INTEGER NOT NULL DEFAULT 0,
+               project_chosen INTEGER NOT NULL DEFAULT 0,
                created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL
              );
@@ -184,6 +188,10 @@ impl SqliteTaskRepository {
         // Best-effort migration for existing DBs.
         let _ = conn.execute(
             "ALTER TABLE tasks ADD COLUMN from_new_chat INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE tasks ADD COLUMN project_chosen INTEGER NOT NULL DEFAULT 0",
             [],
         );
         Ok(Self { conn })
@@ -197,9 +205,9 @@ impl SqliteTaskRepository {
 impl TaskRepository for SqliteTaskRepository {
     fn list(&self, include_archived: bool) -> Result<Vec<TaskState>, String> {
         let sql = if include_archived {
-            "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat FROM tasks ORDER BY updated_at DESC"
+            "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat,project_chosen FROM tasks ORDER BY updated_at DESC"
         } else {
-            "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat FROM tasks WHERE status != 'archived' ORDER BY updated_at DESC"
+            "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat,project_chosen FROM tasks WHERE status != 'archived' ORDER BY updated_at DESC"
         };
         let mut stmt = self.conn.prepare(sql).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], row_to_task).map_err(|e| e.to_string())?;
@@ -210,7 +218,7 @@ impl TaskRepository for SqliteTaskRepository {
     fn get(&self, id: &str) -> Result<Option<TaskState>, String> {
         self.conn
             .query_row(
-                "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat FROM tasks WHERE id=?1",
+                "SELECT id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat,project_chosen FROM tasks WHERE id=?1",
                 [id],
                 row_to_task,
             )
@@ -220,10 +228,10 @@ impl TaskRepository for SqliteTaskRepository {
 
     fn save(&self, task: &TaskState) -> Result<(), String> {
         self.conn.execute(
-            "INSERT INTO tasks(id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
-             ON CONFLICT(id) DO UPDATE SET title=excluded.title,project_path=excluded.project_path,worktree_path=excluded.worktree_path,branch=excluded.branch,session_id=excluded.session_id,model_id=excluded.model_id,permission_mode=excluded.permission_mode,agent_mode=excluded.agent_mode,status=excluded.status,isolated=excluded.isolated,updated_at=excluded.updated_at,from_new_chat=excluded.from_new_chat",
-            params![task.id, task.title, task.project_path.to_string_lossy(), task.worktree_path.to_string_lossy(), task.branch, task.session_id, task.model_id, task.permission_mode.as_str(), task.agent_mode.as_str(), task.status.as_str(), task.isolated, task.created_at, task.updated_at, task.from_new_chat],
+            "INSERT INTO tasks(id,title,project_path,worktree_path,branch,session_id,model_id,permission_mode,agent_mode,status,isolated,created_at,updated_at,from_new_chat,project_chosen)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title,project_path=excluded.project_path,worktree_path=excluded.worktree_path,branch=excluded.branch,session_id=excluded.session_id,model_id=excluded.model_id,permission_mode=excluded.permission_mode,agent_mode=excluded.agent_mode,status=excluded.status,isolated=excluded.isolated,updated_at=excluded.updated_at,from_new_chat=excluded.from_new_chat,project_chosen=excluded.project_chosen",
+            params![task.id, task.title, task.project_path.to_string_lossy(), task.worktree_path.to_string_lossy(), task.branch, task.session_id, task.model_id, task.permission_mode.as_str(), task.agent_mode.as_str(), task.status.as_str(), task.isolated, task.created_at, task.updated_at, task.from_new_chat, task.project_chosen],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -252,6 +260,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskState> {
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
         from_new_chat: row.get::<_, i64>(13).unwrap_or(0) != 0,
+        project_chosen: row.get::<_, i64>(14).unwrap_or(0) != 0,
     })
 }
 
