@@ -919,7 +919,9 @@ impl eframe::App for BonyBuildApp {
                             let status_color = match self.unity.status {
                                 CliStatus::Ready => OK,
                                 CliStatus::Missing | CliStatus::Error => DANGER,
-                                CliStatus::Checking | CliStatus::Unknown => MUTED,
+                                CliStatus::Checking | CliStatus::Unknown | CliStatus::Installing => {
+                                    MUTED
+                                }
                             };
                             ui.label(
                                 RichText::new(self.unity.status.label())
@@ -2329,6 +2331,33 @@ impl BonyBuildApp {
             });
     }
 
+    fn unity_install_log_tail(&self, ui: &mut egui::Ui) {
+        if self.unity.install_log.is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        Frame::new()
+            .fill(PANEL_2)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.unity.install_log {
+                            ui.label(
+                                RichText::new(line)
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(MUTED),
+                            );
+                        }
+                    });
+            });
+    }
+
     fn unity_docs_window(&mut self, ctx: &egui::Context) {
         if !self.show_unity_docs_window {
             return;
@@ -2385,6 +2414,14 @@ impl BonyBuildApp {
                     .clicked()
                 {
                     self.unity.run_action(UnityAction::RunFullLoop);
+                }
+                if self.unity.can_stop()
+                    && ui
+                        .button(RichText::new("停止").size(12.0).color(DANGER))
+                        .on_hover_text("取消当前命令并清空引导队列")
+                        .clicked()
+                {
+                    self.unity.stop();
                 }
                 if ui
                     .button(RichText::new("打开对话控制").size(12.0).color(UNITY_ACCENT))
@@ -2595,6 +2632,44 @@ impl BonyBuildApp {
                                     .size(11.5)
                                     .color(MUTED),
                                 );
+                                ui.add_space(10.0);
+                                ui.separator();
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new("或者，直接在应用内自动安装（无需手动打开终端）：")
+                                        .size(11.5)
+                                        .color(MUTED),
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_enabled(
+                                            self.unity.can_install_cli(),
+                                            egui::Button::new(
+                                                RichText::new("⚡ 一键自动安装")
+                                                    .size(12.5)
+                                                    .color(BG)
+                                                    .strong(),
+                                            )
+                                            .fill(OK)
+                                            .min_size(Vec2::new(0.0, 32.0))
+                                            .corner_radius(CornerRadius::same(8)),
+                                        )
+                                        .on_hover_text("应用内运行官方安装脚本并自动重新检测")
+                                        .clicked()
+                                    {
+                                        self.unity.install_cli();
+                                    }
+                                    if self.unity.status == CliStatus::Installing {
+                                        ui.spinner();
+                                        ui.label(
+                                            RichText::new("正在安装…")
+                                                .size(12.0)
+                                                .color(UNITY_ACCENT),
+                                        );
+                                    }
+                                });
+                                self.unity_install_log_tail(ui);
                             }
                             SetupStep::DetectCli => {
                                 ui.add_space(8.0);
@@ -3001,6 +3076,31 @@ impl BonyBuildApp {
                                 }
                             });
                         });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.unity.can_install_cli(),
+                                egui::Button::new(
+                                    RichText::new("⚡ 一键自动安装")
+                                        .size(12.5)
+                                        .color(BG)
+                                        .strong(),
+                                )
+                                .fill(OK)
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .on_hover_text("应用内运行官方安装脚本并自动重新检测")
+                            .clicked()
+                        {
+                            self.unity.install_cli();
+                        }
+                        if self.unity.status == CliStatus::Installing {
+                            ui.spinner();
+                            ui.label(RichText::new("正在安装…").size(12.0).color(UNITY_ACCENT));
+                        }
+                    });
+                    self.unity_install_log_tail(ui);
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new("未安装时下方操作为演示模式，可预览 AI 闭环可视化。")

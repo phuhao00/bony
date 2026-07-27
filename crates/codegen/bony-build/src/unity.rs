@@ -4,12 +4,15 @@
 //! (`unity`) so the agent desktop can detect the binary, run structured
 //! commands, and show an observe → act → verify feedback loop.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::mpsc;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+const INSTALL_LOG_TAIL_MAX: usize = 60;
 
 const CMD_TIMEOUT: Duration = Duration::from_secs(45);
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(180);
@@ -73,6 +76,7 @@ pub enum CliStatus {
     Unknown,
     Checking,
     Missing,
+    Installing,
     Ready,
     Error,
 }
@@ -81,6 +85,7 @@ impl CliStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::Unknown | Self::Checking => "检测中",
+            Self::Installing => "安装中",
             Self::Missing => "未安装",
             Self::Ready => "已就绪",
             Self::Error => "异常",
@@ -1638,7 +1643,14 @@ pub struct UnityState {
     pub setup_focus: Option<SetupStep>,
     /// When true, agent cwd must not overwrite the chosen Unity project path.
     pub project_locked: bool,
-    pending_rx: Option<mpsc::Receiver<UnityWorkerMsg>>,
+    pending_rx: Option<mpsc::Receiver<(u64, UnityWorkerMsg)>>,
+    /// Monotonically increasing id of the most recently spawned worker job;
+    /// messages tagged with an older id are stale (superseded) and dropped.
+    job_seq: u64,
+    /// Cooperative cancel switch for the in-flight job, if any.
+    cancel_flag: Option<Arc<AtomicBool>>,
+    /// Streamed output tail from an in-progress/last CLI install run.
+    pub install_log: Vec<String>,
     guide_queue: Vec<UnityAction>,
     guide_next_at: Option<Instant>,
     guide_kind: GuideKind,
@@ -1680,6 +1692,9 @@ impl Default for UnityState {
             setup_focus: None,
             project_locked: saved.is_some(),
             pending_rx: None,
+            job_seq: 0,
+            cancel_flag: None,
+            install_log: Vec::new(),
             guide_queue: Vec::new(),
             guide_next_at: None,
             guide_kind: GuideKind::None,
@@ -1714,24 +1729,89 @@ enum UnityWorkerMsg {
         stderr: String,
         elapsed_ms: u64,
     },
+    InstallProgress {
+        line: String,
+    },
+    InstallDone {
+        ok: bool,
+        message: String,
+    },
 }
 
 impl UnityState {
+    /// Spawn a background worker tagged with a fresh job id. Any prior
+    /// in-flight job is asked to cancel (best-effort) and its late replies
+    /// will be dropped by `drain_worker` since their id no longer matches
+    /// `job_seq`. This is the single place that owns the thread+channel
+    /// boilerplate previously duplicated across four call sites.
+    fn spawn_job<F>(&mut self, work: F) -> Arc<AtomicBool>
+    where
+        F: FnOnce(u64, mpsc::Sender<(u64, UnityWorkerMsg)>, Arc<AtomicBool>) + Send + 'static,
+    {
+        if let Some(prev) = self.cancel_flag.take() {
+            prev.store(true, Ordering::SeqCst);
+        }
+        self.job_seq += 1;
+        let id = self.job_seq;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        self.pending_rx = Some(rx);
+        self.cancel_flag = Some(cancel.clone());
+        let cancel_for_thread = cancel.clone();
+        thread::spawn(move || work(id, tx, cancel_for_thread));
+        cancel
+    }
+
+    /// Cooperatively cancel the in-flight job, if any. The worker thread
+    /// notices the flag (checked inside `run_unity_timeout`'s wait loop or
+    /// at each detect candidate) and kills the child process; the resulting
+    /// message still carries the job id so it is accepted normally.
+    pub fn cancel_active(&mut self) {
+        if let Some(flag) = &self.cancel_flag {
+            flag.store(true, Ordering::SeqCst);
+            self.toast = Some("正在取消…".into());
+        }
+    }
+
+    pub fn is_cancellable(&self) -> bool {
+        self.busy && self.cancel_flag.is_some()
+    }
+
+    /// Stop everything: cancel the in-flight job (if cancellable) and clear
+    /// any pending guided-demo queue so the wizard doesn't keep advancing.
+    pub fn stop(&mut self) {
+        self.cancel_active();
+        if !self.guide_queue.is_empty() || self.guide_label.is_some() {
+            self.guide_queue.clear();
+            self.guide_next_at = None;
+            self.guide_label = None;
+            self.guide_kind = GuideKind::None;
+            self.guide_total = 0;
+            self.guide_genre = None;
+            self.toast = Some("已停止".into());
+        }
+    }
+
+    pub fn can_stop(&self) -> bool {
+        self.busy || !self.guide_queue.is_empty() || self.guide_label.is_some()
+    }
+
     pub fn ensure_detecting(&mut self) {
         if !matches!(self.status, CliStatus::Unknown) || self.busy {
             return;
         }
         self.status = CliStatus::Checking;
         self.busy = true;
-        let (tx, rx) = mpsc::channel();
-        self.pending_rx = Some(rx);
-        thread::spawn(move || {
-            let result = detect_cli();
-            let _ = tx.send(UnityWorkerMsg::Detected {
-                path: result.path,
-                version: result.version,
-                error: result.error,
-            });
+        self.spawn_job(move |id, tx, cancel| {
+            let result = detect_cli(Some(&cancel));
+            let _ = tx.send((
+                id,
+                UnityWorkerMsg::Detected {
+                    path: result.path,
+                    version: result.version,
+                    error: result.error,
+                },
+            ));
         });
     }
 
@@ -1747,12 +1827,16 @@ impl UnityState {
             return false;
         };
         let mut msgs = Vec::new();
-        while let Ok(msg) = rx.try_recv() {
-            msgs.push(msg);
+        while let Ok((id, msg)) = rx.try_recv() {
+            if id == self.job_seq {
+                msgs.push(msg);
+            }
+            // else: reply from a superseded job — silently dropped.
         }
         if msgs.is_empty() {
             return false;
         }
+        self.cancel_flag = None;
         for msg in msgs {
             match msg {
                 UnityWorkerMsg::Detected {
@@ -1910,6 +1994,23 @@ impl UnityState {
                             GUIDE_STEP_GAP
                         };
                         self.guide_next_at = Some(Instant::now() + gap);
+                    }
+                }
+                UnityWorkerMsg::InstallProgress { line } => {
+                    push_install_log(&mut self.install_log, line);
+                }
+                UnityWorkerMsg::InstallDone { ok, message } => {
+                    self.busy = false;
+                    if ok {
+                        push_install_log(&mut self.install_log, message);
+                        self.toast = Some("Unity CLI 安装完成，正在重新检测…".into());
+                        self.status = CliStatus::Unknown;
+                        self.ensure_detecting();
+                    } else {
+                        self.status = CliStatus::Missing;
+                        self.last_error = Some(message.clone());
+                        push_install_log(&mut self.install_log, message);
+                        self.toast = Some("Unity CLI 安装失败".into());
                     }
                 }
             }
@@ -2587,20 +2688,21 @@ impl UnityState {
         if matches!(action, UnityAction::HubLogs) {
             let path = hub_logs_dir_display();
             self.busy = true;
-            let (tx, rx) = mpsc::channel();
-            self.pending_rx = Some(rx);
-            thread::spawn(move || {
+            self.spawn_job(move |id, tx, _cancel| {
                 thread::sleep(Duration::from_millis(40));
-                let _ = tx.send(UnityWorkerMsg::CommandDone {
-                    action: UnityAction::HubLogs,
-                    title: "Hub 日志".into(),
-                    command: format!("open {path}"),
-                    phase: LoopPhase::Observe,
-                    ok: true,
-                    stdout: format!("Hub logs directory:\n{path}\n"),
-                    stderr: String::new(),
-                    elapsed_ms: 5,
-                });
+                let _ = tx.send((
+                    id,
+                    UnityWorkerMsg::CommandDone {
+                        action: UnityAction::HubLogs,
+                        title: "Hub 日志".into(),
+                        command: format!("open {path}"),
+                        phase: LoopPhase::Observe,
+                        ok: true,
+                        stdout: format!("Hub logs directory:\n{path}\n"),
+                        stderr: String::new(),
+                        elapsed_ms: 5,
+                    },
+                ));
             });
             return;
         }
@@ -2624,24 +2726,25 @@ impl UnityState {
         let command_display = format_command(&cli, &args);
         let timeout = action.timeout();
         self.busy = true;
-        let (tx, rx) = mpsc::channel();
-        self.pending_rx = Some(rx);
-        thread::spawn(move || {
+        self.spawn_job(move |id, tx, cancel| {
             let started = Instant::now();
-            let result = run_unity_timeout(&cli, &args, timeout, Some(&project));
+            let result = run_unity_timeout(&cli, &args, timeout, Some(&project), Some(&cancel));
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let ok = result.ok
                 && (!action.is_eval_style() || eval_output_succeeded(&result.stdout));
-            let _ = tx.send(UnityWorkerMsg::CommandDone {
-                action,
-                title,
-                command: command_display,
-                phase,
-                ok,
-                stdout: result.stdout,
-                stderr: result.stderr,
-                elapsed_ms,
-            });
+            let _ = tx.send((
+                id,
+                UnityWorkerMsg::CommandDone {
+                    action,
+                    title,
+                    command: command_display,
+                    phase,
+                    ok,
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    elapsed_ms,
+                },
+            ));
         });
     }
 
@@ -3384,21 +3487,22 @@ impl UnityState {
         } else {
             format!("{summary}\n{detail}")
         };
-        let (tx, rx) = mpsc::channel();
-        self.pending_rx = Some(rx);
         let action_copy = action;
-        thread::spawn(move || {
+        self.spawn_job(move |id, tx, _cancel| {
             thread::sleep(Duration::from_millis(180));
-            let _ = tx.send(UnityWorkerMsg::CommandDone {
-                action: action_copy,
-                title,
-                command,
-                phase,
-                ok,
-                stdout,
-                stderr: String::new(),
-                elapsed_ms: 12,
-            });
+            let _ = tx.send((
+                id,
+                UnityWorkerMsg::CommandDone {
+                    action: action_copy,
+                    title,
+                    command,
+                    phase,
+                    ok,
+                    stdout,
+                    stderr: String::new(),
+                    elapsed_ms: 12,
+                },
+            ));
         });
     }
 
@@ -3416,6 +3520,37 @@ impl UnityState {
 
     pub fn install_hint_unix() -> &'static str {
         "curl -fsSL https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.sh | UNITY_CLI_CHANNEL=beta bash"
+    }
+
+    /// One-click install entry point for when the CLI isn't found locally.
+    /// Runs the same install script `install_hint()` shows, streaming its
+    /// output into `install_log`, then re-triggers detection on success.
+    pub fn install_cli(&mut self) {
+        if self.busy {
+            return;
+        }
+        self.status = CliStatus::Installing;
+        self.busy = true;
+        self.install_log.clear();
+        self.toast = Some("正在安装 Unity CLI…".into());
+        self.spawn_job(move |id, tx, cancel| {
+            let outcome = run_cli_install(id, &tx, &cancel);
+            let msg = match outcome {
+                Ok(()) => UnityWorkerMsg::InstallDone {
+                    ok: true,
+                    message: "Unity CLI 安装完成".into(),
+                },
+                Err(reason) => UnityWorkerMsg::InstallDone {
+                    ok: false,
+                    message: reason,
+                },
+            };
+            let _ = tx.send((id, msg));
+        });
+    }
+
+    pub fn can_install_cli(&self) -> bool {
+        !self.busy && matches!(self.status, CliStatus::Missing | CliStatus::Error)
     }
 
     pub fn take_toast(&mut self) -> Option<String> {
@@ -3922,10 +4057,33 @@ struct RunResult {
     stderr: String,
 }
 
-fn detect_cli() -> DetectResult {
+fn detect_cli(cancel: Option<&Arc<AtomicBool>>) -> DetectResult {
     let candidates = candidate_bins();
-    for path in candidates {
-        let result = run_unity_timeout(&path, &["--help".into()], Duration::from_secs(8), None);
+    // Probe every candidate path concurrently instead of serially (each probe
+    // can take up to 8s); join in priority order so the earliest-listed
+    // candidate still wins ties, but total wall time is ~max, not ~sum.
+    let handles: Vec<_> = candidates
+        .into_iter()
+        .map(|path| {
+            let cancel = cancel.cloned();
+            thread::spawn(move || {
+                let result = run_unity_timeout(
+                    &path,
+                    &["--help".into()],
+                    Duration::from_secs(8),
+                    None,
+                    cancel.as_ref(),
+                );
+                (path, result)
+            })
+        })
+        .collect();
+
+    let mut first_error = None;
+    for handle in handles {
+        let Ok((path, result)) = handle.join() else {
+            continue;
+        };
         if result.ok
             || result.stdout.contains("Usage")
             || result.stdout.to_lowercase().contains("unity")
@@ -3939,6 +4097,16 @@ fn detect_cli() -> DetectResult {
                 error: None,
             };
         }
+        if first_error.is_none() && !result.stderr.is_empty() {
+            first_error = Some(result.stderr);
+        }
+    }
+    if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+        return DetectResult {
+            path: None,
+            version: String::new(),
+            error: first_error,
+        };
     }
 
     match crate::process::command("unity").arg("--help").output() {
@@ -4041,6 +4209,7 @@ fn run_unity_timeout(
     args: &[String],
     timeout: Duration,
     cwd: Option<&PathBuf>,
+    cancel: Option<&Arc<AtomicBool>>,
 ) -> RunResult {
     let mut cmd = crate::process::command(bin);
     cmd.args(args)
@@ -4066,6 +4235,15 @@ fn run_unity_timeout(
 
     let started = Instant::now();
     let status = loop {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return RunResult {
+                ok: false,
+                stdout: String::new(),
+                stderr: "cancelled".into(),
+            };
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() >= timeout => {
@@ -4100,6 +4278,110 @@ fn run_unity_timeout(
         ok: status.success(),
         stdout,
         stderr,
+    }
+}
+
+fn build_install_command() -> Command {
+    if cfg!(windows) {
+        let mut cmd = crate::process::command("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            UnityState::install_hint_windows(),
+        ]);
+        cmd
+    } else {
+        let mut cmd = crate::process::command("bash");
+        cmd.args(["-c", UnityState::install_hint_unix()]);
+        cmd
+    }
+}
+
+fn run_cli_install(
+    id: u64,
+    tx: &mpsc::Sender<(u64, UnityWorkerMsg)>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut cmd = build_install_command();
+    run_streaming_tagged(&mut cmd, id, tx, cancel)
+}
+
+fn run_streaming_tagged(
+    cmd: &mut Command,
+    id: u64,
+    tx: &mpsc::Sender<(u64, UnityWorkerMsg)>,
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("无法启动安装脚本：{e}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tx_out = tx.clone();
+    let out_handle = thread::spawn(move || {
+        if let Some(out) = stdout {
+            for line in BufReader::new(out).lines().flatten() {
+                let _ = tx_out.send((id, UnityWorkerMsg::InstallProgress { line }));
+            }
+        }
+    });
+    let tx_err = tx.clone();
+    let err_handle = thread::spawn(move || {
+        let mut last = String::new();
+        if let Some(err) = stderr {
+            for line in BufReader::new(err).lines().flatten() {
+                last = line.clone();
+                let _ = tx_err.send((id, UnityWorkerMsg::InstallProgress { line }));
+            }
+        }
+        last
+    });
+
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_handle.join();
+            let _ = err_handle.join();
+            return Err("已取消安装".into());
+        }
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => thread::sleep(Duration::from_millis(80)),
+            Err(e) => return Err(format!("等待安装进程失败：{e}")),
+        }
+    };
+    let _ = out_handle.join();
+    let err_tail = err_handle.join().unwrap_or_default();
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "安装脚本退出码 {}{}",
+            status.code().unwrap_or(-1),
+            if err_tail.is_empty() {
+                String::new()
+            } else {
+                format!("：{err_tail}")
+            }
+        ))
+    }
+}
+
+fn push_install_log(tail: &mut Vec<String>, line: String) {
+    let line = line.trim_end().to_string();
+    if line.is_empty() {
+        return;
+    }
+    tail.push(line);
+    if tail.len() > INSTALL_LOG_TAIL_MAX {
+        let drain = tail.len() - INSTALL_LOG_TAIL_MAX;
+        tail.drain(0..drain);
     }
 }
 
@@ -4653,6 +4935,112 @@ const DEMO_RELEASES_JSON: &str = r#"[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_job_messages_are_dropped() {
+        let mut state = UnityState::default();
+        // Simulate a job (id 1) that is still in flight...
+        state.job_seq = 1;
+        let (tx, rx) = mpsc::channel::<(u64, UnityWorkerMsg)>();
+        state.pending_rx = Some(rx);
+        // ...but gets superseded by a second job before it replies.
+        state.job_seq = 2;
+        tx.send((
+            1,
+            UnityWorkerMsg::Detected {
+                path: Some(PathBuf::from("stale-path")),
+                version: "stale".into(),
+                error: None,
+            },
+        ))
+        .unwrap();
+
+        let changed = state.drain_worker();
+
+        assert!(!changed, "a reply from a superseded job must be ignored");
+        assert_eq!(state.cli_path, None);
+        assert_ne!(state.status, CliStatus::Ready);
+    }
+
+    #[test]
+    fn current_job_messages_are_applied() {
+        let mut state = UnityState::default();
+        state.job_seq = 5;
+        let (tx, rx) = mpsc::channel::<(u64, UnityWorkerMsg)>();
+        state.pending_rx = Some(rx);
+        state.busy = true;
+        tx.send((
+            5,
+            UnityWorkerMsg::Detected {
+                path: Some(PathBuf::from("real-path")),
+                version: "1.2.3".into(),
+                error: None,
+            },
+        ))
+        .unwrap();
+
+        let changed = state.drain_worker();
+
+        assert!(changed);
+        assert_eq!(state.cli_path, Some(PathBuf::from("real-path")));
+        assert_eq!(state.status, CliStatus::Ready);
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn spawn_job_cancels_previous_in_flight_job() {
+        let mut state = UnityState::default();
+        let (first_seen_cancel_tx, first_seen_cancel_rx) = mpsc::channel::<bool>();
+        let cancel1 = state.spawn_job(move |_id, _tx, cancel| {
+            let mut noticed = false;
+            for _ in 0..100 {
+                if cancel.load(Ordering::Relaxed) {
+                    noticed = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let _ = first_seen_cancel_tx.send(noticed);
+        });
+
+        // Spawning a second job must cooperatively cancel the first.
+        let _cancel2 = state.spawn_job(move |_id, _tx, _cancel| {});
+
+        let noticed = first_seen_cancel_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("first job should observe the cancel flag");
+        assert!(noticed);
+        assert!(cancel1.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn run_unity_timeout_respects_cancel_flag() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
+        let flipper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            cancel_clone.store(true, Ordering::SeqCst);
+        });
+
+        let (bin, args): (PathBuf, Vec<String>) = if cfg!(windows) {
+            (
+                PathBuf::from("ping"),
+                vec!["-n".into(), "10".into(), "127.0.0.1".into()],
+            )
+        } else {
+            (PathBuf::from("sleep"), vec!["10".into()])
+        };
+
+        let started = Instant::now();
+        let result = run_unity_timeout(&bin, &args, Duration::from_secs(30), None, Some(&cancel));
+        flipper.join().unwrap();
+
+        assert_eq!(result.stderr, "cancelled");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "cancellation should abort the wait loop well before the real timeout"
+        );
+    }
 
     #[test]
     fn summarize_demo_status_and_projects() {
