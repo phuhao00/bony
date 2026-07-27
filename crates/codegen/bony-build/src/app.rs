@@ -1511,9 +1511,6 @@ impl BonyBuildApp {
                         let _ = nav_chevron_btn(ui, NavDir::Forward, self.t("tip.forward"), false);
 
                         ui.add_space(8.0);
-                        self.project_chip(ui, ctx);
-
-                        ui.add_space(8.0);
                         ui.spacing_mut().button_padding = Vec2::new(6.0, 2.0);
                         ui.visuals_mut().button_frame = false;
                         for (label_key, build) in [
@@ -1637,67 +1634,6 @@ impl BonyBuildApp {
                     },
                 );
             });
-    }
-
-    /// Persistent "which project am I in" indicator, visible from every page
-    /// (chat / plugins / history) regardless of sidebar state. Click to
-    /// switch, hover to see the full path.
-    fn project_chip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let active = self
-            .active_task_id
-            .as_ref()
-            .and_then(|id| self.tasks.iter().find(|t| &t.id == id));
-        let unbound_new_chat = self.awaiting_project_choice
-            || active.is_some_and(|t| t.from_new_chat && !t.project_chosen);
-
-        let (name, full_path, tip) = if unbound_new_chat {
-            (
-                self.t("chip.pick_project").to_owned(),
-                String::new(),
-                self.t("chip.pick_project_tip").to_owned(),
-            )
-        } else {
-            let cwd = active
-                .map(|t| t.project_path.clone())
-                .or_else(|| self.model.cwd.clone())
-                .unwrap_or_else(|| self.config.cwd.clone());
-            let root = canonical_project_root(&cwd);
-            let name = AppModel::project_label(&root);
-            let full_path = root.display().to_string();
-            let tip = format!("{full_path}\n{}", self.t("chip.switch_project_tip"));
-            (name, full_path, tip)
-        };
-
-        let resp = Frame::new()
-            .fill(PANEL_2)
-            .corner_radius(CornerRadius::same(8))
-            .stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(Margin::symmetric(8, 3))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    paint_sidebar_glyph(ui, SidebarGlyph::Folder, MUTED);
-                    ui.label(
-                        RichText::new(&name)
-                            .size(12.5)
-                            .color(if unbound_new_chat { MUTED } else { TEXT })
-                            .strong(),
-                    );
-                });
-            })
-            .response
-            .interact(egui::Sense::click())
-            .on_hover_text(if full_path.is_empty() {
-                tip
-            } else {
-                tip
-            });
-        if resp.hovered() {
-            ctx.set_cursor_icon(CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            self.pick_project(ctx);
-        }
     }
 
     /// Start / cursor affordance for the title-bar drag strip.
