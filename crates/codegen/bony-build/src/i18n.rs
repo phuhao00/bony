@@ -175,6 +175,13 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
         "sidebar.switch_project" => tr(lang, "切换到此项目", "Switch to project"),
         "sidebar.remove_from_list" => tr(lang, "从列表移除", "Remove from list"),
         "sidebar.search" => tr(lang, "搜索任务", "Search tasks"),
+        "empty.prompt" => tr(lang, "接下来做什么？", "What's next?"),
+        "empty.login" => tr(lang, "请先登录或配置 API Key", "Sign in or configure an API key"),
+        "empty.recent" => tr(lang, "最近对话", "Recent chats"),
+        "empty.expand_more" => tr(lang, "展开更多", "Show more"),
+        "empty.collapse" => tr(lang, "收起", "Show less"),
+        "empty.no_recent" => tr(lang, "还没有最近对话", "No recent chats yet"),
+        "empty.delete_chat" => tr(lang, "删除对话", "Delete chat"),
 
         // —— Composer ——
         "composer.hint" => tr(lang, "随便问…", "Do anything"),
