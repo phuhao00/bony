@@ -165,6 +165,10 @@ pub struct BonyBuildApp {
     /// After top-level「新建对话」: no project/conversation selected until the user
     /// picks one (project row / per-project「新建」/ open project).
     awaiting_project_choice: bool,
+    /// Empty-state「最近对话」section expanded beyond the default 3 rows.
+    recent_inbox_expanded: bool,
+    /// Next task created via [`Self::ensure_task_for_send`] came from top-level「新建对话」.
+    pending_from_new_chat: bool,
 }
 
 impl BonyBuildApp {
@@ -278,6 +282,8 @@ impl BonyBuildApp {
             sidebar_groups_cache: None,
             delete_modal_ignore_click: false,
             awaiting_project_choice: false,
+            recent_inbox_expanded: false,
+            pending_from_new_chat: false,
         }
     }
 
@@ -312,6 +318,11 @@ impl BonyBuildApp {
     /// Shut down the agent and reconnect against a new working directory.
     fn switch_project(&mut self, ctx: &egui::Context, path: std::path::PathBuf) {
         let root = canonical_project_root(&path);
+        let keep_new_chat = self
+            .active_task_id
+            .as_ref()
+            .and_then(|id| self.tasks.iter().find(|t| &t.id == id))
+            .is_some_and(|t| t.from_new_chat);
         let same = self
             .config
             .cwd
@@ -325,6 +336,9 @@ impl BonyBuildApp {
         if same {
             // User explicitly clicked this project — accept it as the choice.
             self.awaiting_project_choice = false;
+            if keep_new_chat {
+                self.bind_active_new_chat_to_project(&root, &path);
+            }
             self.sidebar_groups_cache = None;
             self.model.go_chat();
             return;
@@ -334,8 +348,12 @@ impl BonyBuildApp {
         self.cmd_tx = None;
         self.config.cwd = path.clone();
         self.config.resume_session_id = None;
-        self.active_task_id = None;
         self.awaiting_project_choice = false;
+        if keep_new_chat {
+            self.bind_active_new_chat_to_project(&root, &path);
+        } else {
+            self.active_task_id = None;
+        }
         remember_project(&mut self.model.recent_projects, &root);
         self.model.cwd = Some(path);
         self.model.connected = false;
@@ -509,18 +527,40 @@ impl BonyBuildApp {
     }
 
     fn create_task(&mut self, _ctx: &egui::Context) {
-        // Top-level「新建对话」: blank chat, nothing selected. User picks a project
-        // later (click project / per-project「新建」). Do NOT auto-bind to cwd.
+        // Top-level「新建对话」: create an inbox draft immediately (最近对话),
+        // with no project selected in the sidebar tree.
         self.pending_worktree_rx = None;
-        self.active_task_id = None;
         self.awaiting_project_choice = true;
+        self.recent_inbox_expanded = false;
+        self.pending_from_new_chat = false;
         self.attachments.clear();
         self.changes.clear();
         self.selected_diff = None;
         self.clear_session_plugins();
-        self.sidebar_groups_cache = None;
+
+        let provisional = canonical_project_root(
+            &self
+                .model
+                .cwd
+                .clone()
+                .unwrap_or_else(|| self.config.cwd.clone()),
+        );
+        let mut task = TaskState::draft(provisional.clone(), self.model.current_model_id.clone());
+        task.worktree_path = provisional;
+        task.isolated = false;
+        task.from_new_chat = true;
+        if let Some(repo) = &self.task_repo {
+            if let Err(e) = repo.save(&task) {
+                self.task_error = Some(e);
+                return;
+            }
+        }
+        self.active_task_id = Some(task.id.clone());
         self.model.new_task();
+        self.model.task_title = task.title.clone();
         self.model.focus_composer = true;
+        self.tasks.insert(0, task);
+        self.sidebar_groups_cache = None;
         if self.model.connected && !self.model.needs_login {
             self.model.status = "Ready".into();
         }
@@ -550,6 +590,8 @@ impl BonyBuildApp {
             .clone()
             .unwrap_or_else(|| project.clone());
         task.isolated = false;
+        task.from_new_chat = self.pending_from_new_chat;
+        self.pending_from_new_chat = false;
         if let Some(repo) = &self.task_repo {
             if let Err(e) = repo.save(&task) {
                 self.task_error = Some(e);
@@ -562,12 +604,58 @@ impl BonyBuildApp {
         self.sidebar_groups_cache = None;
     }
 
+    /// Point the active top-level「新建对话」draft at a chosen project root.
+    fn bind_active_new_chat_to_project(
+        &mut self,
+        root: &std::path::Path,
+        worktree: &std::path::Path,
+    ) {
+        let Some(id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(task) = self
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == id && t.from_new_chat)
+        else {
+            return;
+        };
+        task.project_path = root.to_path_buf();
+        task.worktree_path = worktree.to_path_buf();
+        task.updated_at = unix_time();
+        if let Some(repo) = &self.task_repo {
+            let _ = repo.save(task);
+        }
+        self.sidebar_groups_cache = None;
+    }
+
+    /// Drop an unused inbox draft when the user switches to per-project「新建」.
+    fn discard_unused_new_chat_draft(&mut self) {
+        let Some(id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(pos) = self.tasks.iter().position(|t| {
+            t.id == id && t.from_new_chat && t.session_id.is_none() && is_placeholder_task_title(&t.title)
+        }) else {
+            return;
+        };
+        let id = self.tasks.remove(pos).id;
+        if let Some(repo) = &self.task_repo {
+            let _ = repo.delete(&id);
+        }
+        self.active_task_id = None;
+        self.sidebar_groups_cache = None;
+    }
+
     /// Create a new task under an explicit project root (used by per-project 「新建」).
     fn create_task_for(&mut self, ctx: &egui::Context, project: std::path::PathBuf) {
         if self.pending_worktree_rx.is_some() {
             self.model.status = "正在创建上一个工作区，请稍候…".into();
             return;
         }
+        // Per-project「新建」is never an inbox / top-level New chat entry.
+        self.pending_from_new_chat = false;
+        self.discard_unused_new_chat_draft();
         let project = GitWorkspaceService::primary_repo_root(&project)
             .ok()
             .flatten()
@@ -577,6 +665,7 @@ impl BonyBuildApp {
         // arrives from the background job below.
         task.worktree_path = project.clone();
         task.isolated = false;
+        task.from_new_chat = false;
         if let Some(repo) = &self.task_repo {
             if let Err(e) = repo.save(&task) {
                 self.task_error = Some(e);
@@ -1929,6 +2018,12 @@ impl BonyBuildApp {
                     }
                     ui.add_space(8.0);
                 }
+
+                // Always below projects. Do not gate on awaiting_project_choice —
+                // selecting a recent chat used to clear that flag and the whole
+                // section vanished, which felt like a broken jump to bony-build.
+                ui.add_space(10.0);
+                self.sidebar_recent_inbox(ui, ctx);
             });
     }
 
@@ -5548,26 +5643,149 @@ impl BonyBuildApp {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
 
         let line = if self.model.needs_login {
-            "请先登录或配置 API Key"
+            self.t("empty.login")
         } else {
-            "接下来做什么？"
-        };
+            self.t("empty.prompt")
+        }
+        .to_owned();
 
         ui.allocate_new_ui(
             egui::UiBuilder::new()
                 .max_rect(rect)
                 .layout(egui::Layout::top_down(egui::Align::Center)),
             |ui| {
-                // Optical center: slightly above geometric mid so it sits well above the composer.
                 ui.add_space((height * 0.38).clamp(64.0, 200.0));
-                ui.label(
-                    RichText::new(line)
-                        .size(22.0)
-                        .strong()
-                        .color(TEXT),
-                );
+                ui.label(RichText::new(line).size(22.0).strong().color(TEXT));
             },
         );
+    }
+
+    /// Sidebar「最近对话」分栏 — always under the project list.
+    fn sidebar_recent_inbox(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let recent_title = self.t("empty.recent").to_owned();
+        let expand_label = self.t("empty.expand_more").to_owned();
+        let collapse_label = self.t("empty.collapse").to_owned();
+        let no_recent = self.t("empty.no_recent").to_owned();
+        let delete_tip = self.t("empty.delete_chat").to_owned();
+        let active_id = self.active_task_id.clone();
+
+        let mut keyed: Vec<(i64, String, String, String)> = self
+            .tasks
+            .iter()
+            // Only top-level「新建对话」entries — never per-project「新建」.
+            .filter(|t| t.status != TaskStatus::Archived && t.from_new_chat)
+            .map(|t| {
+                (
+                    t.updated_at,
+                    t.id.clone(),
+                    display_task_title(t),
+                    AppModel::project_label(&canonical_project_root(&t.project_path)),
+                )
+            })
+            .collect();
+        keyed.sort_by(|a, b| b.0.cmp(&a.0));
+        let recent: Vec<(String, String, String)> = keyed
+            .into_iter()
+            .map(|(_, id, title, project)| (id, title, project))
+            .collect();
+        let total = recent.len();
+        let show_n = if self.recent_inbox_expanded {
+            total
+        } else {
+            total.min(3)
+        };
+
+        let mut activate_id: Option<String> = None;
+        let mut delete_id: Option<String> = None;
+        let mut toggle_expand = false;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&recent_title).size(11.5).color(MUTED));
+            if total > 0 {
+                ui.label(
+                    RichText::new(format!("· {total}"))
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            }
+        });
+        ui.add_space(6.0);
+
+        if recent.is_empty() {
+            ui.label(RichText::new(&no_recent).size(12.0).color(MUTED));
+        } else {
+            // Avoid nested ScrollArea for the default 3 rows (click/scroll glitches).
+            let mut draw_rows = |ui: &mut egui::Ui| {
+                for (id, title, project) in recent.iter().take(show_n) {
+                    let selected = active_id.as_ref() == Some(id);
+                    let (act, del) = render_recent_inbox_row(
+                        ui,
+                        id,
+                        title,
+                        project,
+                        &delete_tip,
+                        selected,
+                    );
+                    if act {
+                        activate_id = Some(id.clone());
+                    }
+                    if del {
+                        delete_id = Some(id.clone());
+                    }
+                    ui.add_space(2.0);
+                }
+            };
+            if self.recent_inbox_expanded && total > 3 {
+                let list_h = (show_n as f32 * 48.0 + 4.0).min(280.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("sidebar_recent_inbox")
+                    .max_height(list_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        draw_rows(ui);
+                    });
+            } else {
+                draw_rows(ui);
+            }
+        }
+
+        if total > 3 {
+            ui.add_space(4.0);
+            let label = if self.recent_inbox_expanded {
+                collapse_label
+            } else {
+                format!("{expand_label} ({})", total - 3)
+            };
+            if ui
+                .add(
+                    egui::Button::new(RichText::new(label).size(12.0).color(MUTED))
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE)
+                        .frame(false),
+                )
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .clicked()
+            {
+                toggle_expand = true;
+            }
+        }
+
+        if toggle_expand {
+            self.recent_inbox_expanded = !self.recent_inbox_expanded;
+        }
+        if let Some(id) = delete_id {
+            self.delete_task = Some(id);
+            self.delete_modal_ignore_click = true;
+            ctx.request_repaint();
+        }
+        // Resolve by id from the live task list so we never activate a stale clone
+        // that might point at the wrong project.
+        if let Some(id) = activate_id
+            && let Some(task) = self.tasks.iter().find(|t| t.id == id).cloned()
+        {
+            self.activate_task(ctx, task);
+        }
     }
 
     fn render_task_row(
@@ -5870,7 +6088,10 @@ impl BonyBuildApp {
                     group.archived.push(idx);
                 }
             } else if self.task_list_filter.matches(task.status) {
-                group.tasks.push(idx);
+                // Top-level「新建对话」lives only in「最近对话」, not under a project.
+                if !task.from_new_chat {
+                    group.tasks.push(idx);
+                }
             }
         }
 
@@ -7276,6 +7497,120 @@ fn nav_row(ui: &mut egui::Ui, glyph: SidebarGlyph, label: &str, selected: bool) 
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     resp.clicked()
+}
+
+fn render_recent_inbox_row(
+    ui: &mut egui::Ui,
+    task_id: &str,
+    title: &str,
+    project: &str,
+    delete_tip: &str,
+    selected: bool,
+) -> (bool, bool) {
+    let width = ui.available_width();
+    let row_h = 44.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
+    let hovered = resp.hovered() || resp.contains_pointer();
+    let show_chrome = selected || hovered;
+
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 16.0, rect.center().y),
+        Vec2::splat(26.0),
+    );
+    let close_resp = ui.interact(
+        close_rect,
+        ui.id().with(("inbox_row_close", task_id)),
+        egui::Sense::click(),
+    );
+
+    if show_chrome {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(8),
+            if selected {
+                SELECTED
+            } else {
+                Color32::from_rgb(44, 46, 56)
+            },
+        );
+        ui.painter().rect_stroke(
+            rect,
+            CornerRadius::same(8),
+            Stroke::new(
+                1.0,
+                if selected {
+                    Color32::from_rgb(70, 72, 84)
+                } else {
+                    Color32::from_rgb(62, 64, 76)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 4.0, rect.top() + 10.0),
+            Vec2::new(3.0, rect.height() - 20.0),
+        );
+        ui.painter().rect_filled(
+            bar,
+            CornerRadius::same(2),
+            if selected {
+                ACCENT_BAR
+            } else {
+                Color32::from_rgb(90, 100, 130)
+            },
+        );
+        if !close_resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+    }
+
+    let fg = if show_chrome { TEXT } else { MUTED };
+    paint_sidebar_glyph_at(
+        ui.painter(),
+        egui::pos2(rect.left() + 22.0, rect.center().y),
+        SidebarGlyph::Chat,
+        fg,
+    );
+
+    let text_left = rect.left() + 36.0;
+    let text_right = close_rect.left() - 4.0;
+    let text_w = (text_right - text_left).max(40.0);
+    ui.painter().text(
+        egui::pos2(text_left, rect.top() + 8.0),
+        egui::Align2::LEFT_TOP,
+        truncate_chip_label(title, ((text_w / 7.0) as usize).max(8)),
+        egui::FontId::proportional(12.5),
+        fg,
+    );
+    ui.painter().text(
+        egui::pos2(text_left, rect.top() + 24.0),
+        egui::Align2::LEFT_TOP,
+        truncate_chip_label(project, ((text_w / 6.5) as usize).max(8)),
+        egui::FontId::proportional(10.5),
+        MUTED,
+    );
+
+    if show_chrome {
+        if close_resp.hovered() {
+            ui.painter().rect_filled(
+                close_rect,
+                CornerRadius::same(6),
+                Color32::from_rgb(72, 36, 36),
+            );
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+        paint_sidebar_glyph_at(
+            ui.painter(),
+            close_rect.center(),
+            SidebarGlyph::Close,
+            if close_resp.hovered() { DANGER } else { MUTED },
+        );
+    }
+    let _ = close_resp.clone().on_hover_text(delete_tip);
+
+    let delete = close_resp.clicked();
+    let activate = !delete && resp.clicked();
+    (activate, delete)
 }
 
 fn task_row_meta(task: &TaskState) -> String {
