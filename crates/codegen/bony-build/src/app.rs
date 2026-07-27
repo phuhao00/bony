@@ -169,6 +169,38 @@ pub struct BonyBuildApp {
     recent_inbox_expanded: bool,
     /// Next task created via [`Self::ensure_task_for_send`] came from top-level「新建对话」.
     pending_from_new_chat: bool,
+    /// Plugins page: Plugins | Skills tab.
+    plugins_subnav: PluginsSubNav,
+    /// Local filter for the plugins/skills store.
+    plugins_search: String,
+    /// Selected catalog card → show detail (existing config UI).
+    plugins_selected: Option<PluginCatalogId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PluginsSubNav {
+    #[default]
+    Plugins,
+    Skills,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PluginCatalogId {
+    Unity,
+    OpenMontage,
+    Bevy,
+    SkillOpenMontage,
+    SkillBevy,
+}
+
+#[derive(Clone, Copy)]
+struct PluginCatalogEntry {
+    id: PluginCatalogId,
+    category_key: &'static str,
+    title_key: &'static str,
+    blurb_key: &'static str,
+    glyph: SidebarGlyph,
+    accent: Color32,
 }
 
 impl BonyBuildApp {
@@ -284,6 +316,9 @@ impl BonyBuildApp {
             awaiting_project_choice: false,
             recent_inbox_expanded: false,
             pending_from_new_chat: false,
+            plugins_subnav: PluginsSubNav::Plugins,
+            plugins_search: String::new(),
+            plugins_selected: None,
         }
     }
 
@@ -1188,12 +1223,14 @@ impl eframe::App for BonyBuildApp {
         let on_unity = self.model.main_nav == MainNav::Unity;
         let show_task_title =
             on_chat && (!self.model.is_empty_chat() || self.model.is_viewing_history());
+        // Plugins page owns its own Plugins|Skills chrome — skip the duplicate「插件」title.
+        let show_nav_title = !on_chat && !on_plugins;
 
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(BG).inner_margin(Margin::symmetric(0, 0)))
             .show(ctx, |ui| {
                 // No second control row under the window buttons — title only when needed.
-                if show_task_title || !on_chat {
+                if show_task_title || show_nav_title {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -1287,8 +1324,22 @@ impl eframe::App for BonyBuildApp {
                         .id_salt("plugins_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            centered_column(ui, |ui| {
-                                self.plugins_panel(ui);
+                            // Full-bleed store — don't reuse the narrow chat column.
+                            let pad = 28.0;
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad);
+                                // Leave matching right inset so actions aren't flush to the pane edge.
+                                let w = (ui.available_width() - pad).max(320.0);
+                                ui.allocate_ui_with_layout(
+                                    Vec2::new(w, ui.available_height()),
+                                    egui::Layout::top_down(egui::Align::Min)
+                                        .with_cross_justify(true),
+                                    |ui| {
+                                        ui.set_width(w);
+                                        self.plugins_panel(ui);
+                                    },
+                                );
                             });
                         });
                 } else if on_unity {
@@ -2570,14 +2621,299 @@ impl BonyBuildApp {
     }
 
     fn plugins_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.label(RichText::new(self.t("plugins.title")).size(20.0).strong().color(TEXT));
-        ui.add_space(4.0);
-        ui.label(RichText::new(self.t("plugins.blurb")).size(12.5).color(MUTED));
-        ui.add_space(10.0);
-        plugin_divider(ui);
+        let tab_plugins = self.t("plugins.tab_plugins").to_owned();
+        let tab_skills = self.t("plugins.tab_skills").to_owned();
+        let refresh_label = self.t("plugins.refresh").to_owned();
+        let back_label = self.t("plugins.back_store").to_owned();
+        let search_hint = self.t("plugins.search").to_owned();
+        let blurb = match self.plugins_subnav {
+            PluginsSubNav::Plugins => self.t("plugins.blurb"),
+            PluginsSubNav::Skills => self.t("plugins.skills_blurb"),
+        }
+        .to_owned();
 
-        // —— Unity ——
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            for (tab, label) in [
+                (PluginsSubNav::Plugins, tab_plugins.as_str()),
+                (PluginsSubNav::Skills, tab_skills.as_str()),
+            ] {
+                let selected = self.plugins_subnav == tab;
+                let resp = ui.add(
+                    egui::Button::new(
+                        RichText::new(label)
+                            .size(13.0)
+                            .strong()
+                            .color(if selected { TEXT } else { MUTED }),
+                    )
+                    .fill(if selected {
+                        Color32::from_rgb(48, 50, 60)
+                    } else {
+                        Color32::TRANSPARENT
+                    })
+                    .stroke(Stroke::new(
+                        1.0,
+                        if selected {
+                            Color32::from_rgb(70, 72, 84)
+                        } else {
+                            Color32::TRANSPARENT
+                        },
+                    ))
+                    .corner_radius(CornerRadius::same(8))
+                    .min_size(Vec2::new(64.0, 28.0)),
+                );
+                if resp.clicked() && self.plugins_subnav != tab {
+                    self.plugins_subnav = tab;
+                    self.plugins_selected = None;
+                    self.plugins_search.clear();
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if plugin_secondary_btn(ui, &refresh_label).clicked() {
+                    self.unity.ensure_detecting();
+                    self.openmontage.refresh_status();
+                    self.bevy.refresh_status();
+                }
+            });
+        });
+
+        if let Some(selected) = self.plugins_selected {
+            ui.add_space(10.0);
+            if plugin_link_btn(ui, &back_label).clicked() {
+                self.plugins_selected = None;
+            }
+            ui.add_space(6.0);
+            match selected {
+                PluginCatalogId::Unity => self.unity_plugin_detail(ui),
+                PluginCatalogId::OpenMontage | PluginCatalogId::SkillOpenMontage => {
+                    if matches!(selected, PluginCatalogId::SkillOpenMontage) {
+                        let path = crate::openmontage::skill_path().display().to_string();
+                        let label = self.t("plugins.skill_path").to_owned();
+                        plugin_path_row(ui, &label, &path, None, || {});
+                        ui.add_space(8.0);
+                    }
+                    self.openmontage_plugin_card(ui);
+                }
+                PluginCatalogId::Bevy | PluginCatalogId::SkillBevy => {
+                    if matches!(selected, PluginCatalogId::SkillBevy) {
+                        let path = crate::bevy::skill_path().display().to_string();
+                        let label = self.t("plugins.skill_path").to_owned();
+                        plugin_path_row(ui, &label, &path, None, || {});
+                        ui.add_space(8.0);
+                    }
+                    self.bevy_plugin_card(ui);
+                }
+            }
+            ui.add_space(24.0);
+            return;
+        }
+
+        ui.add_space(8.0);
+        ui.label(RichText::new(&blurb).size(12.5).color(MUTED));
+        ui.add_space(10.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.plugins_search)
+                .desired_width(ui.available_width().min(520.0))
+                .hint_text(RichText::new(&search_hint).color(MUTED))
+                .margin(Margin::symmetric(12, 8)),
+        );
+        ui.add_space(12.0);
+
+        let entries = self.plugin_catalog_entries();
+        let q = self.plugins_search.trim().to_lowercase();
+        let filtered: Vec<PluginCatalogEntry> = entries
+            .into_iter()
+            .filter(|e| {
+                if q.is_empty() {
+                    return true;
+                }
+                let title = self.t(e.title_key).to_lowercase();
+                let blurb = self.t(e.blurb_key).to_lowercase();
+                title.contains(&q) || blurb.contains(&q)
+            })
+            .collect();
+
+        self.plugins_installed_strip(ui, &filtered);
+        ui.add_space(10.0);
+
+        if filtered.is_empty() {
+            ui.label(
+                RichText::new(self.t("plugins.no_results"))
+                    .size(13.0)
+                    .color(MUTED),
+            );
+            ui.add_space(24.0);
+            return;
+        }
+
+        // Full-width stacked cards — avoid egui horizontal wrap/misalign.
+        let mut open_id: Option<PluginCatalogId> = None;
+        let mut install_id: Option<PluginCatalogId> = None;
+        let card_w = ui.available_width();
+        for entry in &filtered {
+            let enabled = self.catalog_enabled(entry.id);
+            let title = self.t(entry.title_key).to_owned();
+            let blurb = self.t(entry.blurb_key).to_owned();
+            let install = self.t("plugins.install").to_owned();
+            let configure = self.t("plugins.configure").to_owned();
+            ui.allocate_ui_with_layout(
+                Vec2::new(card_w, 0.0),
+                egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
+                |ui| {
+                    ui.set_width(card_w);
+                    let (open, install_clicked) = plugin_store_card(
+                        ui,
+                        entry.glyph,
+                        entry.accent,
+                        &title,
+                        &blurb,
+                        enabled,
+                        &install,
+                        &configure,
+                    );
+                    if open {
+                        open_id = Some(entry.id);
+                    }
+                    if install_clicked {
+                        install_id = Some(entry.id);
+                    }
+                },
+            );
+            ui.add_space(8.0);
+        }
+
+        if let Some(id) = install_id {
+            self.catalog_install(id);
+            self.plugins_selected = Some(id);
+        } else if let Some(id) = open_id {
+            self.plugins_selected = Some(id);
+        }
+        ui.add_space(16.0);
+    }
+
+    fn plugin_catalog_entries(&self) -> Vec<PluginCatalogEntry> {
+        match self.plugins_subnav {
+            PluginsSubNav::Plugins => vec![
+                PluginCatalogEntry {
+                    id: PluginCatalogId::Unity,
+                    category_key: "plugins.featured",
+                    title_key: "plugins.unity_title",
+                    blurb_key: "plugins.unity_blurb",
+                    glyph: SidebarGlyph::Unity,
+                    accent: UNITY_ACCENT,
+                },
+                PluginCatalogEntry {
+                    id: PluginCatalogId::OpenMontage,
+                    category_key: "plugins.cat_video",
+                    title_key: "plugins.openmontage_title",
+                    blurb_key: "plugins.openmontage_blurb",
+                    glyph: SidebarGlyph::Plug,
+                    accent: OM_ACCENT,
+                },
+                PluginCatalogEntry {
+                    id: PluginCatalogId::Bevy,
+                    category_key: "plugins.cat_gamedev",
+                    title_key: "plugins.bevy_title",
+                    blurb_key: "plugins.bevy_blurb",
+                    glyph: SidebarGlyph::Plug,
+                    accent: BEVY_ACCENT,
+                },
+            ],
+            PluginsSubNav::Skills => vec![
+                PluginCatalogEntry {
+                    id: PluginCatalogId::SkillOpenMontage,
+                    category_key: "plugins.cat_video",
+                    title_key: "plugins.skill_om_title",
+                    blurb_key: "plugins.skill_om_blurb",
+                    glyph: SidebarGlyph::Plug,
+                    accent: OM_ACCENT,
+                },
+                PluginCatalogEntry {
+                    id: PluginCatalogId::SkillBevy,
+                    category_key: "plugins.cat_gamedev",
+                    title_key: "plugins.skill_bevy_title",
+                    blurb_key: "plugins.skill_bevy_blurb",
+                    glyph: SidebarGlyph::Plug,
+                    accent: BEVY_ACCENT,
+                },
+            ],
+        }
+    }
+
+    fn catalog_enabled(&self, id: PluginCatalogId) -> bool {
+        match id {
+            PluginCatalogId::Unity => self.plugin_prefs.unity_enabled,
+            PluginCatalogId::OpenMontage | PluginCatalogId::SkillOpenMontage => {
+                self.plugin_prefs.openmontage_enabled
+            }
+            PluginCatalogId::Bevy | PluginCatalogId::SkillBevy => self.plugin_prefs.bevy_enabled,
+        }
+    }
+
+    fn catalog_install(&mut self, id: PluginCatalogId) {
+        match id {
+            PluginCatalogId::Unity => self.set_unity_plugin_enabled(true),
+            PluginCatalogId::OpenMontage | PluginCatalogId::SkillOpenMontage => {
+                self.set_openmontage_enabled(true);
+            }
+            PluginCatalogId::Bevy | PluginCatalogId::SkillBevy => {
+                self.set_bevy_enabled(true);
+            }
+        }
+    }
+
+    fn plugins_installed_strip(&mut self, ui: &mut egui::Ui, visible: &[PluginCatalogEntry]) {
+        let installed_label = self.t("plugins.installed").to_owned();
+        let installed: Vec<PluginCatalogEntry> = visible
+            .iter()
+            .copied()
+            .filter(|e| self.catalog_enabled(e.id))
+            .collect();
+        if installed.is_empty() {
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&installed_label)
+                    .size(12.5)
+                    .strong()
+                    .color(MUTED),
+            );
+        });
+        ui.add_space(6.0);
+        let mut open: Option<PluginCatalogId> = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            for entry in &installed {
+                let size = Vec2::splat(36.0);
+                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                let tip = self.t(entry.title_key);
+                let resp = resp.on_hover_text(tip);
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::same(9),
+                    Color32::from_rgb(44, 46, 56),
+                );
+                ui.painter().rect_stroke(
+                    rect,
+                    CornerRadius::same(9),
+                    Stroke::new(1.0, Color32::from_rgb(62, 64, 76)),
+                    egui::StrokeKind::Inside,
+                );
+                paint_sidebar_glyph_at(ui.painter(), rect.center(), entry.glyph, entry.accent);
+                if resp.clicked() {
+                    open = Some(entry.id);
+                }
+            }
+        });
+        if let Some(id) = open {
+            self.plugins_selected = Some(id);
+        }
+        ui.add_space(4.0);
+    }
+
+    fn unity_plugin_detail(&mut self, ui: &mut egui::Ui) {
         let unity_enabled = self.plugin_prefs.unity_enabled;
         let unity_status = self.unity.status.label().to_string();
         let unity_status_color = match self.unity.status {
@@ -2642,10 +2978,6 @@ impl BonyBuildApp {
                 ui.label(RichText::new(&unity_off_hint).size(12.0).color(MUTED));
             }
         });
-
-        self.openmontage_plugin_card(ui);
-        self.bevy_plugin_card(ui);
-        ui.add_space(24.0);
     }
 
     fn bevy_plugin_card(&mut self, ui: &mut egui::Ui) {
@@ -6592,6 +6924,79 @@ fn plugin_divider(ui: &mut egui::Ui) {
         .hline(rect.x_range(), rect.center().y, Stroke::new(1.0, BORDER));
 }
 
+/// Store grid card. Returns `(open_detail, install_clicked)`.
+fn plugin_store_card(
+    ui: &mut egui::Ui,
+    glyph: SidebarGlyph,
+    accent: Color32,
+    title: &str,
+    blurb: &str,
+    enabled: bool,
+    install_label: &str,
+    configure_label: &str,
+) -> (bool, bool) {
+    let mut open = false;
+    let mut install = false;
+    Frame::new()
+        .fill(Color32::from_rgb(36, 38, 46))
+        .corner_radius(CornerRadius::same(12))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(56, 58, 68)))
+        .inner_margin(Margin {
+            left: 14,
+            right: 16,
+            top: 12,
+            bottom: 12,
+        })
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let icon_size = Vec2::splat(36.0);
+                let (icon_rect, _) = ui.allocate_exact_size(icon_size, egui::Sense::hover());
+                ui.painter().rect_filled(
+                    icon_rect,
+                    CornerRadius::same(9),
+                    Color32::from_rgb(48, 50, 60),
+                );
+                paint_sidebar_glyph_at(ui.painter(), icon_rect.center(), glyph, accent);
+                ui.add_space(12.0);
+
+                // Action first (right-to-left) so text gets remaining width with inset.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(4.0);
+                    if enabled {
+                        if plugin_secondary_btn(ui, configure_label).clicked() {
+                            open = true;
+                        }
+                    } else if plugin_primary_btn(ui, install_label, accent).clicked() {
+                        install = true;
+                    }
+                    ui.add_space(10.0);
+                    let text_w = ui.available_width();
+                    let text_resp = ui
+                        .allocate_ui_with_layout(
+                            Vec2::new(text_w, 0.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_max_width(text_w);
+                                ui.label(RichText::new(title).size(14.0).strong().color(TEXT));
+                                ui.add_space(3.0);
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(blurb).size(12.0).color(MUTED),
+                                    )
+                                    .wrap(),
+                                );
+                            },
+                        )
+                        .response;
+                    if text_resp.interact(egui::Sense::click()).clicked() {
+                        open = true;
+                    }
+                });
+            });
+        });
+    (open, install)
+}
+
 fn plugin_section(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(16.0);
     add(ui);
@@ -7169,7 +7574,7 @@ fn suggest_task_title(text: &str) -> String {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SidebarGlyph {
     Plus,
     Chat,
