@@ -140,7 +140,7 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
         "menu.edit" => tr(lang, "编辑", "Edit"),
         "menu.view" => tr(lang, "视图", "View"),
         "menu.help" => tr(lang, "帮助", "Help"),
-        "menu.new_task" => tr(lang, "新建任务", "New task"),
+        "menu.new_task" => tr(lang, "新建对话", "New chat"),
         "menu.open_project" => tr(lang, "打开项目…", "Open project…"),
         "menu.open_project_short" => tr(lang, "打开项目", "Open project"),
         "menu.quit" => tr(lang, "退出", "Quit"),
@@ -166,9 +166,16 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
         "nav.plugins" => tr(lang, "插件", "Plugins"),
         "nav.sites" => tr(lang, "站点", "Sites"),
         "nav.prs" => tr(lang, "拉取请求", "Pull requests"),
-        "nav.new_task" => tr(lang, "新建任务", "New task"),
+        "nav.new_task" => tr(lang, "新建对话", "New chat"),
+        "task.pick_project_title" => tr(lang, "选择要新建任务的项目", "Choose a project for the new task"),
+        "task.pick_project_hint" => tr(
+            lang,
+            "有多个项目时请先选择，不会默认落到当前启动目录。",
+            "Pick a project first when you have more than one — launch folder is not the default.",
+        ),
+        "task.pick_other_project" => tr(lang, "打开其他项目…", "Open another project…"),
         "sidebar.filter_tasks" => tr(lang, "筛选任务…", "Filter tasks…"),
-        "sidebar.by_project" => tr(lang, "按项目", "By project"),
+        "sidebar.by_project" => tr(lang, "项目", "Projects"),
         "sidebar.no_chats" => tr(lang, "暂无对话", "No conversations"),
         "sidebar.no_history" => tr(lang, "还没有对话记录", "No conversations yet"),
         "sidebar.no_match" => tr(lang, "没有匹配的对话", "No matching conversations"),
@@ -177,11 +184,7 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
         "sidebar.search" => tr(lang, "搜索任务", "Search tasks"),
 
         // —— Composer ——
-        "composer.hint" => tr(
-            lang,
-            "有问题，尽管问…  Enter 发送 · Shift+Enter 换行",
-            "Ask anything…  Enter to send · Shift+Enter for newline",
-        ),
+        "composer.hint" => tr(lang, "随便问…", "Do anything"),
         "composer.hint_login" => tr(
             lang,
             "请先登录或配置 API Key…",
@@ -192,7 +195,7 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
             "描述要对编辑器做的事…",
             "Describe what to do in the editor…",
         ),
-        "composer.hint_connecting" => tr(lang, "正在连接 agent…", "Connecting to agent…"),
+        "composer.hint_connecting" => tr(lang, "正在连接…", "Connecting…"),
         "composer.hint_history" => tr(
             lang,
             "要求后续变更（将回到当前会话）…",
