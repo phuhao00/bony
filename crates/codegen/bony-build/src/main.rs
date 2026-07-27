@@ -13,6 +13,7 @@ mod i18n;
 mod markdown;
 mod model;
 mod npc_ai;
+mod openmontage;
 mod process;
 mod task;
 mod unity;
