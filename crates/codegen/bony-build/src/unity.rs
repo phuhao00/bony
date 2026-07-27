@@ -1643,6 +1643,8 @@ pub struct UnityState {
     pub setup_focus: Option<SetupStep>,
     /// When true, agent cwd must not overwrite the chosen Unity project path.
     pub project_locked: bool,
+    /// Last cwd passed to `consider_agent_cwd` — skip disk probes when unchanged.
+    last_considered_cwd: Option<PathBuf>,
     pending_rx: Option<mpsc::Receiver<(u64, UnityWorkerMsg)>>,
     /// Monotonically increasing id of the most recently spawned worker job;
     /// messages tagged with an older id are stale (superseded) and dropped.
@@ -1691,6 +1693,7 @@ impl Default for UnityState {
             setup_step: SetupStep::InstallCli,
             setup_focus: None,
             project_locked: saved.is_some(),
+            last_considered_cwd: None,
             pending_rx: None,
             job_seq: 0,
             cancel_flag: None,
@@ -2488,6 +2491,7 @@ impl UnityState {
         }
         self.project_path = resolved.clone();
         self.project_locked = looks_like_unity_project(&resolved);
+        self.last_considered_cwd = None; // force re-eval next consider
         if self.project_locked {
             save_unity_project_pref(&resolved);
         }
@@ -2501,17 +2505,27 @@ impl UnityState {
 
     /// Optionally adopt agent cwd only when it resolves to a Unity project and
     /// the user has not locked a dedicated Unity root.
+    ///
+    /// IMPORTANT: must be cheap to call. Callers used to invoke this every egui
+    /// frame; `Path::canonicalize` + directory probes on Windows easily cost
+    /// several milliseconds and made the whole UI feel like a slideshow.
     pub fn consider_agent_cwd(&mut self, cwd: &PathBuf) {
-        if self.project_locked && looks_like_unity_project(&self.project_path) {
+        // Fast path: locked Unity root — trust the lock, no disk I/O.
+        if self.project_locked {
             return;
         }
+        // Fast path: same cwd as last evaluation — skip canonicalize walk.
+        if self.last_considered_cwd.as_ref() == Some(cwd) {
+            return;
+        }
+        self.last_considered_cwd = Some(cwd.clone());
+
         if let Some(root) = resolve_unity_project_root(cwd) {
             self.set_project_path(root);
             return;
         }
-        // Agent worktree / non-Unity cwd: keep existing locked path, otherwise
-        // surface the mismatch so the wizard asks the user to pick a project.
-        if !looks_like_unity_project(&self.project_path) {
+        // Agent worktree / non-Unity cwd: keep existing path unless empty/missing.
+        if self.project_path.as_os_str().is_empty() || !self.project_path.exists() {
             self.project_path = cwd.clone();
             self.project_locked = false;
             self.sync_setup_step();
