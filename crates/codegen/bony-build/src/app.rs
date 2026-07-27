@@ -24,6 +24,7 @@ use crate::unity::{
     unity_chat_help_text, wants_unity_help,
 };
 use crate::i18n::{self, Language, UiPrefs, load_ui_prefs, save_ui_prefs};
+use crate::openmontage::{OpenMontageState, OpenMontageStatus};
 use crate::usage::{
     ChatInteraction, PluginPrefs, aggregate_model_usage, forget_project, format_tokens,
     load_plugin_prefs, remember_project, save_plugin_prefs,
@@ -46,6 +47,7 @@ const ACCENT_BAR: Color32 = Color32::from_rgb(90, 140, 255);
 const AVATAR: Color32 = Color32::from_rgb(70, 120, 220);
 const SELECTED: Color32 = Color32::from_rgb(42, 44, 52);
 const UNITY_ACCENT: Color32 = Color32::from_rgb(0, 180, 216);
+const OM_ACCENT: Color32 = Color32::from_rgb(232, 120, 72);
 const MAX_CHAT_W: f32 = 860.0;
 const SIDEBAR_W: f32 = 248.0;
 const RIGHT_PANEL_W: f32 = 280.0;
@@ -120,6 +122,7 @@ pub struct BonyBuildApp {
     rename_task: Option<(String, String)>,
     delete_task: Option<String>,
     unity: UnityState,
+    openmontage: OpenMontageState,
     /// Latest operation id before a Unity action launched from chat.
     pending_unity_chat: Option<u64>,
     pending_unity_planner: bool,
@@ -220,6 +223,7 @@ impl BonyBuildApp {
         model.recent_projects = normalized;
         remember_project(&mut model.recent_projects, &project_root);
         let prefs = load_plugin_prefs();
+        let openmontage = OpenMontageState::from_prefs(&prefs);
         Self {
             model,
             event_rx,
@@ -239,6 +243,7 @@ impl BonyBuildApp {
             rename_task: None,
             delete_task: None,
             unity: UnityState::default(),
+            openmontage,
             pending_unity_chat: None,
             pending_unity_planner: false,
             pending_unity_approval: None,
@@ -825,6 +830,22 @@ impl eframe::App for BonyBuildApp {
                 .push_local_assistant(self.unity.latest_chat_result_since(previous_id));
         }
         if let Some(toast) = self.unity.take_toast() {
+            self.model.status = toast;
+        }
+
+        self.openmontage.ensure_checked();
+        if self.openmontage.poll() || self.openmontage.busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
+        if matches!(
+            self.openmontage.status,
+            OpenMontageStatus::Ready | OpenMontageStatus::MissingDeps(_)
+        ) && self.plugin_prefs.openmontage_root.as_ref() != Some(&self.openmontage.root)
+        {
+            self.plugin_prefs.openmontage_root = Some(self.openmontage.root.clone());
+            save_plugin_prefs(&self.plugin_prefs);
+        }
+        if let Some(toast) = self.openmontage.take_toast() {
             self.model.status = toast;
         }
 
@@ -1884,6 +1905,49 @@ impl BonyBuildApp {
         save_plugin_prefs(&self.plugin_prefs);
     }
 
+    fn set_openmontage_enabled(&mut self, enabled: bool) {
+        let root = self.openmontage.root.clone();
+        let result = if enabled {
+            if !self.openmontage.status.is_ready() {
+                self.openmontage.refresh_status();
+            }
+            if !self.openmontage.status.is_ready() {
+                self.model.status = "OpenMontage 尚未就绪，请先安装".into();
+                return;
+            }
+            crate::openmontage::enable_skill(&mut self.plugin_prefs, &root)
+        } else {
+            crate::openmontage::disable_skill(&mut self.plugin_prefs)
+        };
+        match result {
+            Ok(()) => {
+                save_plugin_prefs(&self.plugin_prefs);
+                self.model.status = if enabled {
+                    "已启用 OpenMontage".into()
+                } else {
+                    "已关闭 OpenMontage".into()
+                };
+            }
+            Err(e) => {
+                self.model.status = e;
+            }
+        }
+    }
+
+    fn pick_openmontage_root(&mut self) {
+        let start = self.openmontage.root.clone();
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("选择 OpenMontage 安装目录")
+            .set_directory(start.parent().unwrap_or(start.as_path()))
+            .pick_folder()
+        {
+            self.openmontage.root = path.clone();
+            self.plugin_prefs.openmontage_root = Some(path);
+            save_plugin_prefs(&self.plugin_prefs);
+            self.openmontage.refresh_status();
+        }
+    }
+
     /// Activate / deactivate a plugin for this conversation only (not persisted).
     fn set_chat_interaction(&mut self, mode: ChatInteraction) {
         let mode = if mode == ChatInteraction::Unity && !self.plugin_prefs.unity_enabled {
@@ -2021,7 +2085,7 @@ impl BonyBuildApp {
                 } else {
                     ui.add_space(10.0);
                     ui.label(
-                        RichText::new("启用后可在聊天里用本地 CLI 控制 Unity，不经 Agent。")
+                        RichText::new(self.t("plugins.enabled_hint"))
                             .size(12.0)
                             .color(MUTED),
                     );
@@ -2029,30 +2093,239 @@ impl BonyBuildApp {
             });
 
         ui.add_space(14.0);
+        self.openmontage_plugin_card(ui);
+    }
+
+    fn openmontage_plugin_card(&mut self, ui: &mut egui::Ui) {
+        let enabled = self.plugin_prefs.openmontage_enabled;
+        let status = self.openmontage.status.clone();
+        let busy = self.openmontage.busy;
+        let root_display = self.openmontage.root.display().to_string();
+        let last_step = self.openmontage.last_step.clone();
+        let fail_reason = match &status {
+            OpenMontageStatus::InstallFailed(r) => Some(r.clone()),
+            _ => None,
+        };
+        let missing_deps = match &status {
+            OpenMontageStatus::MissingDeps(m) => Some(m.join("、")),
+            _ => None,
+        };
+        let (status_label, status_color) = match &status {
+            OpenMontageStatus::Ready => (self.t("plugins.openmontage_status_ready").to_string(), OK),
+            OpenMontageStatus::NotInstalled | OpenMontageStatus::Unknown => {
+                (self.t("plugins.openmontage_status_missing").to_string(), MUTED)
+            }
+            OpenMontageStatus::Installing => {
+                (self.t("plugins.openmontage_status_installing").to_string(), OM_ACCENT)
+            }
+            OpenMontageStatus::InstallFailed(_) => {
+                (self.t("plugins.openmontage_status_failed").to_string(), DANGER)
+            }
+            OpenMontageStatus::MissingDeps(_) => {
+                (self.t("plugins.openmontage_status_deps").to_string(), DANGER)
+            }
+        };
+        let title = self.t("plugins.openmontage_title").to_string();
+        let blurb = self.t("plugins.openmontage_blurb").to_string();
+        let path_label = self.t("plugins.openmontage_path").to_string();
+        let change_label = self.t("plugins.openmontage_change").to_string();
+        let status_key = self.t("plugins.status").to_string();
+        let enable_label = self.t("plugins.enable").to_string();
+        let prereq = self.t("plugins.openmontage_prereq").to_string();
+        let install_label = self.t("plugins.openmontage_install").to_string();
+        let installing_hint = self.t("plugins.openmontage_installing_hint").to_string();
+        let retry_label = self.t("plugins.openmontage_retry").to_string();
+        let reinstall_label = self.t("plugins.openmontage_reinstall_deps").to_string();
+        let backlot_label = self.t("plugins.openmontage_backlot").to_string();
+        let enabled_hint = self.t("plugins.openmontage_enabled_hint").to_string();
+        let border = if enabled && status.is_ready() {
+            OM_ACCENT
+        } else {
+            BORDER
+        };
+
         Frame::new()
             .fill(PANEL)
             .corner_radius(CornerRadius::same(14))
-            .stroke(Stroke::new(1.0, BORDER))
+            .stroke(Stroke::new(1.0, border))
             .inner_margin(Margin::symmetric(16, 14))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    paint_sidebar_glyph(ui, SidebarGlyph::Plug, MUTED);
+                    paint_sidebar_glyph(
+                        ui,
+                        SidebarGlyph::Plug,
+                        if enabled && status.is_ready() {
+                            OM_ACCENT
+                        } else {
+                            MUTED
+                        },
+                    );
                     ui.add_space(10.0);
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("更多插件")
-                                .size(14.0)
+                            RichText::new(&title)
+                                .size(15.0)
                                 .strong()
-                                .color(MUTED),
+                                .color(TEXT),
                         );
-                        ui.label(
-                            RichText::new("后续会在这里扩展更多本地能力。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
+                        ui.label(RichText::new(&blurb).size(12.0).color(MUTED));
                     });
+                    if status.is_ready() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut on = enabled;
+                            if ui
+                                .add(egui::Checkbox::new(
+                                    &mut on,
+                                    RichText::new(&enable_label).size(12.5),
+                                ))
+                                .changed()
+                            {
+                                self.set_openmontage_enabled(on);
+                            }
+                        });
+                    }
                 });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&path_label).size(12.0).color(MUTED));
+                    ui.label(
+                        RichText::new(&root_display)
+                            .size(12.0)
+                            .color(TEXT)
+                            .monospace(),
+                    );
+                    if !busy && ui.small_button(&change_label).clicked() {
+                        self.pick_openmontage_root();
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&status_key).size(12.0).color(MUTED));
+                    ui.label(RichText::new(&status_label).size(12.5).color(status_color));
+                    if !last_step.is_empty() && busy {
+                        ui.label(
+                            RichText::new(format!("· {last_step}"))
+                                .size(11.5)
+                                .color(MUTED),
+                        );
+                    }
+                });
+
+                match &status {
+                    OpenMontageStatus::NotInstalled | OpenMontageStatus::Unknown => {
+                        ui.add_space(10.0);
+                        ui.label(RichText::new(&prereq).size(12.0).color(MUTED));
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(
+                                    RichText::new(&install_label)
+                                        .size(12.5)
+                                        .color(BG)
+                                        .strong(),
+                                )
+                                .fill(OM_ACCENT)
+                                .corner_radius(CornerRadius::same(8))
+                                .min_size(Vec2::new(0.0, 30.0)),
+                            )
+                            .clicked()
+                        {
+                            self.openmontage.start_install(false);
+                        }
+                    }
+                    OpenMontageStatus::Installing => {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(&installing_hint).size(12.0).color(MUTED));
+                        self.openmontage_log_tail(ui);
+                    }
+                    OpenMontageStatus::InstallFailed(_) => {
+                        ui.add_space(8.0);
+                        if let Some(reason) = &fail_reason {
+                            ui.label(RichText::new(reason).size(12.0).color(DANGER));
+                        }
+                        self.openmontage_log_tail(ui);
+                        ui.add_space(8.0);
+                        if ui
+                            .button(RichText::new(&retry_label).size(12.5))
+                            .clicked()
+                        {
+                            self.openmontage.start_install(false);
+                        }
+                    }
+                    OpenMontageStatus::MissingDeps(_) => {
+                        ui.add_space(8.0);
+                        if let Some(missing) = &missing_deps {
+                            ui.label(
+                                RichText::new(format!("缺少：{missing}"))
+                                    .size(12.0)
+                                    .color(DANGER),
+                            );
+                        }
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(
+                                !busy,
+                                egui::Button::new(
+                                    RichText::new(&reinstall_label)
+                                        .size(12.5)
+                                        .color(BG)
+                                        .strong(),
+                                )
+                                .fill(OM_ACCENT)
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .clicked()
+                        {
+                            self.openmontage.start_install(true);
+                        }
+                    }
+                    OpenMontageStatus::Ready => {
+                        ui.add_space(10.0);
+                        if enabled {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .button(RichText::new(&backlot_label).size(12.5))
+                                    .clicked()
+                                {
+                                    self.openmontage.open_backlot();
+                                }
+                            });
+                            ui.add_space(6.0);
+                        }
+                        ui.label(RichText::new(&enabled_hint).size(12.0).color(MUTED));
+                    }
+                }
+            });
+    }
+
+    fn openmontage_log_tail(&self, ui: &mut egui::Ui) {
+        if self.openmontage.log_tail.is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        Frame::new()
+            .fill(PANEL_2)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.openmontage.log_tail {
+                            ui.label(
+                                RichText::new(line)
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(MUTED),
+                            );
+                        }
+                    });
             });
     }
 

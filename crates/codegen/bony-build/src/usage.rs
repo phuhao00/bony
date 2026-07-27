@@ -158,6 +158,12 @@ pub struct PluginPrefs {
     /// Installed / available in the 「+」 menu (plugins page toggle).
     #[serde(default = "default_true")]
     pub unity_enabled: bool,
+    /// OpenMontage video pipelines skill (persisted enablement).
+    #[serde(default)]
+    pub openmontage_enabled: bool,
+    /// Local OpenMontage checkout root (independent of agent cwd).
+    #[serde(default)]
+    pub openmontage_root: Option<PathBuf>,
     /// Legacy field ignored; conversation plugins are session-only.
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
@@ -172,6 +178,8 @@ impl Default for PluginPrefs {
     fn default() -> Self {
         Self {
             unity_enabled: true,
+            openmontage_enabled: false,
+            openmontage_root: None,
             chat_interaction: None,
         }
     }
