@@ -2,13 +2,14 @@
 
 # Bony Build
 
-**Native desktop AI coding assistant** — chat to edit code, isolate tasks in Git worktrees, session plugins (Unity CLI), and change observability.
+**Native desktop AI coding assistant** — chat to edit code, isolate tasks in Git worktrees, details-panel VCS, session plugins (Unity / Bevy).
 
 **Language:** [中文](README.md) · **English**
 
 [Prebuilt binaries](#prebuilt-binaries) ·
 [Quick start](#quick-start) ·
 [Features](#features) ·
+[Details & VCS](#details--vcs) ·
 [Plugins & Unity](#plugins--unity) ·
 [Web monitor](#web-monitor) ·
 [Models & providers](#models--providers) ·
@@ -30,10 +31,11 @@ Good fit if you want to:
 
 - Use **multi-provider BYOK** (Qwen / Kimi / Zhipu / OpenAI-compatible, etc.) for day-to-day edits on your machine
 - Keep work **isolated per task with Git worktrees**, with sidebar conversations grouped **by project**
-- Drive Unity with a **local CLI loop** (probe, Play, Pipeline) without hanging installs through the Agent
+- Inspect the working copy, per-file diffs, and commit history in a **resizable details panel** (Fork-style)
+- Drive Unity / Bevy extensions locally; Unity uses a **local CLI loop** (probe, Play, Pipeline) without hanging installs through the Agent
 - Inspect architecture layers and per-commit feature impact with a local **Web monitor**
 
-Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture. The Agent calls terminal, file-edit, and search tools. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
+Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
 
 **The product brand and desktop shell are Bony Build.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony-build`](https://github.com/phuhao00/bony-build).
 
@@ -48,7 +50,7 @@ GitHub Releases ship desktop zips (you still need a local `grok` CLI):
   - `bony-build-v0.1.3-macos-aarch64.zip`
   - `bony-build-v0.1.3-macos-x86_64.zip`
 
-Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) on `v*` tags (`release-dist` profile).
+Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) on `v*` tags (`release-dist` profile). Local packaging output under `.local-dist/` is listed in [`.gitignore`](.gitignore)—do not commit exe / zip artifacts.
 
 ---
 
@@ -57,20 +59,36 @@ Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-des
 | Capability | Description |
 |------------|-------------|
 | Chat workspace | Codex-style sidebar + timeline; Markdown, user bubbles / assistant cards, inline tool results |
+| New chat | Top-level **New chat** is unscoped; sidebar has a **Recent chats** inbox |
 | Grouped by project | Sidebar groups conversations by project; delete / archive; suggested titles |
 | Tasks & worktrees | Create / switch tasks; optional isolated worktrees and branches |
-| Session plugins | Composer **`+`**: attach files, enable Unity, manage plugins; dismissible chips (session-scoped, not sticky across relaunch) |
+| Details · VCS | Resizable right panel: working-copy file list, colored diffs, describe & commit, history → changed files → per-file patch |
+| Session plugins | Composer **`+`**: attach files, enable Unity / Bevy, manage plugins; dismissible chips |
+| Plugins store | **Plugins** page: tabs, search, installed strip, full-width cards |
 | Permission modes | Per task: read-only / ask / allow edits / full control; CLI supports `--ask-permissions` |
-| Quick starts | One-click common tasks (explain structure, find bugs, add tests, summarize auth, …) |
 | Model switching | Click the model name in the composer; choice is written to `~/.grok/config.toml` as default |
 | Multi-provider | Kimi / Qwen / Zhipu / OpenAI-compatible / Anthropic Messages, etc. (BYOK) |
-| Unity control | **Plugins** page for install & project binding; in-chat Unity chip + shortcuts / `/unity`; **local CLI, not Agent** |
+| Unity control | **Plugins** page for install & project binding; in-chat chip + shortcuts / `/unity`; **local CLI, not Agent** |
+| Bevy | Optional Rust ECS game-dev integration (enable on the Plugins page) |
 | Usage stats | Turn and token usage panel (line / bar charts) |
 | CJK UI | System Chinese fonts (e.g. Microsoft YaHei) to avoid tofu glyphs |
-| Shortcuts | **Enter** to send, **Shift+Enter** for newline; Send stays readable when disabled, with hover reasons |
+| Shortcuts | **Enter** to send, **Shift+Enter** for newline |
 | Web monitor | Architecture layers, “how it works”, feature-impact matrix, commit impact timeline |
 
-Primary sidebar nav today: **New task** · **Chat** · **Plugins**. Sites / PRs / schedules remain future placeholders.
+Primary sidebar nav today: **New chat** · **Chat** · **Plugins**. Sites / PRs / schedules remain placeholders.
+
+---
+
+## Details & VCS
+
+Open the right-hand **Details** panel for session info and Git:
+
+1. **Working copy** — scans the **primary project checkout** (not the agent worktree); lists A/M/D changes  
+2. **Describe & commit** — when dirty, an inline message field appears; commit after describing  
+3. **Recent history** — click a commit → **changed files** (add/del bars) → click a file for that file’s patch  
+4. Drag the **left edge** of the panel to widen it for long diffs  
+
+Non-Git directories do not raise a modal error; the panel simply notes that VCS is unavailable. Status refreshes about every 2 seconds, or use **Refresh**.
 
 ---
 
@@ -78,41 +96,40 @@ Primary sidebar nav today: **New task** · **Chat** · **Plugins**. Sites / PRs 
 
 ### Plugin model
 
-1. Sidebar **Plugins**: enable / disable Unity control, open settings or docs  
-2. Composer **`+`**: attach files or Unity for this conversation; dismissible context chips appear  
-3. With Unity on, the composer shows quiet shortcuts (save scene, refresh assets, Play, …) and Docs
+1. Sidebar **Plugins**: enable / disable Unity, Bevy, etc.; open settings or docs  
+2. Composer **`+`**: attach files or extensions for this session; dismissible context chips  
+3. With Unity enabled, the composer offers quiet shortcuts (save scene, refresh assets, Play, …) and docs
 
-In-chat Unity actions use the **local Unity CLI**, not the grok Agent, so `unity pipeline install` does not hang inside a worktree.
+Unity actions use the **local Unity CLI**, not the grok Agent—so `unity pipeline install` does not hang inside a worktree.
 
-### Recommended setup
+### Recommended install
 
-Install CLI → re-detect → confirm a project root that contains `Assets` → install Pipeline → open the editor and probe → run the loop. Default Windows CLI: `%LOCALAPPDATA%\Unity\bin\unity.exe`.
+Install CLI → re-detect → confirm a project root with `Assets` → install Pipeline → open the editor and probe → run the loop. Default Windows CLI: `%LOCALAPPDATA%\Unity\bin\unity.exe`.
 
 ```powershell
 $env:UNITY_CLI_CHANNEL='beta'; irm https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1 | iex
 ```
 
-More detail (scaffolds, NPC AI, slash commands): [`crates/codegen/bony-build/README.md`](crates/codegen/bony-build/README.md).
+More detail: [`crates/codegen/bony-build/README.md`](crates/codegen/bony-build/README.md).
 
 ---
 
 ## Web monitor
 
-A local dashboard for **overall architecture**, end-to-end “how it works”, and **impact of each change**:
+Local dashboard for **architecture**, end-to-end “how it works”, and **per-change impact**:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1
-# Open http://127.0.0.1:8787
+# open http://127.0.0.1:8787
 ```
 
 Capabilities:
 
-- **Feature impact matrix**: chat, model switch, auth, multi-provider, tools, permissions, ACP sessions, workspace, TUI, monitor, docs, …
+- **Feature-impact matrix**: chat, model switch, auth, multi-provider, tools, permissions, ACP session, workspace, TUI, monitor, docs, …
 - **Multi-axis scoring**: UX / capability / security / stability / compatibility / performance / DX / docs
-- **How it works**: layering and turn-flow notes (with architecture diagrams)
-- Per-commit **user impact notes** + **suggested verification checklist**
-- Commit messages can include `Impact:` / `改进:` / `Risk:` / `风险:`
-- Directory hot-reload; sync the capability catalog with `scripts/sync-monitor-catalog.ps1`
+- **How it works**: layer and turn-flow notes (with architecture diagrams)
+- Per-commit **user impact** + **suggested verification checklist**
+- Commit messages may include `Impact:` / `改进:` / `Risk:` / `风险:`
 
 Implementation: `crates/codegen/bony-monitor` (Axum).
 
@@ -128,8 +145,8 @@ Implementation: `crates/codegen/bony-monitor` (Axum).
    npm i -g @xai-official/grok
    grok --version
    ```
-3. **Credentials** (pick one)  
-   - Configure BYOK models in `%USERPROFILE%\.grok\config.toml` plus matching env vars (recommended)  
+3. **Credentials** (either)  
+   - Configure BYOK models + env vars in `%USERPROFILE%\.grok\config.toml` (recommended)  
    - Or `grok login` / `XAI_API_KEY`
 
 ### Launch the desktop app
@@ -138,7 +155,7 @@ Implementation: `crates/codegen/bony-monitor` (Axum).
 # Dev: build and run
 powershell -ExecutionPolicy Bypass -File .\scripts\run-desktop.ps1
 
-# Clean relaunch: kill old processes → release build → start
+# Clean restart: kill old process → release build → launch
 powershell -ExecutionPolicy Bypass -File .\scripts\run-bony-build.ps1
 
 # Or
@@ -146,23 +163,23 @@ $env:CARGO_TARGET_DIR = "$PWD\target"
 cargo run -p bony-build
 ```
 
-Common flags:
+Useful flags:
 
 ```text
---cwd <path>        Session working directory (default: current directory)
---grok-bin <path>   Path to the grok binary
+--cwd <path>        Session working directory (default: cwd)
+--grok-bin <path>   Path to the grok executable
 --ask-permissions   Require manual tool approval (default: auto-approve)
 ```
 
-On Windows, if you hit **os error 4551** (Smart App Control), build from a trusted terminal or turn SAC off and retry.
+On Windows, **os error 4551** (Smart App Control) usually means build from a trusted terminal or disable SAC.
 
-### Terminal TUI (optional)
+### Terminal TUI
 
-This repo still includes the full `grok` TUI / agent sources:
+This repo still ships the full `grok` TUI / agent sources:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run-dev.ps1
-# Or
+# or
 cargo run -p xai-grok-pager-bin
 ```
 
@@ -176,9 +193,9 @@ irm https://x.ai/cli/install.ps1 | iex
 
 ## Models & providers
 
-The model catalog and defaults live in `%USERPROFILE%\.grok\config.toml`. After the desktop app starts, click the **model name** to switch; the choice is synced to `[models] default`.
+Model catalog and defaults come from `%USERPROFILE%\.grok\config.toml`. After launch, click the **model name** to switch; the choice is written to `[models] default`.
 
-You can also **Edit config.toml** in the picker. Example (Qwen / DashScope):
+You can also **edit config.toml** in the picker. Example (Qwen / DashScope):
 
 ```toml
 [models]
@@ -194,19 +211,19 @@ api_backend = "chat_completions"
 context_window = 32768
 ```
 
-Verified setups:
+Verified providers:
 
 | Provider | Typical `base_url` | Env var |
 |----------|--------------------|---------|
-| Qwen (DashScope) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
+| Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
 | Kimi / Moonshot | `https://api.moonshot.cn/v1` | `MOONSHOT_API_KEY` |
 | Zhipu GLM | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPUAI_API_KEY` |
 | OpenAI-compatible | Any `/v1` endpoint | Custom `env_key` |
 
-More protocols (Anthropic `messages`, Responses API, Ollama, …):  
+More protocols:  
 [`crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md`](crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md)
 
-Restart the desktop app after changing config or env vars. Use `grok models` to verify the active catalog.
+Restart the desktop app after config or env changes. Use `grok models` to verify the catalog.
 
 ---
 
@@ -223,13 +240,14 @@ grok agent stdio  →  MvpAgent / SessionActor
         └─ Workspace / MCP / sub-agents
 
 Side path: Unity CLI (local process, not via ACP / Agent)
+Side path: Details-panel Git (primary-repo status / show, not via Agent)
 ```
 
 - Desktop crate: [`crates/codegen/bony-build`](crates/codegen/bony-build)
 - Layers & turn flow: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Diagrams: [`docs/architecture-layers.png`](docs/architecture-layers.png), [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png)
 
-The desktop app does **not** embed the full agent runtime; it drives an installed `grok` subprocess. Unity control calls the local CLI directly.
+The desktop app does **not** embed the full agent runtime; it drives an installed `grok` subprocess.
 
 ---
 
@@ -241,7 +259,17 @@ The desktop app does **not** embed the full agent runtime; it drives an installe
 | Product shell | Fork-owned: `bony-build`, `bony-monitor`, branded docs, desktop release workflow |
 | Pin | Root [`SOURCE_REV`](SOURCE_REV) records the upstream monorepo sync point |
 
-Integration approach: take upstream `main` as the base, then reapply the Bony product layer (histories do not share a common ancestor, so a plain `git rebase` is not possible). Rollback tag: `backup/pre-upstream-sync`.
+### Sync upstream
+
+```powershell
+git remote add upstream https://github.com/xai-org/grok-build.git   # once
+git fetch upstream
+git rebase upstream/main
+# After history rewrite:
+git push --force-with-lease origin main
+```
+
+Rollback tag (if still present locally): `backup/pre-upstream-sync`.
 
 ---
 
@@ -249,7 +277,7 @@ Integration approach: take upstream `main` as the base, then reapply the Bony pr
 
 | Path | Description |
 |------|-------------|
-| `crates/codegen/bony-build` | Bony Build desktop client (Unity / plugin UX) |
+| `crates/codegen/bony-build` | Bony Build desktop client (details VCS, Unity / Bevy / plugin UX) |
 | `crates/codegen/bony-monitor` | Architecture & change-impact Web monitor |
 | `crates/codegen/xai-grok-shell` | Agent runtime, stdio / headless |
 | `crates/codegen/xai-grok-pager*` | Official TUI (`grok`) |
@@ -258,7 +286,6 @@ Integration approach: take upstream `main` as the base, then reapply the Bony pr
 | `scripts/run-desktop.ps1` | Desktop build & run |
 | `scripts/run-bony-build.ps1` | Kill old processes + release build + launch |
 | `scripts/run-monitor.ps1` | Start Web monitor (default :8787) |
-| `scripts/sync-monitor-catalog.ps1` | Sync monitor capability catalog |
 | `scripts/run-dev.ps1` | TUI dev launch |
 | `.github/workflows/release-desktop.yml` | Multi-platform desktop zip release |
 | `docs/` | Screenshots and architecture diagrams |
@@ -278,7 +305,7 @@ cargo build -p bony-build --profile release-dist
 cargo run -p bony-build -- --cwd $PWD
 ```
 
-Ignore local artifacts: `target/`, `.tools/`, `*.log`, and a local `Bony Build.exe`.
+Ignore local artifacts: `target/`, `.tools/`, `.local-dist/`, `*.log`.
 
 To cut a release: push an annotated tag (e.g. `v0.1.3`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
 
@@ -297,4 +324,4 @@ This repo includes agent / TUI sources synced from the SpaceXAI monorepo / `xai-
 
 ## Acknowledgments
 
-Agent runtime and `grok` CLI capabilities come from [SpaceXAI / Grok Build](https://x.ai/cli) and [`xai-org/grok-build`](https://github.com/xai-org/grok-build). Bony Build adds a multi-provider desktop experience, task / worktree workflows, session plugins (Unity), and change observability on top.
+Agent runtime and `grok` CLI capabilities come from [SpaceXAI / Grok Build](https://x.ai/cli) and [`xai-org/grok-build`](https://github.com/xai-org/grok-build). Bony Build adds a multi-provider desktop experience, task / worktree workflows, a details-panel VCS UI, session plugins (Unity / Bevy), and change observability on top.
