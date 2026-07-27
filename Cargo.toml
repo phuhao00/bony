@@ -402,14 +402,20 @@ inherits = "release-dist"
 # All settings now match the parent — this is an intentional alias.
 
 
-[profile.dev]
-panic = "abort"
-split-debuginfo = "unpacked"
-codegen-units = 128
-debug = "line-tables-only"
-opt-level = 0
-lto = false
-incremental = true
+[profile.dev.package.bony-build]
+# egui UI tessellation is painful at opt-level 0; keep local `cargo run` usable.
+opt-level = 2
+
+[profile.dev.package.egui]
+opt-level = 2
+[profile.dev.package.epaint]
+opt-level = 2
+[profile.dev.package.eframe]
+opt-level = 2
+[profile.dev.package.egui_glow]
+opt-level = 2
+[profile.dev.package.epaint_default_fonts]
+opt-level = 2
 
 [profile.bench]
 debug = true
