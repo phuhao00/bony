@@ -229,23 +229,35 @@ Restart the desktop app after config or env changes. Use `grok models` to verify
 
 ## Architecture
 
-```text
-Bony Build (egui desktop shell)
-        │  ACP JSON-RPC over stdio
-        ▼
-grok agent stdio  →  MvpAgent / SessionActor
-        │
-        ├─ Sampling (multi-backend)
-        ├─ Tools (terminal / files / search …)
-        └─ Workspace / MCP / sub-agents
+Overview (renders on GitHub):
 
-Side path: Unity CLI (local process, not via ACP / Agent)
-Side path: Details-panel Git (primary-repo status / show, not via Agent)
+```mermaid
+flowchart TB
+  UI["Bony Build<br/>egui desktop shell"]
+  ACP["ACP JSON-RPC<br/>over stdio"]
+  Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
+  Sample["Sampling · multi-backend"]
+  Tools["Tools · terminal / files / search"]
+  WS["Workspace / MCP / sub-agents"]
+  Unity["Side path · Unity CLI<br/>local process, not via Agent"]
+  Git["Side path · Details-panel Git<br/>primary-repo status / show"]
+
+  UI --> ACP --> Agent
+  Agent --> Sample
+  Agent --> Tools
+  Agent --> WS
+  UI -.-> Unity
+  UI -.-> Git
 ```
 
+Layered view and a single turn:
+
+![Architecture layers](docs/architecture-layers.png)
+
+![Turn flow](docs/architecture-turn-flow.png)
+
 - Desktop crate: [`crates/codegen/bony-build`](crates/codegen/bony-build)
-- Layers & turn flow: [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- Diagrams: [`docs/architecture-layers.png`](docs/architecture-layers.png), [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png)
+- Write-up: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 The desktop app does **not** embed the full agent runtime; it drives an installed `grok` subprocess.
 
