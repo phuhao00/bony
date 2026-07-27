@@ -164,6 +164,12 @@ pub struct PluginPrefs {
     /// Local OpenMontage checkout root (independent of agent cwd).
     #[serde(default)]
     pub openmontage_root: Option<PathBuf>,
+    /// Bevy (Rust ECS) game-dev skill (persisted enablement).
+    #[serde(default)]
+    pub bevy_enabled: bool,
+    /// Active Bevy game project root (independent of agent cwd).
+    #[serde(default)]
+    pub bevy_project_root: Option<PathBuf>,
     /// Legacy field ignored; conversation plugins are session-only.
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
@@ -180,6 +186,8 @@ impl Default for PluginPrefs {
             unity_enabled: true,
             openmontage_enabled: false,
             openmontage_root: None,
+            bevy_enabled: false,
+            bevy_project_root: None,
             chat_interaction: None,
         }
     }
