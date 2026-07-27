@@ -167,13 +167,6 @@ pub fn t<'a>(lang: Language, key: &'a str) -> &'a str {
         "nav.sites" => tr(lang, "站点", "Sites"),
         "nav.prs" => tr(lang, "拉取请求", "Pull requests"),
         "nav.new_task" => tr(lang, "新建对话", "New chat"),
-        "task.pick_project_title" => tr(lang, "选择要新建任务的项目", "Choose a project for the new task"),
-        "task.pick_project_hint" => tr(
-            lang,
-            "有多个项目时请先选择，不会默认落到当前启动目录。",
-            "Pick a project first when you have more than one — launch folder is not the default.",
-        ),
-        "task.pick_other_project" => tr(lang, "打开其他项目…", "Open another project…"),
         "sidebar.filter_tasks" => tr(lang, "筛选任务…", "Filter tasks…"),
         "sidebar.by_project" => tr(lang, "项目", "Projects"),
         "sidebar.no_chats" => tr(lang, "暂无对话", "No conversations"),
