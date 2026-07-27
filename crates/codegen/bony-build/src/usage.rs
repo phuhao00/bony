@@ -243,20 +243,29 @@ pub fn save_recent_projects(projects: &[PathBuf]) {
     }
 }
 
-/// Move `path` to the front of the recent list and persist.
+/// Ensure `path` is in the recent list and persist. Does **not** reorder —
+/// selecting a project/conversation must not jump the sidebar.
 pub fn remember_project(projects: &mut Vec<PathBuf>, path: &Path) {
     let Ok(canonical) = path.canonicalize() else {
-        // Still track the path even if canonicalize fails (e.g. not yet created).
-        projects.retain(|p| p != path);
-        projects.insert(0, path.to_path_buf());
+        if projects.iter().any(|p| p == path) {
+            return;
+        }
+        projects.push(path.to_path_buf());
         if projects.len() > 12 {
             projects.truncate(12);
         }
         save_recent_projects(projects);
         return;
     };
-    projects.retain(|p| p.canonicalize().map(|c| c != canonical).unwrap_or(true) && p != path);
-    projects.insert(0, canonical);
+    if projects.iter().any(|p| {
+        p.canonicalize()
+            .map(|c| c == canonical)
+            .unwrap_or(false)
+            || p == path
+    }) {
+        return;
+    }
+    projects.push(canonical);
     if projects.len() > 12 {
         projects.truncate(12);
     }
