@@ -162,6 +162,9 @@ pub struct BonyBuildApp {
     sidebar_groups_cache: Option<(u64, Vec<ConversationGroup>)>,
     /// Skip backdrop dismiss on the frame the delete dialog opens (same click would close it).
     delete_modal_ignore_click: bool,
+    /// After top-level「新建对话」: no project/conversation selected until the user
+    /// picks one (project row / per-project「新建」/ open project).
+    awaiting_project_choice: bool,
 }
 
 impl BonyBuildApp {
@@ -274,6 +277,7 @@ impl BonyBuildApp {
             window_drag_grab: None,
             sidebar_groups_cache: None,
             delete_modal_ignore_click: false,
+            awaiting_project_choice: false,
         }
     }
 
@@ -319,6 +323,9 @@ impl BonyBuildApp {
                 &self.model.cwd.clone().unwrap_or_else(|| self.config.cwd.clone()),
             ) == root;
         if same {
+            // User explicitly clicked this project — accept it as the choice.
+            self.awaiting_project_choice = false;
+            self.sidebar_groups_cache = None;
             self.model.go_chat();
             return;
         }
@@ -328,6 +335,7 @@ impl BonyBuildApp {
         self.config.cwd = path.clone();
         self.config.resume_session_id = None;
         self.active_task_id = None;
+        self.awaiting_project_choice = false;
         remember_project(&mut self.model.recent_projects, &root);
         self.model.cwd = Some(path);
         self.model.connected = false;
@@ -501,11 +509,11 @@ impl BonyBuildApp {
     }
 
     fn create_task(&mut self, _ctx: &egui::Context) {
-        // Top-level「新建对话」: blank chat with nothing selected in the sidebar.
-        // Do not bind to / highlight a project. Per-project「新建」still uses
-        // create_task_in_project. A real task is created lazily on first send.
+        // Top-level「新建对话」: blank chat, nothing selected. User picks a project
+        // later (click project / per-project「新建」). Do NOT auto-bind to cwd.
         self.pending_worktree_rx = None;
         self.active_task_id = None;
+        self.awaiting_project_choice = true;
         self.attachments.clear();
         self.changes.clear();
         self.selected_diff = None;
@@ -518,10 +526,10 @@ impl BonyBuildApp {
         }
     }
 
-    /// When the user sends from an unscoped new chat, create a task under the
-    /// current working directory so the turn can be titled and listed later.
+    /// Create a sidebar task under the current project when sending — but only
+    /// after the user has chosen a project. Never invent a default project.
     fn ensure_task_for_send(&mut self) {
-        if self.active_task_id.is_some() {
+        if self.active_task_id.is_some() || self.awaiting_project_choice {
             return;
         }
         let project = canonical_project_root(
@@ -602,6 +610,7 @@ impl BonyBuildApp {
 
     /// Apply chat chrome for a task without (re)starting the agent bridge.
     fn activate_task_ui_only(&mut self, task: TaskState) {
+        self.awaiting_project_choice = false;
         self.active_task_id = Some(task.id.clone());
         remember_project(
             &mut self.model.recent_projects,
@@ -645,6 +654,7 @@ impl BonyBuildApp {
             && task.session_id.is_none()
             && self.config.resume_session_id.is_none()
         {
+            self.awaiting_project_choice = false;
             self.active_task_id = Some(task.id.clone());
             remember_project(
                 &mut self.model.recent_projects,
@@ -1662,9 +1672,10 @@ impl BonyBuildApp {
                             .ctx()
                             .data(|d| d.get_temp::<bool>(hover_id))
                             .unwrap_or(false);
-                        let header_fill = if is_current {
-                            SELECTED
-                        } else if hovered {
+                        // Project rows are never "selected" like a chat — only a quiet
+                        // current marker (text weight) + hover wash. Selection belongs
+                        // exclusively to the conversation row (blue bar).
+                        let header_fill = if hovered {
                             HOVER
                         } else {
                             Color32::TRANSPARENT
@@ -1674,13 +1685,7 @@ impl BonyBuildApp {
                             .corner_radius(CornerRadius::same(8))
                             .stroke(Stroke::new(
                                 1.0,
-                                if is_current {
-                                    Color32::from_rgb(70, 72, 84)
-                                } else if hovered {
-                                    BORDER
-                                } else {
-                                    Color32::TRANSPARENT
-                                },
+                                if hovered { BORDER } else { Color32::TRANSPARENT },
                             ))
                             .inner_margin(Margin::symmetric(6, 5))
                             .show(ui, |ui| {
@@ -1746,7 +1751,7 @@ impl BonyBuildApp {
                                                                 MUTED
                                                             }),
                                                     )
-                                                    .fill(if is_current || hovered {
+                                                    .fill(if hovered {
                                                         PANEL_2
                                                     } else {
                                                         Color32::TRANSPARENT
@@ -1774,6 +1779,11 @@ impl BonyBuildApp {
                             .interact(egui::Sense::click());
                         ui.ctx()
                             .data_mut(|d| d.insert_temp(hover_id, header.hovered()));
+                        if header.hovered() != hovered {
+                            // Same-frame hover chrome: force a follow-up paint now,
+                            // otherwise the highlight waits for an unrelated repaint.
+                            ui.ctx().request_repaint();
+                        }
                         if header.hovered() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
@@ -4461,9 +4471,10 @@ impl BonyBuildApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
-                // Codex-style context chips: active plugins + files (dismissible).
+                // Context chips: current project (when chosen) + plugins + files.
+                let show_project = !self.awaiting_project_choice;
                 let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
-                let has_context = unity_on || !self.attachments.is_empty();
+                let has_context = show_project || unity_on || !self.attachments.is_empty();
                 if has_context {
                     self.composer_context_chips(ui);
                     ui.add_space(8.0);
@@ -4661,8 +4672,41 @@ impl BonyBuildApp {
         let mut drop_unity = false;
         let mut clear_files = false;
         let mut drop_file: Option<usize> = None;
+        let mut pick_project = false;
 
         ui.horizontal_wrapped(|ui| {
+            if !self.awaiting_project_choice {
+                let cwd = self
+                    .model
+                    .cwd
+                    .clone()
+                    .unwrap_or_else(|| self.config.cwd.clone());
+                let root = canonical_project_root(&cwd);
+                let name = AppModel::project_label(&root);
+                let full_path = root.display().to_string();
+                let resp = Frame::new()
+                    .fill(PANEL_2)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            paint_sidebar_glyph(ui, SidebarGlyph::Folder, MUTED);
+                            ui.add_space(5.0);
+                            ui.label(RichText::new(name).size(12.0).color(TEXT));
+                        });
+                    })
+                    .response
+                    .interact(egui::Sense::click())
+                    .on_hover_text(format!("{full_path}\n点击切换项目"));
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
+                if resp.clicked() {
+                    pick_project = true;
+                }
+            }
+
             if unity_on {
                 let pill = Frame::new()
                     .fill(PANEL_2)
@@ -4724,6 +4768,9 @@ impl BonyBuildApp {
             }
         });
 
+        if pick_project {
+            self.pick_project(ui.ctx());
+        }
         if drop_unity {
             self.set_chat_interaction(ChatInteraction::Agent);
         }
@@ -5532,128 +5579,165 @@ impl BonyBuildApp {
         archived: bool,
     ) {
         let selected = active_id.as_ref() == Some(&task.id);
-        let hover_id = ui.make_persistent_id(("task_row_hover", task.id.as_str()));
-        let hovered = ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(hover_id))
-            .unwrap_or(false);
-        let fill = if selected {
-            SELECTED
-        } else if hovered {
-            HOVER
-        } else {
-            Color32::TRANSPARENT
-        };
+        let title = display_task_title(task);
+        let meta = task_row_meta(task);
         let mut archive = false;
         let mut unarchive = false;
         let mut rename = false;
         let mut request_delete = false;
         let mut activate = false;
-        let title = display_task_title(task);
-        let meta = task_row_meta(task);
-        // IMPORTANT: do NOT `.interact(click)` on the whole Frame — that steals
-        // clicks from the delete button. Only the main content area activates.
-        let mut row_hovered = false;
-        Frame::new()
-            .fill(fill)
-            .corner_radius(CornerRadius::same(8))
-            .stroke(Stroke::new(
-                1.0,
-                if selected {
-                    Color32::from_rgb(70, 72, 84)
-                } else if hovered {
-                    BORDER
-                } else {
-                    Color32::TRANSPARENT
-                },
-            ))
-            .inner_margin(Margin {
-                left: 8,
-                right: 4,
-                top: 5,
-                bottom: 5,
-            })
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let close_w = 26.0;
-                    let main_w = (ui.available_width() - close_w - 4.0).max(40.0);
-                    let main = ui
-                        .allocate_ui_with_layout(
-                            Vec2::new(main_w, 28.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                let (bar_rect, _) = ui
-                                    .allocate_exact_size(Vec2::new(3.0, 22.0), egui::Sense::hover());
-                                if selected {
-                                    ui.painter().rect_filled(
-                                        bar_rect,
-                                        CornerRadius::same(2),
-                                        ACCENT_BAR,
-                                    );
-                                }
-                                ui.add_space(8.0);
-                                paint_sidebar_glyph(
-                                    ui,
-                                    if archived {
-                                        SidebarGlyph::Archive
-                                    } else {
-                                        SidebarGlyph::Chat
-                                    },
-                                    if selected || hovered { TEXT } else { MUTED },
-                                );
-                                ui.add_space(8.0);
-                                ui.vertical(|ui| {
-                                    ui.set_max_width((ui.available_width()).max(40.0));
-                                    ui.label(
-                                        RichText::new(&title).size(12.5).color(
-                                            if selected || hovered { TEXT } else { MUTED },
-                                        ),
-                                    );
-                                    if !meta.is_empty() {
-                                        ui.label(RichText::new(meta).size(10.5).color(MUTED));
-                                    }
-                                });
-                            },
-                        )
-                        .response
-                        .interact(egui::Sense::click());
-                    row_hovered = main.hovered();
-                    if main.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if main.clicked() {
-                        activate = true;
-                    }
-                    main.context_menu(|ui| {
-                        if ui.button("重命名").clicked() {
-                            rename = true;
-                            ui.close_menu();
-                        }
-                        if archived {
-                            if ui.button("取消归档").clicked() {
-                                unarchive = true;
-                                ui.close_menu();
-                            }
-                        } else if ui.button("归档到项目").clicked() {
-                            archive = true;
-                            ui.close_menu();
-                        }
-                        if ui.button("删除记录").clicked() {
-                            request_delete = true;
-                            ui.close_menu();
-                        }
-                    });
 
-                    let close = danger_icon_btn(ui, "删除对话");
-                    row_hovered = row_hovered || close.hovered();
-                    if close.clicked() {
-                        request_delete = true;
-                    }
-                });
-            });
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(hover_id, row_hovered));
+        // Allocate first → paint from same-frame hover (no deferred temp / one-frame lag).
+        let width = ui.available_width();
+        let row_h = 44.0;
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, row_h), egui::Sense::click());
+        let hovered = resp.hovered() || resp.contains_pointer();
+        let show_chrome = selected || hovered;
+
+        // Reserved action hit-target (always same size → no layout jump).
+        let close_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 16.0, rect.center().y),
+            Vec2::splat(26.0),
+        );
+        let close_resp = ui.interact(
+            close_rect,
+            ui.id().with(("task_row_close", task.id.as_str())),
+            egui::Sense::click(),
+        );
+
+        // Background
+        if show_chrome {
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(8),
+                if selected {
+                    SELECTED
+                } else {
+                    Color32::from_rgb(44, 46, 56)
+                },
+            );
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(8),
+                Stroke::new(
+                    1.0,
+                    if selected {
+                        Color32::from_rgb(70, 72, 84)
+                    } else {
+                        Color32::from_rgb(62, 64, 76)
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        // Leading accent: solid when selected, soft when hoverable.
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 4.0, rect.top() + 10.0),
+            Vec2::new(3.0, rect.height() - 20.0),
+        );
+        if selected {
+            ui.painter()
+                .rect_filled(bar, CornerRadius::same(2), ACCENT_BAR);
+        } else if hovered {
+            ui.painter().rect_filled(
+                bar,
+                CornerRadius::same(2),
+                Color32::from_rgb(90, 100, 130),
+            );
+        }
+
+        if hovered && !close_resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+        }
+
+        let fg = if show_chrome { TEXT } else { MUTED };
+        let icon = if archived {
+            SidebarGlyph::Archive
+        } else {
+            SidebarGlyph::Chat
+        };
+        paint_sidebar_glyph_at(
+            ui.painter(),
+            egui::pos2(rect.left() + 22.0, rect.center().y),
+            icon,
+            fg,
+        );
+
+        // Title + meta (fixed two-line slot so height never jumps).
+        let text_left = rect.left() + 36.0;
+        let text_right = close_rect.left() - 4.0;
+        let text_w = (text_right - text_left).max(40.0);
+        let title_pos = egui::pos2(text_left, rect.top() + 8.0);
+        ui.painter().text(
+            title_pos,
+            egui::Align2::LEFT_TOP,
+            truncate_chip_label(&title, ((text_w / 7.0) as usize).max(8)),
+            egui::FontId::proportional(12.5),
+            fg,
+        );
+        let meta_line = if meta.is_empty() { "\u{00A0}" } else { meta.as_str() };
+        ui.painter().text(
+            egui::pos2(text_left, rect.top() + 24.0),
+            egui::Align2::LEFT_TOP,
+            if meta.is_empty() {
+                meta_line.to_string()
+            } else {
+                truncate_chip_label(meta_line, ((text_w / 6.5) as usize).max(8))
+            },
+            egui::FontId::proportional(10.5),
+            if meta.is_empty() {
+                Color32::TRANSPARENT
+            } else {
+                MUTED
+            },
+        );
+
+        // Delete affordance only when hovered/selected (space already reserved).
+        if show_chrome {
+            if close_resp.hovered() {
+                ui.painter().rect_filled(
+                    close_rect,
+                    CornerRadius::same(6),
+                    Color32::from_rgb(72, 36, 36),
+                );
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            paint_sidebar_glyph_at(
+                ui.painter(),
+                close_rect.center(),
+                SidebarGlyph::Close,
+                if close_resp.hovered() { DANGER } else { MUTED },
+            );
+        }
+        let _ = close_resp.clone().on_hover_text("删除对话");
+
+        if close_resp.clicked() {
+            request_delete = true;
+        } else if resp.clicked() {
+            activate = true;
+        }
+
+        resp.context_menu(|ui| {
+            if ui.button("重命名").clicked() {
+                rename = true;
+                ui.close_menu();
+            }
+            if archived {
+                if ui.button("取消归档").clicked() {
+                    unarchive = true;
+                    ui.close_menu();
+                }
+            } else if ui.button("归档到项目").clicked() {
+                archive = true;
+                ui.close_menu();
+            }
+            if ui.button("删除记录").clicked() {
+                request_delete = true;
+                ui.close_menu();
+            }
+        });
+
         if activate {
             self.activate_task(ctx, task.clone());
         }
@@ -5668,6 +5752,7 @@ impl BonyBuildApp {
             }
             self.expanded_archived
                 .insert(project_group_key(&canonical_project_root(&task.project_path)));
+            self.sidebar_groups_cache = None;
         }
         if unarchive {
             if let Some(found) = self.tasks.iter_mut().find(|t| t.id == task.id) {
@@ -5677,6 +5762,7 @@ impl BonyBuildApp {
                     let _ = repo.save(found);
                 }
             }
+            self.sidebar_groups_cache = None;
         }
         if rename {
             self.rename_task = Some((task.id.clone(), title));
@@ -5686,7 +5772,7 @@ impl BonyBuildApp {
             self.delete_modal_ignore_click = true;
             ctx.request_repaint();
         }
-        ui.add_space(1.0);
+        ui.add_space(2.0);
     }
 
     fn sidebar_groups_fingerprint(&self, title_filter: &str) -> u64 {
@@ -5698,6 +5784,7 @@ impl BonyBuildApp {
         self.model.cwd.hash(&mut h);
         self.model.recent_projects.hash(&mut h);
         self.active_task_id.hash(&mut h);
+        self.awaiting_project_choice.hash(&mut h);
         self.tasks.len().hash(&mut h);
         for t in &self.tasks {
             t.id.hash(&mut h);
@@ -5746,14 +5833,23 @@ impl BonyBuildApp {
             });
         }
 
-        // Highlight a project only when a conversation in it is active.
-        // Unscoped「新建对话」leaves active_task_id = None → nothing selected.
-        let current_key = self.active_task_id.as_ref().and_then(|id| {
+        // One active context only:
+        // - conversation selected → that conversation's project is "current"
+        // - no conversation (switched project / empty) → cwd project
+        // - awaiting_project_choice → nothing
+        let current_key = if self.awaiting_project_choice {
+            None
+        } else if let Some(id) = &self.active_task_id {
             self.tasks
                 .iter()
                 .find(|t| &t.id == id)
                 .map(|t| project_group_key(&canonical_project_root(&t.project_path)))
-        });
+        } else {
+            self.model
+                .cwd
+                .as_ref()
+                .map(|p| project_group_key(&canonical_project_root(p)))
+        };
 
         for (idx, task) in self.tasks.iter().enumerate() {
             if !title_filter.is_empty()
@@ -5789,19 +5885,10 @@ impl BonyBuildApp {
 
         for group in &mut groups {
             group.is_current = current_key.as_ref() == Some(&project_group_key(&group.project_path));
-            group.tasks.sort_by(|&a, &b| {
-                self.tasks[b]
-                    .updated_at
-                    .cmp(&self.tasks[a].updated_at)
-            });
-            group.archived.sort_by(|&a, &b| {
-                self.tasks[b]
-                    .updated_at
-                    .cmp(&self.tasks[a].updated_at)
-            });
+            // Keep task order stable (enumeration order). Do not sort by updated_at —
+            // selecting a conversation must not jump it to the top.
         }
 
-        groups.sort_by(|a, b| b.is_current.cmp(&a.is_current));
         groups
     }
 
@@ -7551,5 +7638,8 @@ fn configure_style(ctx: &egui::Context) {
     style.spacing.button_padding = Vec2::new(12.0, 6.0);
     style.spacing.scroll.bar_width = 10.0;
     style.spacing.scroll.handle_min_length = 32.0;
+    // Sidebar rows use deferred hover chrome — keep tooltips snappy too.
+    style.interaction.tooltip_delay = 0.05;
+    style.interaction.show_tooltips_only_when_still = false;
     ctx.set_style(style);
 }
