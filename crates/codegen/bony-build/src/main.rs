@@ -21,12 +21,15 @@ mod unity;
 mod usage;
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use clap::Parser;
 use eframe::egui;
 
 use crate::agent_bridge::{BridgeConfig, resolve_grok_bin};
 use crate::app::BonyBuildApp;
+use crate::usage::load_plugin_prefs;
 
 #[derive(Debug, Parser)]
 #[command(name = "bony-build", about = "Native desktop client for Bony Build")]
@@ -39,9 +42,9 @@ struct Args {
     #[arg(long)]
     grok_bin: Option<PathBuf>,
 
-    /// Require manual approval for tool permissions (default: auto-approve).
+    /// Require manual approval for every tool (overrides saved Full Control).
     #[arg(long = "ask-permissions")]
-    _ask_permissions: bool,
+    ask_permissions: bool,
 }
 
 fn main() -> eframe::Result<()> {
@@ -58,12 +61,13 @@ fn main() -> eframe::Result<()> {
         .cwd
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let grok_bin = resolve_grok_bin(args.grok_bin.as_deref());
+    let prefs = load_plugin_prefs();
+    let always_approve = !args.ask_permissions && prefs.auto_approve_tools;
 
     let config = BridgeConfig {
         grok_bin,
         cwd,
-        // Safe desktop default: all requested mutations are surfaced in the timeline.
-        always_approve: false,
+        always_approve: Arc::new(AtomicBool::new(always_approve)),
         resume_session_id: None,
     };
 

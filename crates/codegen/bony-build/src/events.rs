@@ -73,13 +73,22 @@ pub enum AgentEvent {
         mode_id: String,
     },
     AssistantDelta(String),
+    /// Streaming agent internal reasoning (ACP AgentThoughtChunk).
+    ThoughtDelta(String),
+    /// Full agent execution plan (ACP Plan); replaces prior plan in the turn.
+    PlanUpdate {
+        entries: Vec<PlanEntryView>,
+    },
     ToolStart {
         id: String,
         title: String,
+        kind: String,
+        detail: String,
     },
     ToolUpdate {
         id: String,
         status: String,
+        kind: String,
         detail: String,
     },
     PermissionRequest {
@@ -111,4 +120,11 @@ pub struct PermissionOptionView {
     pub id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// One row of an ACP agent plan, for the chat process-flow UI.
+#[derive(Debug, Clone)]
+pub struct PlanEntryView {
+    pub content: String,
+    pub status: String,
 }

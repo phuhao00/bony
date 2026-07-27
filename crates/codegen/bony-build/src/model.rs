@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::events::{AgentEvent, ModeChoice, ModelChoice, PermissionOptionView};
+use crate::events::{AgentEvent, ModeChoice, ModelChoice, PermissionOptionView, PlanEntryView};
 use crate::usage::{
     SessionUsageState, TaskSummary, TokenUsage, TurnRecord, aggregate_tasks, load_recent_projects,
     load_recent_turns, remember_project,
@@ -27,8 +27,21 @@ pub struct ChatMessage {
 pub struct ToolCard {
     pub id: String,
     pub title: String,
+    pub kind: String,
     pub status: String,
     pub detail: String,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThoughtCard {
+    pub text: String,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanCard {
+    pub entries: Vec<PlanEntryView>,
     pub open: bool,
 }
 
@@ -36,6 +49,8 @@ pub struct ToolCard {
 pub enum TimelineItem {
     Message(ChatMessage),
     Tool(ToolCard),
+    Thought(ThoughtCard),
+    Plan(PlanCard),
 }
 
 #[derive(Debug, Clone)]
@@ -244,42 +259,104 @@ impl AppModel {
                     })),
                 }
             }
-            AgentEvent::ToolStart { id, title } => {
+            AgentEvent::ThoughtDelta(delta) => {
+                self.ensure_live_view();
+                self.busy = true;
+                self.status = "Thinking…".into();
+                match self.timeline.last_mut() {
+                    Some(TimelineItem::Thought(t)) => {
+                        merge_stream_text(&mut t.text, &delta);
+                    }
+                    _ => self.timeline.push(TimelineItem::Thought(ThoughtCard {
+                        text: delta,
+                        open: true,
+                    })),
+                }
+            }
+            AgentEvent::PlanUpdate { entries } => {
+                self.ensure_live_view();
+                self.busy = true;
+                self.status = "Planning…".into();
+                // Replace the latest plan after the most recent user message.
+                let mut replace_idx: Option<usize> = None;
+                for (idx, item) in self.timeline.iter().enumerate().rev() {
+                    match item {
+                        TimelineItem::Message(m) if m.role == Role::User => break,
+                        TimelineItem::Plan(_) => {
+                            replace_idx = Some(idx);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(idx) = replace_idx {
+                    if let Some(TimelineItem::Plan(plan)) = self.timeline.get_mut(idx) {
+                        plan.entries = entries;
+                    }
+                } else {
+                    self.timeline.push(TimelineItem::Plan(PlanCard {
+                        entries,
+                        open: true,
+                    }));
+                }
+            }
+            AgentEvent::ToolStart {
+                id,
+                title,
+                kind,
+                detail,
+            } => {
                 self.ensure_live_view();
                 self.busy = true;
                 self.status = "Running tools…".into();
                 if let Some(card) = self.find_tool_mut(&id) {
                     card.title = title;
+                    if !kind.is_empty() {
+                        card.kind = kind;
+                    }
                     card.status = "InProgress".into();
+                    if !detail.is_empty() {
+                        card.detail = detail;
+                    }
+                    card.open = true;
                 } else {
                     self.timeline.push(TimelineItem::Tool(ToolCard {
                         id,
                         title,
+                        kind,
                         status: "InProgress".into(),
-                        detail: String::new(),
-                        open: false,
+                        detail,
+                        open: true,
                     }));
                 }
             }
-            AgentEvent::ToolUpdate { id, status, detail } => {
+            AgentEvent::ToolUpdate {
+                id,
+                status,
+                kind,
+                detail,
+            } => {
                 self.ensure_live_view();
                 if let Some(card) = self.find_tool_mut(&id) {
                     if !status.is_empty() {
                         card.status = status;
                     }
-                    if !detail.is_empty() {
-                        if !card.detail.is_empty() {
-                            card.detail.push('\n');
-                        }
-                        card.detail.push_str(&detail);
+                    if !kind.is_empty() {
+                        card.kind = kind;
                     }
+                    // ACP content/locations/raw_* are full snapshots, not deltas.
+                    if !detail.is_empty() {
+                        card.detail = detail;
+                    }
+                    card.open = true;
                 } else {
                     self.timeline.push(TimelineItem::Tool(ToolCard {
                         id,
                         title: "Tool".into(),
+                        kind,
                         status,
                         detail,
-                        open: false,
+                        open: true,
                     }));
                 }
             }
@@ -452,6 +529,7 @@ impl AppModel {
                 timeline.push(TimelineItem::Tool(ToolCard {
                     id: format!("{}-{}", turn.id, tool),
                     title: tool.clone(),
+                    kind: String::new(),
                     status: "Completed".into(),
                     detail: String::new(),
                     open: false,

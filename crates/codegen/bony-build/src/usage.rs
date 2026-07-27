@@ -170,6 +170,9 @@ pub struct PluginPrefs {
     /// Active Bevy game project root (independent of agent cwd).
     #[serde(default)]
     pub bevy_project_root: Option<PathBuf>,
+    /// Auto-approve ACP tool permissions (Full Control).
+    #[serde(default)]
+    pub auto_approve_tools: bool,
     /// Legacy field ignored; conversation plugins are session-only.
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
@@ -188,6 +191,7 @@ impl Default for PluginPrefs {
             openmontage_root: None,
             bevy_enabled: false,
             bevy_project_root: None,
+            auto_approve_tools: false,
             chat_interaction: None,
         }
     }
