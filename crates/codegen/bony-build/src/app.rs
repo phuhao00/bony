@@ -23,6 +23,7 @@ use crate::unity::{
     format_relative, parse_generated_unity_plan_unrestricted, parse_unity_chat_command,
     unity_chat_help_text, wants_unity_help,
 };
+use crate::bevy::{BevyState, BevyStatus};
 use crate::i18n::{self, Language, UiPrefs, load_ui_prefs, save_ui_prefs};
 use crate::openmontage::{OpenMontageState, OpenMontageStatus};
 use crate::usage::{
@@ -48,6 +49,7 @@ const AVATAR: Color32 = Color32::from_rgb(70, 120, 220);
 const SELECTED: Color32 = Color32::from_rgb(42, 44, 52);
 const UNITY_ACCENT: Color32 = Color32::from_rgb(0, 180, 216);
 const OM_ACCENT: Color32 = Color32::from_rgb(232, 120, 72);
+const BEVY_ACCENT: Color32 = Color32::from_rgb(230, 126, 34);
 const MAX_CHAT_W: f32 = 860.0;
 const SIDEBAR_W: f32 = 248.0;
 const RIGHT_PANEL_W: f32 = 280.0;
@@ -123,6 +125,7 @@ pub struct BonyBuildApp {
     delete_task: Option<String>,
     unity: UnityState,
     openmontage: OpenMontageState,
+    bevy: BevyState,
     /// Latest operation id before a Unity action launched from chat.
     pending_unity_chat: Option<u64>,
     pending_unity_planner: bool,
@@ -153,6 +156,8 @@ pub struct BonyBuildApp {
     expanded_archived: std::collections::HashSet<String>,
     /// After soft cancel, next Stop click force-kills the agent.
     stop_armed_force: bool,
+    /// Text field for the "create new Bevy project" flow in the plugins card.
+    bevy_new_project_name: String,
     /// Manual title-bar window move (screen-absolute on Windows).
     window_dragging: bool,
     /// Cursor offset from window outer origin at drag start (points).
@@ -224,6 +229,7 @@ impl BonyBuildApp {
         remember_project(&mut model.recent_projects, &project_root);
         let prefs = load_plugin_prefs();
         let openmontage = OpenMontageState::from_prefs(&prefs);
+        let bevy = BevyState::from_prefs(&prefs);
         Self {
             model,
             event_rx,
@@ -244,6 +250,7 @@ impl BonyBuildApp {
             delete_task: None,
             unity: UnityState::default(),
             openmontage,
+            bevy,
             pending_unity_chat: None,
             pending_unity_planner: false,
             pending_unity_approval: None,
@@ -261,6 +268,7 @@ impl BonyBuildApp {
             collapsed_projects: std::collections::HashSet::new(),
             expanded_archived: std::collections::HashSet::new(),
             stop_armed_force: false,
+            bevy_new_project_name: "my-game".into(),
             window_dragging: false,
             window_drag_grab: None,
         }
@@ -846,6 +854,20 @@ impl eframe::App for BonyBuildApp {
             save_plugin_prefs(&self.plugin_prefs);
         }
         if let Some(toast) = self.openmontage.take_toast() {
+            self.model.status = toast;
+        }
+
+        self.bevy.ensure_checked();
+        if self.bevy.poll() || self.bevy.busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(40));
+        }
+        if matches!(self.bevy.status, BevyStatus::Ready)
+            && self.plugin_prefs.bevy_project_root.as_ref() != Some(&self.bevy.project_path)
+        {
+            self.plugin_prefs.bevy_project_root = Some(self.bevy.project_path.clone());
+            save_plugin_prefs(&self.plugin_prefs);
+        }
+        if let Some(toast) = self.bevy.take_toast() {
             self.model.status = toast;
         }
 
@@ -1950,6 +1972,72 @@ impl BonyBuildApp {
         }
     }
 
+    fn set_bevy_enabled(&mut self, enabled: bool) {
+        let project = self.bevy.project_path.clone();
+        let result = if enabled {
+            if !self.bevy.status.is_ready() {
+                self.bevy.refresh_status();
+            }
+            if !self.bevy.status.is_ready() {
+                self.model.status = "Bevy 项目尚未就绪，请先创建/选择项目".into();
+                return;
+            }
+            crate::bevy::enable_skill(&mut self.plugin_prefs, &project)
+        } else {
+            crate::bevy::disable_skill(&mut self.plugin_prefs)
+        };
+        match result {
+            Ok(()) => {
+                save_plugin_prefs(&self.plugin_prefs);
+                self.model.status = if enabled {
+                    "已启用 Bevy".into()
+                } else {
+                    "已关闭 Bevy".into()
+                };
+            }
+            Err(e) => {
+                self.model.status = e;
+            }
+        }
+    }
+
+    fn pick_bevy_project(&mut self) {
+        let start = self.bevy.project_path.clone();
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("选择已有 Bevy 项目目录（含 Cargo.toml）")
+            .set_directory(start.parent().unwrap_or(start.as_path()))
+            .pick_folder()
+        {
+            self.bevy.set_project_path(path.clone());
+            self.plugin_prefs.bevy_project_root = Some(path);
+            save_plugin_prefs(&self.plugin_prefs);
+        }
+    }
+
+    fn create_bevy_project(&mut self) {
+        let name = if self.bevy_new_project_name.trim().is_empty() {
+            "my-game".to_string()
+        } else {
+            self.bevy_new_project_name.trim().to_string()
+        };
+        let default_parent = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("BonyBevyGames");
+        let start = self
+            .bevy
+            .project_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or(default_parent.clone());
+        if let Some(chosen) = rfd::FileDialog::new()
+            .set_title("选择新 Bevy 项目的父目录")
+            .set_directory(if start.is_dir() { &start } else { &default_parent })
+            .pick_folder()
+        {
+            self.bevy.create_project(chosen, name);
+        }
+    }
+
     /// Activate / deactivate a plugin for this conversation only (not persisted).
     fn set_chat_interaction(&mut self, mode: ChatInteraction) {
         let mode = if mode == ChatInteraction::Unity && !self.plugin_prefs.unity_enabled {
@@ -2096,6 +2184,266 @@ impl BonyBuildApp {
 
         ui.add_space(14.0);
         self.openmontage_plugin_card(ui);
+        ui.add_space(14.0);
+        self.bevy_plugin_card(ui);
+    }
+
+    fn bevy_plugin_card(&mut self, ui: &mut egui::Ui) {
+        let enabled = self.plugin_prefs.bevy_enabled;
+        let status = self.bevy.status;
+        let busy = self.bevy.busy;
+        let running = self.bevy.running;
+        let project_display = self.bevy.project_path.display().to_string();
+        let last_error = self.bevy.last_error.clone();
+        let install_hint = self.bevy.rust_install_hint().to_string();
+        let can_install_rust = self.bevy.can_install_rust();
+        let can_stop = self.bevy.can_stop();
+        let status_color = match status {
+            BevyStatus::Ready => OK,
+            BevyStatus::NoRust | BevyStatus::Error => DANGER,
+            BevyStatus::NoProject => BEVY_ACCENT,
+            BevyStatus::Unknown => MUTED,
+        };
+        let border = if enabled && status.is_ready() {
+            BEVY_ACCENT
+        } else {
+            BORDER
+        };
+
+        Frame::new()
+            .fill(PANEL)
+            .corner_radius(CornerRadius::same(14))
+            .stroke(Stroke::new(1.0, border))
+            .inner_margin(Margin::symmetric(16, 14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    paint_sidebar_glyph(
+                        ui,
+                        SidebarGlyph::Plug,
+                        if enabled && status.is_ready() {
+                            BEVY_ACCENT
+                        } else {
+                            MUTED
+                        },
+                    );
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Bevy 游戏引擎（Rust ECS，code-first）")
+                                .size(15.0)
+                                .strong()
+                                .color(TEXT),
+                        );
+                        ui.label(
+                            RichText::new("AI 直接写/改 Bevy 组件与系统，cargo run 直接看效果，没有可视化编辑器")
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                    });
+                    if status.is_ready() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut on = enabled;
+                            if ui
+                                .add(egui::Checkbox::new(&mut on, RichText::new("启用").size(12.5)))
+                                .changed()
+                            {
+                                self.set_bevy_enabled(on);
+                            }
+                        });
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("项目").size(12.0).color(MUTED));
+                    ui.label(
+                        RichText::new(&project_display)
+                            .size(12.0)
+                            .color(TEXT)
+                            .monospace(),
+                    );
+                    if !busy && ui.small_button("选择已有").clicked() {
+                        self.pick_bevy_project();
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("状态").size(12.0).color(MUTED));
+                    ui.label(RichText::new(status.label()).size(12.5).color(status_color));
+                    if running {
+                        ui.label(RichText::new("· 游戏窗口运行中").size(11.5).color(BEVY_ACCENT));
+                    }
+                });
+
+                match status {
+                    BevyStatus::NoRust => {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("本机未检测到 Rust 工具链（cargo/rustc）：")
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                        ui.add_space(6.0);
+                        Frame::new()
+                            .fill(PANEL_2)
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(Margin::same(10))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&install_hint)
+                                            .size(11.5)
+                                            .monospace()
+                                            .color(TEXT),
+                                    );
+                                    if ui.small_button("复制").clicked() {
+                                        ui.ctx().copy_text(install_hint.clone());
+                                        self.bevy.toast = Some("安装命令已复制".into());
+                                    }
+                                });
+                            });
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(
+                                can_install_rust,
+                                egui::Button::new(
+                                    RichText::new("⚡ 一键自动安装").size(12.5).color(BG).strong(),
+                                )
+                                .fill(OK)
+                                .corner_radius(CornerRadius::same(8)),
+                            )
+                            .on_hover_text("应用内运行安装命令并自动重新检测")
+                            .clicked()
+                        {
+                            self.bevy.install_rust();
+                        }
+                        self.bevy_log_tail(ui);
+                    }
+                    BevyStatus::NoProject => {
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new("还没有 Bevy 项目：新建一个（引擎依赖走 phuhao000/bevy fork 的 main 分支），或选择已有项目。")
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("项目名").size(12.0).color(MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.bevy_new_project_name)
+                                    .desired_width(160.0),
+                            );
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    egui::Button::new(
+                                        RichText::new("创建新项目").size(12.5).color(BG).strong(),
+                                    )
+                                    .fill(BEVY_ACCENT)
+                                    .corner_radius(CornerRadius::same(8)),
+                                )
+                                .clicked()
+                            {
+                                self.create_bevy_project();
+                            }
+                        });
+                        self.bevy_log_tail(ui);
+                    }
+                    BevyStatus::Error => {
+                        ui.add_space(8.0);
+                        if let Some(err) = &last_error {
+                            ui.label(RichText::new(err).size(12.0).color(DANGER));
+                        }
+                        self.bevy_log_tail(ui);
+                    }
+                    BevyStatus::Ready => {
+                        ui.add_space(10.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .add_enabled(!busy, egui::Button::new(RichText::new("cargo check").size(12.5)))
+                                .on_hover_text("快速语法/类型检查，不生成可执行文件")
+                                .clicked()
+                            {
+                                self.bevy.check();
+                            }
+                            if ui
+                                .add_enabled(!busy, egui::Button::new(RichText::new("cargo build").size(12.5)))
+                                .clicked()
+                            {
+                                self.bevy.build();
+                            }
+                            if ui
+                                .add_enabled(
+                                    !busy,
+                                    egui::Button::new(
+                                        RichText::new("▶ 运行游戏").size(12.5).color(BG).strong(),
+                                    )
+                                    .fill(BEVY_ACCENT)
+                                    .corner_radius(CornerRadius::same(8)),
+                                )
+                                .on_hover_text("cargo run（首次编译可能需要几分钟）")
+                                .clicked()
+                            {
+                                self.bevy.run();
+                            }
+                            if can_stop
+                                && ui
+                                    .button(RichText::new("停止").size(12.5).color(DANGER))
+                                    .clicked()
+                            {
+                                self.bevy.stop();
+                            }
+                        });
+                        if let Some(err) = &last_error {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(err).size(12.0).color(DANGER));
+                        }
+                        self.bevy_log_tail(ui);
+                        if enabled {
+                            ui.add_space(6.0);
+                            ui.label(
+                                RichText::new("已启用：对话里提到写/改 Bevy 游戏时会自动带上这个项目的规范")
+                                    .size(12.0)
+                                    .color(MUTED),
+                            );
+                        }
+                    }
+                    BevyStatus::Unknown => {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("检测中…").size(12.0).color(MUTED));
+                    }
+                }
+            });
+    }
+
+    fn bevy_log_tail(&self, ui: &mut egui::Ui) {
+        if self.bevy.log_tail.is_empty() {
+            return;
+        }
+        ui.add_space(6.0);
+        Frame::new()
+            .fill(PANEL_2)
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.bevy.log_tail {
+                            ui.label(
+                                RichText::new(line)
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(MUTED),
+                            );
+                        }
+                    });
+            });
     }
 
     fn openmontage_plugin_card(&mut self, ui: &mut egui::Ui) {
