@@ -2429,124 +2429,82 @@ impl BonyBuildApp {
     }
 
     fn plugins_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(12.0);
-        ui.label(RichText::new(self.t("plugins.title")).size(22.0).strong().color(TEXT));
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(self.t("plugins.blurb"))
-                .size(13.0)
-                .color(MUTED),
-        );
-        ui.add_space(18.0);
+        ui.add_space(8.0);
+        ui.label(RichText::new(self.t("plugins.title")).size(20.0).strong().color(TEXT));
+        ui.add_space(4.0);
+        ui.label(RichText::new(self.t("plugins.blurb")).size(12.5).color(MUTED));
+        ui.add_space(10.0);
+        plugin_divider(ui);
 
-        let enabled = self.plugin_prefs.unity_enabled;
-        let status = self.unity.status.label();
-        let status_color = match self.unity.status {
+        // —— Unity ——
+        let unity_enabled = self.plugin_prefs.unity_enabled;
+        let unity_status = self.unity.status.label().to_string();
+        let unity_status_color = match self.unity.status {
             CliStatus::Ready => OK,
             CliStatus::Missing | CliStatus::Error => DANGER,
             _ => MUTED,
         };
+        let unity_title = self.t("plugins.unity_title").to_string();
+        let unity_blurb = self.t("plugins.unity_blurb").to_string();
+        let unity_chat_hint = self.t("plugins.chat_hint").to_string();
+        let unity_settings = self.t("plugins.open_settings").to_string();
+        let unity_docs = self.t("plugins.docs").to_string();
+        let unity_docs_tip = self.t("plugins.docs_tip").to_string();
+        let unity_use = self.t("plugins.use_in_chat").to_string();
+        let unity_off_hint = self.t("plugins.enabled_hint").to_string();
+        let enable_tip = self.t("plugins.enable").to_string();
 
-        Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(14))
-            .stroke(Stroke::new(
-                1.0,
-                if enabled { UNITY_ACCENT } else { BORDER },
-            ))
-            .inner_margin(Margin::symmetric(16, 14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    paint_sidebar_glyph(
-                        ui,
-                        SidebarGlyph::Unity,
-                        if enabled { UNITY_ACCENT } else { MUTED },
-                    );
-                    ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(self.t("plugins.unity_title"))
-                                .size(15.0)
-                                .strong()
-                                .color(TEXT),
-                        );
-                        ui.label(
-                            RichText::new(self.t("plugins.unity_blurb"))
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mut on = enabled;
-                        if ui
-                            .add(egui::Checkbox::new(&mut on, RichText::new("启用").size(12.5)))
-                            .changed()
-                        {
-                            self.set_unity_plugin_enabled(on);
-                        }
-                    });
-                });
+        plugin_section(ui, |ui| {
+            plugin_header(
+                ui,
+                SidebarGlyph::Unity,
+                if unity_enabled { UNITY_ACCENT } else { MUTED },
+                &unity_title,
+                &unity_blurb,
+                Some((unity_enabled, UNITY_ACCENT, &enable_tip)),
+                |on| self.set_unity_plugin_enabled(on),
+            );
 
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("状态").size(12.0).color(MUTED));
-                    ui.label(RichText::new(status).size(12.5).color(status_color));
-                    if enabled {
-                        ui.label(
-                            RichText::new("· 聊天输入旁可开 Unity 模式")
-                                .size(11.5)
-                                .color(MUTED),
-                        );
+            ui.add_space(10.0);
+            plugin_status_line(
+                ui,
+                unity_status_color,
+                &unity_status,
+                if unity_enabled {
+                    Some(unity_chat_hint.as_str())
+                } else {
+                    None
+                },
+            );
+
+            if unity_enabled {
+                ui.add_space(12.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if plugin_primary_btn(ui, &unity_settings, UNITY_ACCENT).clicked() {
+                        self.open_unity_settings();
+                    }
+                    if plugin_secondary_btn(ui, &unity_docs)
+                        .on_hover_text(&unity_docs_tip)
+                        .clicked()
+                    {
+                        self.show_unity_docs_window = true;
+                    }
+                    if plugin_secondary_btn(ui, &unity_use).clicked() {
+                        self.model.go_chat();
+                        self.set_chat_interaction(ChatInteraction::Unity);
+                        self.model.focus_composer = true;
                     }
                 });
+            } else {
+                ui.add_space(8.0);
+                ui.label(RichText::new(&unity_off_hint).size(12.0).color(MUTED));
+            }
+        });
 
-                if enabled {
-                    ui.add_space(12.0);
-                    ui.horizontal_wrapped(|ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("打开设置").size(12.5).color(BG).strong(),
-                                )
-                                .fill(UNITY_ACCENT)
-                                .corner_radius(CornerRadius::same(8))
-                                .min_size(Vec2::new(0.0, 30.0)),
-                            )
-                            .clicked()
-                        {
-                            self.open_unity_settings();
-                        }
-                        if ui
-                            .button(RichText::new("说明文档").size(12.5))
-                            .on_hover_text("查看 /unity 指令与常用说法")
-                            .clicked()
-                        {
-                            self.show_unity_docs_window = true;
-                        }
-                        if ui
-                            .button(RichText::new("在聊天中使用").size(12.5))
-                            .clicked()
-                        {
-                            self.model.go_chat();
-                            self.set_chat_interaction(ChatInteraction::Unity);
-                            self.model.focus_composer = true;
-                        }
-                    });
-                } else {
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(self.t("plugins.enabled_hint"))
-                            .size(12.0)
-                            .color(MUTED),
-                    );
-                }
-            });
-
-        ui.add_space(14.0);
         self.openmontage_plugin_card(ui);
-        ui.add_space(14.0);
         self.bevy_plugin_card(ui);
+        ui.add_space(24.0);
     }
 
     fn bevy_plugin_card(&mut self, ui: &mut egui::Ui) {
@@ -2565,234 +2523,200 @@ impl BonyBuildApp {
             BevyStatus::NoProject => BEVY_ACCENT,
             BevyStatus::Unknown => MUTED,
         };
-        let border = if enabled && status.is_ready() {
+        let title = self.t("plugins.bevy_title").to_string();
+        let blurb = self.t("plugins.bevy_blurb").to_string();
+        let enable_tip = self.t("plugins.enable").to_string();
+        let project_label = self.t("plugins.project").to_string();
+        let pick_label = self.t("plugins.pick_existing").to_string();
+        let running_hint = self.t("plugins.bevy_running").to_string();
+        let no_rust = self.t("plugins.bevy_no_rust").to_string();
+        let install_rust = self.t("plugins.bevy_install_rust").to_string();
+        let install_rust_tip = self.t("plugins.bevy_install_rust_tip").to_string();
+        let copy_label = self.t("plugins.bevy_copy").to_string();
+        let copied = self.t("plugins.bevy_copied").to_string();
+        let no_project = self.t("plugins.bevy_no_project").to_string();
+        let project_name = self.t("plugins.bevy_project_name").to_string();
+        let create_label = self.t("plugins.bevy_create").to_string();
+        let check_tip = self.t("plugins.bevy_check_tip").to_string();
+        let run_label = self.t("plugins.bevy_run").to_string();
+        let run_tip = self.t("plugins.bevy_run_tip").to_string();
+        let stop_label = self.t("plugins.bevy_stop").to_string();
+        let detecting = self.t("plugins.bevy_detecting").to_string();
+        let enabled_hint = self.t("plugins.bevy_enabled_hint").to_string();
+        let icon_color = if enabled && status.is_ready() {
             BEVY_ACCENT
         } else {
-            BORDER
+            MUTED
         };
 
-        Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(14))
-            .stroke(Stroke::new(1.0, border))
-            .inner_margin(Margin::symmetric(16, 14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    paint_sidebar_glyph(
-                        ui,
-                        SidebarGlyph::Plug,
-                        if enabled && status.is_ready() {
-                            BEVY_ACCENT
-                        } else {
-                            MUTED
-                        },
-                    );
+        plugin_section(ui, |ui| {
+            plugin_header(
+                ui,
+                SidebarGlyph::Plug,
+                icon_color,
+                &title,
+                &blurb,
+                if status.is_ready() {
+                    Some((enabled, BEVY_ACCENT, enable_tip.as_str()))
+                } else {
+                    None
+                },
+                |on| self.set_bevy_enabled(on),
+            );
+
+            ui.add_space(10.0);
+            plugin_path_row(
+                ui,
+                &project_label,
+                &project_display,
+                (!busy).then_some(pick_label.as_str()),
+                || self.pick_bevy_project(),
+            );
+
+            ui.add_space(6.0);
+            plugin_status_line(
+                ui,
+                status_color,
+                status.label(),
+                if running {
+                    Some(running_hint.as_str())
+                } else {
+                    None
+                },
+            );
+
+            match status {
+                BevyStatus::NoRust => {
                     ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Bevy 游戏引擎（Rust ECS，code-first）")
-                                .size(15.0)
-                                .strong()
-                                .color(TEXT),
-                        );
-                        ui.label(
-                            RichText::new("AI 直接写/改 Bevy 组件与系统，cargo run 直接看效果，没有可视化编辑器")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                    });
-                    if status.is_ready() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let mut on = enabled;
-                            if ui
-                                .add(egui::Checkbox::new(&mut on, RichText::new("启用").size(12.5)))
-                                .changed()
-                            {
-                                self.set_bevy_enabled(on);
-                            }
-                        });
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("项目").size(12.0).color(MUTED));
-                    ui.label(
-                        RichText::new(&project_display)
-                            .size(12.0)
-                            .color(TEXT)
-                            .monospace(),
-                    );
-                    if !busy && ui.small_button("选择已有").clicked() {
-                        self.pick_bevy_project();
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("状态").size(12.0).color(MUTED));
-                    ui.label(RichText::new(status.label()).size(12.5).color(status_color));
-                    if running {
-                        ui.label(RichText::new("· 游戏窗口运行中").size(11.5).color(BEVY_ACCENT));
-                    }
-                });
-
-                match status {
-                    BevyStatus::NoRust => {
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new("本机未检测到 Rust 工具链（cargo/rustc）：")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
-                        ui.add_space(6.0);
-                        Frame::new()
-                            .fill(PANEL_2)
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(Margin::same(10))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.horizontal(|ui| {
-                                    ui.label(
+                    ui.label(RichText::new(&no_rust).size(12.0).color(MUTED));
+                    ui.add_space(8.0);
+                    Frame::new()
+                        .fill(BG)
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Label::new(
                                         RichText::new(&install_hint)
                                             .size(11.5)
                                             .monospace()
                                             .color(TEXT),
-                                    );
-                                    if ui.small_button("复制").clicked() {
-                                        ui.ctx().copy_text(install_hint.clone());
-                                        self.bevy.toast = Some("安装命令已复制".into());
-                                    }
-                                });
+                                    )
+                                    .truncate(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if plugin_link_btn(ui, &copy_label).clicked() {
+                                            ui.ctx().copy_text(install_hint.clone());
+                                            self.bevy.toast = Some(copied.clone());
+                                        }
+                                    },
+                                );
                             });
-                        ui.add_space(8.0);
+                        });
+                    ui.add_space(10.0);
+                    if ui
+                        .add_enabled(can_install_rust, plugin_primary_btn_widget(&install_rust, OK))
+                        .on_hover_text(&install_rust_tip)
+                        .clicked()
+                    {
+                        self.bevy.install_rust();
+                    }
+                    self.bevy_log_tail(ui);
+                }
+                BevyStatus::NoProject => {
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(&no_project).size(12.0).color(MUTED));
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&project_name).size(12.0).color(MUTED));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.bevy_new_project_name)
+                                .desired_width(168.0)
+                                .hint_text("my-game"),
+                        );
                         if ui
                             .add_enabled(
-                                can_install_rust,
-                                egui::Button::new(
-                                    RichText::new("⚡ 一键自动安装").size(12.5).color(BG).strong(),
-                                )
-                                .fill(OK)
-                                .corner_radius(CornerRadius::same(8)),
+                                !busy,
+                                plugin_primary_btn_widget(&create_label, BEVY_ACCENT),
                             )
-                            .on_hover_text("应用内运行安装命令并自动重新检测")
                             .clicked()
                         {
-                            self.bevy.install_rust();
+                            self.create_bevy_project();
                         }
-                        self.bevy_log_tail(ui);
+                    });
+                    self.bevy_log_tail(ui);
+                }
+                BevyStatus::Error => {
+                    ui.add_space(8.0);
+                    if let Some(err) = &last_error {
+                        ui.label(RichText::new(err).size(12.0).color(DANGER));
                     }
-                    BevyStatus::NoProject => {
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new("还没有 Bevy 项目：新建一个（引擎依赖走 phuhao000/bevy fork 的 main 分支），或选择已有项目。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
+                    self.bevy_log_tail(ui);
+                }
+                BevyStatus::Ready => {
+                    ui.add_space(12.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if ui
+                            .add_enabled(!busy, plugin_secondary_btn_widget("cargo check"))
+                            .on_hover_text(&check_tip)
+                            .clicked()
+                        {
+                            self.bevy.check();
+                        }
+                        if ui
+                            .add_enabled(!busy, plugin_secondary_btn_widget("cargo build"))
+                            .clicked()
+                        {
+                            self.bevy.build();
+                        }
+                        if ui
+                            .add_enabled(!busy, plugin_primary_btn_widget(&run_label, BEVY_ACCENT))
+                            .on_hover_text(&run_tip)
+                            .clicked()
+                        {
+                            self.bevy.run();
+                        }
+                        if can_stop && plugin_danger_btn(ui, &stop_label).clicked() {
+                            self.bevy.stop();
+                        }
+                    });
+                    if let Some(err) = &last_error {
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("项目名").size(12.0).color(MUTED));
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.bevy_new_project_name)
-                                    .desired_width(160.0),
-                            );
-                            if ui
-                                .add_enabled(
-                                    !busy,
-                                    egui::Button::new(
-                                        RichText::new("创建新项目").size(12.5).color(BG).strong(),
-                                    )
-                                    .fill(BEVY_ACCENT)
-                                    .corner_radius(CornerRadius::same(8)),
-                                )
-                                .clicked()
-                            {
-                                self.create_bevy_project();
-                            }
-                        });
-                        self.bevy_log_tail(ui);
+                        ui.label(RichText::new(err).size(12.0).color(DANGER));
                     }
-                    BevyStatus::Error => {
+                    self.bevy_log_tail(ui);
+                    if enabled {
                         ui.add_space(8.0);
-                        if let Some(err) = &last_error {
-                            ui.label(RichText::new(err).size(12.0).color(DANGER));
-                        }
-                        self.bevy_log_tail(ui);
-                    }
-                    BevyStatus::Ready => {
-                        ui.add_space(10.0);
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .add_enabled(!busy, egui::Button::new(RichText::new("cargo check").size(12.5)))
-                                .on_hover_text("快速语法/类型检查，不生成可执行文件")
-                                .clicked()
-                            {
-                                self.bevy.check();
-                            }
-                            if ui
-                                .add_enabled(!busy, egui::Button::new(RichText::new("cargo build").size(12.5)))
-                                .clicked()
-                            {
-                                self.bevy.build();
-                            }
-                            if ui
-                                .add_enabled(
-                                    !busy,
-                                    egui::Button::new(
-                                        RichText::new("▶ 运行游戏").size(12.5).color(BG).strong(),
-                                    )
-                                    .fill(BEVY_ACCENT)
-                                    .corner_radius(CornerRadius::same(8)),
-                                )
-                                .on_hover_text("cargo run（首次编译可能需要几分钟）")
-                                .clicked()
-                            {
-                                self.bevy.run();
-                            }
-                            if can_stop
-                                && ui
-                                    .button(RichText::new("停止").size(12.5).color(DANGER))
-                                    .clicked()
-                            {
-                                self.bevy.stop();
-                            }
-                        });
-                        if let Some(err) = &last_error {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(err).size(12.0).color(DANGER));
-                        }
-                        self.bevy_log_tail(ui);
-                        if enabled {
-                            ui.add_space(6.0);
-                            ui.label(
-                                RichText::new("已启用：对话里提到写/改 Bevy 游戏时会自动带上这个项目的规范")
-                                    .size(12.0)
-                                    .color(MUTED),
-                            );
-                        }
-                    }
-                    BevyStatus::Unknown => {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new("检测中…").size(12.0).color(MUTED));
+                        ui.label(RichText::new(&enabled_hint).size(12.0).color(MUTED));
                     }
                 }
-            });
+                BevyStatus::Unknown => {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&detecting).size(12.0).color(MUTED));
+                }
+            }
+        });
     }
 
     fn bevy_log_tail(&self, ui: &mut egui::Ui) {
         if self.bevy.log_tail.is_empty() {
             return;
         }
-        ui.add_space(6.0);
+        ui.add_space(10.0);
         Frame::new()
-            .fill(PANEL_2)
+            .fill(BG)
             .corner_radius(CornerRadius::same(8))
             .inner_margin(Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
-                    .max_height(140.0)
+                    .id_salt("bevy_log_tail")
+                    .max_height(112.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for line in &self.bevy.log_tail {
@@ -2840,8 +2764,7 @@ impl BonyBuildApp {
         let blurb = self.t("plugins.openmontage_blurb").to_string();
         let path_label = self.t("plugins.openmontage_path").to_string();
         let change_label = self.t("plugins.openmontage_change").to_string();
-        let status_key = self.t("plugins.status").to_string();
-        let enable_label = self.t("plugins.enable").to_string();
+        let enable_tip = self.t("plugins.enable").to_string();
         let prereq = self.t("plugins.openmontage_prereq").to_string();
         let install_label = self.t("plugins.openmontage_install").to_string();
         let installing_hint = self.t("plugins.openmontage_installing_hint").to_string();
@@ -2849,183 +2772,121 @@ impl BonyBuildApp {
         let reinstall_label = self.t("plugins.openmontage_reinstall_deps").to_string();
         let backlot_label = self.t("plugins.openmontage_backlot").to_string();
         let enabled_hint = self.t("plugins.openmontage_enabled_hint").to_string();
-        let border = if enabled && status.is_ready() {
+        let icon_color = if enabled && status.is_ready() {
             OM_ACCENT
         } else {
-            BORDER
+            MUTED
         };
 
-        Frame::new()
-            .fill(PANEL)
-            .corner_radius(CornerRadius::same(14))
-            .stroke(Stroke::new(1.0, border))
-            .inner_margin(Margin::symmetric(16, 14))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    paint_sidebar_glyph(
-                        ui,
-                        SidebarGlyph::Plug,
-                        if enabled && status.is_ready() {
-                            OM_ACCENT
-                        } else {
-                            MUTED
-                        },
-                    );
+        plugin_section(ui, |ui| {
+            plugin_header(
+                ui,
+                SidebarGlyph::Plug,
+                icon_color,
+                &title,
+                &blurb,
+                if status.is_ready() {
+                    Some((enabled, OM_ACCENT, enable_tip.as_str()))
+                } else {
+                    None
+                },
+                |on| self.set_openmontage_enabled(on),
+            );
+
+            ui.add_space(10.0);
+            plugin_path_row(
+                ui,
+                &path_label,
+                &root_display,
+                (!busy).then_some(change_label.as_str()),
+                || self.pick_openmontage_root(),
+            );
+
+            ui.add_space(6.0);
+            plugin_status_line(
+                ui,
+                status_color,
+                &status_label,
+                if !last_step.is_empty() && busy {
+                    Some(last_step.as_str())
+                } else {
+                    None
+                },
+            );
+
+            match &status {
+                OpenMontageStatus::NotInstalled | OpenMontageStatus::Unknown => {
                     ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(&title)
-                                .size(15.0)
-                                .strong()
-                                .color(TEXT),
-                        );
-                        ui.label(RichText::new(&blurb).size(12.0).color(MUTED));
-                    });
-                    if status.is_ready() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let mut on = enabled;
-                            if ui
-                                .add(egui::Checkbox::new(
-                                    &mut on,
-                                    RichText::new(&enable_label).size(12.5),
-                                ))
-                                .changed()
-                            {
-                                self.set_openmontage_enabled(on);
-                            }
-                        });
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&path_label).size(12.0).color(MUTED));
-                    ui.label(
-                        RichText::new(&root_display)
-                            .size(12.0)
-                            .color(TEXT)
-                            .monospace(),
-                    );
-                    if !busy && ui.small_button(&change_label).clicked() {
-                        self.pick_openmontage_root();
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&status_key).size(12.0).color(MUTED));
-                    ui.label(RichText::new(&status_label).size(12.5).color(status_color));
-                    if !last_step.is_empty() && busy {
-                        ui.label(
-                            RichText::new(format!("· {last_step}"))
-                                .size(11.5)
-                                .color(MUTED),
-                        );
-                    }
-                });
-
-                match &status {
-                    OpenMontageStatus::NotInstalled | OpenMontageStatus::Unknown => {
-                        ui.add_space(10.0);
-                        ui.label(RichText::new(&prereq).size(12.0).color(MUTED));
-                        ui.add_space(8.0);
-                        if ui
-                            .add_enabled(
-                                !busy,
-                                egui::Button::new(
-                                    RichText::new(&install_label)
-                                        .size(12.5)
-                                        .color(BG)
-                                        .strong(),
-                                )
-                                .fill(OM_ACCENT)
-                                .corner_radius(CornerRadius::same(8))
-                                .min_size(Vec2::new(0.0, 30.0)),
-                            )
-                            .clicked()
-                        {
-                            self.openmontage.start_install(false);
-                        }
-                    }
-                    OpenMontageStatus::Installing => {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(&installing_hint).size(12.0).color(MUTED));
-                        self.openmontage_log_tail(ui);
-                    }
-                    OpenMontageStatus::InstallFailed(_) => {
-                        ui.add_space(8.0);
-                        if let Some(reason) = &fail_reason {
-                            ui.label(RichText::new(reason).size(12.0).color(DANGER));
-                        }
-                        self.openmontage_log_tail(ui);
-                        ui.add_space(8.0);
-                        if ui
-                            .button(RichText::new(&retry_label).size(12.5))
-                            .clicked()
-                        {
-                            self.openmontage.start_install(false);
-                        }
-                    }
-                    OpenMontageStatus::MissingDeps(_) => {
-                        ui.add_space(8.0);
-                        if let Some(missing) = &missing_deps {
-                            ui.label(
-                                RichText::new(format!("缺少：{missing}"))
-                                    .size(12.0)
-                                    .color(DANGER),
-                            );
-                        }
-                        ui.add_space(8.0);
-                        if ui
-                            .add_enabled(
-                                !busy,
-                                egui::Button::new(
-                                    RichText::new(&reinstall_label)
-                                        .size(12.5)
-                                        .color(BG)
-                                        .strong(),
-                                )
-                                .fill(OM_ACCENT)
-                                .corner_radius(CornerRadius::same(8)),
-                            )
-                            .clicked()
-                        {
-                            self.openmontage.start_install(true);
-                        }
-                    }
-                    OpenMontageStatus::Ready => {
-                        ui.add_space(10.0);
-                        if enabled {
-                            ui.horizontal_wrapped(|ui| {
-                                if ui
-                                    .button(RichText::new(&backlot_label).size(12.5))
-                                    .clicked()
-                                {
-                                    self.openmontage.open_backlot();
-                                }
-                            });
-                            ui.add_space(6.0);
-                        }
-                        ui.label(RichText::new(&enabled_hint).size(12.0).color(MUTED));
+                    ui.label(RichText::new(&prereq).size(12.0).color(MUTED));
+                    ui.add_space(10.0);
+                    if ui
+                        .add_enabled(!busy, plugin_primary_btn_widget(&install_label, OM_ACCENT))
+                        .clicked()
+                    {
+                        self.openmontage.start_install(false);
                     }
                 }
-            });
+                OpenMontageStatus::Installing => {
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&installing_hint).size(12.0).color(MUTED));
+                    self.openmontage_log_tail(ui);
+                }
+                OpenMontageStatus::InstallFailed(_) => {
+                    ui.add_space(8.0);
+                    if let Some(reason) = &fail_reason {
+                        ui.label(RichText::new(reason).size(12.0).color(DANGER));
+                    }
+                    self.openmontage_log_tail(ui);
+                    ui.add_space(10.0);
+                    if plugin_secondary_btn(ui, &retry_label).clicked() {
+                        self.openmontage.start_install(false);
+                    }
+                }
+                OpenMontageStatus::MissingDeps(_) => {
+                    ui.add_space(8.0);
+                    if let Some(missing) = &missing_deps {
+                        ui.label(
+                            RichText::new(format!("缺少：{missing}"))
+                                .size(12.0)
+                                .color(DANGER),
+                        );
+                    }
+                    ui.add_space(10.0);
+                    if ui
+                        .add_enabled(!busy, plugin_primary_btn_widget(&reinstall_label, OM_ACCENT))
+                        .clicked()
+                    {
+                        self.openmontage.start_install(true);
+                    }
+                }
+                OpenMontageStatus::Ready => {
+                    if enabled {
+                        ui.add_space(12.0);
+                        if plugin_secondary_btn(ui, &backlot_label).clicked() {
+                            self.openmontage.open_backlot();
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(&enabled_hint).size(12.0).color(MUTED));
+                }
+            }
+        });
     }
 
     fn openmontage_log_tail(&self, ui: &mut egui::Ui) {
         if self.openmontage.log_tail.is_empty() {
             return;
         }
-        ui.add_space(6.0);
+        ui.add_space(10.0);
         Frame::new()
-            .fill(PANEL_2)
+            .fill(BG)
             .corner_radius(CornerRadius::same(8))
             .inner_margin(Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical()
-                    .max_height(120.0)
+                    .id_salt("openmontage_log_tail")
+                    .max_height(100.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for line in &self.openmontage.log_tail {
@@ -6374,6 +6235,170 @@ fn centered_column(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
             },
         );
     });
+}
+
+fn plugin_divider(ui: &mut egui::Ui) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 1.0), egui::Sense::hover());
+    ui.painter()
+        .hline(rect.x_range(), rect.center().y, Stroke::new(1.0, BORDER));
+}
+
+fn plugin_section(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(16.0);
+    add(ui);
+    ui.add_space(16.0);
+    plugin_divider(ui);
+}
+
+fn plugin_enable_switch(ui: &mut egui::Ui, on: bool, accent: Color32, tip: &str) -> egui::Response {
+    let size = Vec2::new(38.0, 22.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let resp = resp.on_hover_text(tip);
+    let mut track = if on { accent } else { Color32::from_rgb(58, 58, 66) };
+    if resp.hovered() {
+        track = if on {
+            Color32::from_rgb(
+                accent.r().saturating_add(18),
+                accent.g().saturating_add(18),
+                accent.b().saturating_add(18),
+            )
+        } else {
+            Color32::from_rgb(70, 70, 78)
+        };
+    }
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(11), track);
+    let knob_x = if on {
+        rect.right() - 11.0
+    } else {
+        rect.left() + 11.0
+    };
+    ui.painter().circle_filled(
+        Pos2::new(knob_x, rect.center().y),
+        7.5,
+        Color32::from_rgb(245, 245, 248),
+    );
+    resp
+}
+
+fn plugin_header(
+    ui: &mut egui::Ui,
+    glyph: SidebarGlyph,
+    icon_color: Color32,
+    title: &str,
+    blurb: &str,
+    enable: Option<(bool, Color32, &str)>,
+    mut on_toggle: impl FnMut(bool),
+) {
+    ui.horizontal(|ui| {
+        paint_sidebar_glyph(ui, glyph, icon_color);
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(title).size(15.0).strong().color(TEXT));
+            ui.add_space(2.0);
+            ui.label(RichText::new(blurb).size(12.0).color(MUTED));
+        });
+        if let Some((on, accent, tip)) = enable {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if plugin_enable_switch(ui, on, accent, tip).clicked() {
+                    on_toggle(!on);
+                }
+            });
+        }
+    });
+}
+
+fn plugin_status_line(ui: &mut egui::Ui, color: Color32, label: &str, hint: Option<&str>) {
+    ui.horizontal(|ui| {
+        let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(dot.center(), 3.2, color);
+        ui.add_space(4.0);
+        ui.label(RichText::new(label).size(12.5).color(color));
+        if let Some(hint) = hint {
+            ui.label(RichText::new(format!("· {hint}")).size(11.5).color(MUTED));
+        }
+    });
+}
+
+fn plugin_path_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    path: &str,
+    action: Option<&str>,
+    mut on_action: impl FnMut(),
+) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        let action_reserve = if action.is_some() { 52.0 } else { 0.0 };
+        let path_w = (ui.available_width() - action_reserve).max(72.0);
+        let path_resp = ui
+            .allocate_ui_with_layout(
+                Vec2::new(path_w, 18.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(path).size(12.0).monospace().color(TEXT))
+                            .truncate(),
+                    )
+                },
+            )
+            .inner;
+        let _ = path_resp.on_hover_text(path);
+        if let Some(action) = action {
+            if plugin_link_btn(ui, action).clicked() {
+                on_action();
+            }
+        }
+    });
+}
+
+fn plugin_link_btn(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let resp = ui.add(
+        egui::Button::new(RichText::new(text).size(12.0).color(MUTED))
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::NONE)
+            .frame(false),
+    );
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    resp
+}
+
+fn plugin_primary_btn(ui: &mut egui::Ui, text: &str, accent: Color32) -> egui::Response {
+    ui.add(plugin_primary_btn_widget(text, accent))
+}
+
+fn plugin_primary_btn_widget(text: &str, accent: Color32) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text.to_owned()).size(12.5).color(BG).strong())
+        .fill(accent)
+        .corner_radius(CornerRadius::same(7))
+        .min_size(Vec2::new(0.0, 28.0))
+}
+
+fn plugin_secondary_btn(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(plugin_secondary_btn_widget(text))
+}
+
+fn plugin_secondary_btn_widget(text: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text.to_owned()).size(12.5).color(TEXT))
+        .fill(PANEL_2)
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(7))
+        .min_size(Vec2::new(0.0, 28.0))
+}
+
+fn plugin_danger_btn(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(text).size(12.5).color(DANGER))
+            .fill(PANEL_2)
+            .stroke(Stroke::NONE)
+            .corner_radius(CornerRadius::same(7))
+            .min_size(Vec2::new(0.0, 28.0)),
+    )
 }
 
 fn stat_chip(ui: &mut egui::Ui, label: &str, value: &str) {
