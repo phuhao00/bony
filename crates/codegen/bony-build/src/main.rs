@@ -4,6 +4,7 @@
 
 mod agent_bridge;
 mod app;
+mod bevy;
 mod charts;
 mod config_io;
 mod events;
