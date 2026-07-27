@@ -1,5 +1,6 @@
 //! Codex-style shell: left task sidebar, main chat, floating composer.
 
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use eframe::egui::{
@@ -305,6 +306,9 @@ impl BonyBuildApp {
         model.recent_projects = normalized;
         remember_project(&mut model.recent_projects, &project_root);
         let prefs = load_plugin_prefs();
+        config
+            .always_approve
+            .store(prefs.auto_approve_tools, Ordering::Relaxed);
         let openmontage = OpenMontageState::from_prefs(&prefs);
         let bevy = BevyState::from_prefs(&prefs);
         Self {
@@ -682,6 +686,9 @@ impl BonyBuildApp {
             .unwrap_or_else(|| project.clone());
         task.isolated = false;
         task.from_new_chat = self.pending_from_new_chat;
+        if self.plugin_prefs.auto_approve_tools {
+            task.permission_mode = PermissionMode::FullControl;
+        }
         self.pending_from_new_chat = false;
         if let Some(repo) = &self.task_repo {
             if let Err(e) = repo.save(&task) {
@@ -991,7 +998,74 @@ impl BonyBuildApp {
             text.clone()
         });
         let attachments = std::mem::take(&mut self.attachments);
-        self.send_cmd(UiCommand::Prompt { text, attachments });
+        let agent_text = self.augment_prompt_for_active_plugins(&text);
+        self.send_cmd(UiCommand::Prompt {
+            text: agent_text,
+            attachments,
+        });
+    }
+
+    /// When plugins like OpenMontage are on, wrap the agent-facing prompt with
+    /// hard routing rules. The chat bubble still shows the raw user text.
+    fn augment_prompt_for_active_plugins(&mut self, text: &str) -> String {
+        let om_on =
+            self.plugin_prefs.openmontage_enabled && self.openmontage.status.is_ready();
+        let bevy_on =
+            self.plugin_prefs.bevy_enabled && matches!(self.bevy.status, BevyStatus::Ready);
+
+        let mut parts: Vec<String> = Vec::new();
+        if om_on {
+            // Refresh skill + helper script so agents never need nested python -c.
+            let _ = crate::openmontage::write_skill_file(&self.openmontage.root);
+            let _ = crate::openmontage::sync_config_skill_path(
+                true,
+                &crate::openmontage::skill_path(),
+            );
+            if self.openmontage.preflight_summary.is_none() {
+                self.openmontage.start_preflight_refresh();
+            }
+            parts.push(crate::openmontage::active_prompt_directive(
+                &self.openmontage.root,
+            ));
+            match &self.openmontage.preflight_summary {
+                Some(summary) => {
+                    parts.push(format!(
+                        "[Bony Build · OpenMontage PREFLIGHT RESULT]\n\
+                         Do NOT re-run shell preflight. Continue with pipeline selection.\n\
+                         ```json\n{summary}\n```"
+                    ));
+                }
+                None => {
+                    parts.push(
+                        "[Bony Build · OpenMontage PREFLIGHT]\n\
+                         Cached preflight is still running. If you must check providers, run \
+                         bony_preflight.py with working_directory = OpenMontage root \
+                         (exact argv in the directive above). Never python -c."
+                            .into(),
+                    );
+                }
+            }
+        }
+        if bevy_on {
+            let project = self.bevy.project_path.clone();
+            let _ = crate::bevy::write_skill_file(&project);
+            let _ = crate::bevy::sync_config_skill_path(true, &crate::bevy::skill_path());
+            parts.push(format!(
+                "[Bony Build · Bevy ACTIVE]\n\
+                 Bevy skill is enabled. For game / Bevy / ECS requests use the bevy-game-dev skill \
+                 and the project at {}. Do not use Unity or OpenMontage for those tasks.",
+                project.display()
+            ));
+        }
+
+        if parts.is_empty() {
+            return text.to_string();
+        }
+        if text.is_empty() {
+            parts.join("\n\n")
+        } else {
+            format!("{}\n\nUser request:\n{}", parts.join("\n\n"), text)
+        }
     }
 
     fn try_send_unity_chat_command(&mut self, text: &str) -> bool {
@@ -1164,6 +1238,7 @@ impl eframe::App for BonyBuildApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_started(ctx);
         self.drain_events();
+        self.try_auto_approve_pending_permission();
         self.poll_pending_worktree(ctx);
         self.tick_window_drag(ctx);
 
@@ -3158,6 +3233,64 @@ impl BonyBuildApp {
         save_plugin_prefs(&self.plugin_prefs);
     }
 
+    fn set_auto_approve_tools(&mut self, enabled: bool) {
+        self.plugin_prefs.auto_approve_tools = enabled;
+        self.config
+            .always_approve
+            .store(enabled, Ordering::Relaxed);
+        save_plugin_prefs(&self.plugin_prefs);
+        if enabled {
+            if let Some(id) = self.active_task_id.clone()
+                && let Some(task) = self.tasks.iter_mut().find(|t| t.id == id)
+            {
+                task.permission_mode = PermissionMode::FullControl;
+                task.updated_at = unix_time();
+                if let Some(repo) = &self.task_repo {
+                    let _ = repo.save(task);
+                }
+            }
+            self.model.status = "完全控制已开启 · 工具将自动批准".into();
+            self.try_auto_approve_pending_permission();
+        } else {
+            self.model.status = "已恢复每次询问工具权限".into();
+        }
+    }
+
+    fn try_auto_approve_pending_permission(&mut self) {
+        if !self.plugin_prefs.auto_approve_tools
+            && !self
+                .active_task_id
+                .as_ref()
+                .and_then(|id| self.tasks.iter().find(|t| &t.id == id))
+                .is_some_and(|t| {
+                    matches!(
+                        t.permission_mode,
+                        PermissionMode::FullControl | PermissionMode::AllowEdits
+                    )
+                })
+        {
+            return;
+        }
+        let Some(perm) = self.model.pending_permission.clone() else {
+            return;
+        };
+        let option_id = perm
+            .options
+            .iter()
+            .find(|o| o.kind.contains("AllowAlways"))
+            .or_else(|| perm.options.iter().find(|o| o.kind.contains("AllowOnce")))
+            .or_else(|| perm.options.iter().find(|o| o.kind.contains("Allow")))
+            .map(|o| o.id.clone());
+        let Some(option_id) = option_id else {
+            return;
+        };
+        self.model.pending_permission = None;
+        self.send_cmd(UiCommand::PermissionResponse {
+            option_id: Some(option_id),
+        });
+        self.model.status = "Working…".into();
+    }
+
     fn set_openmontage_enabled(&mut self, enabled: bool) {
         let root = self.openmontage.root.clone();
         let result = if enabled {
@@ -4016,6 +4149,9 @@ impl BonyBuildApp {
                         }
                     }
                     ui.add_space(8.0);
+                    let ready_hint = self.t("plugins.openmontage_ready_hint").to_string();
+                    ui.label(RichText::new(&ready_hint).size(12.0).color(MUTED));
+                    ui.add_space(4.0);
                     ui.label(RichText::new(&enabled_hint).size(12.0).color(MUTED));
                 }
             }
@@ -5574,10 +5710,15 @@ impl BonyBuildApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
-                // Context chips: current project (when chosen) + plugins + files.
+                // Context chips: project (when chosen) + session plugins + files.
                 let show_project = !self.awaiting_project_choice;
                 let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
-                let has_context = show_project || unity_on || !self.attachments.is_empty();
+                let om_on =
+                    self.plugin_prefs.openmontage_enabled && self.openmontage.status.is_ready();
+                let bevy_on =
+                    self.plugin_prefs.bevy_enabled && matches!(self.bevy.status, BevyStatus::Ready);
+                let has_context =
+                    show_project || unity_on || om_on || bevy_on || !self.attachments.is_empty();
                 if has_context {
                     self.composer_context_chips(ui);
                     ui.add_space(8.0);
@@ -5772,10 +5913,19 @@ impl BonyBuildApp {
     /// Dismissible pills for active plugins / attachments (Codex-like).
     fn composer_context_chips(&mut self, ui: &mut egui::Ui) {
         let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
+        let om_on = self.plugin_prefs.openmontage_enabled && self.openmontage.status.is_ready();
+        let bevy_on = self.plugin_prefs.bevy_enabled && matches!(self.bevy.status, BevyStatus::Ready);
         let mut drop_unity = false;
+        let mut drop_om = false;
+        let mut drop_bevy = false;
         let mut clear_files = false;
         let mut drop_file: Option<usize> = None;
         let mut pick_project = false;
+
+        let unity_tip = self.t("plus.chip_unity_tip").to_owned();
+        let om_tip = self.t("plus.chip_om_tip").to_owned();
+        let bevy_tip = self.t("plus.chip_bevy_tip").to_owned();
+        let clear_files_label = self.t("plus.clear_files").to_owned();
 
         ui.horizontal_wrapped(|ui| {
             if !self.awaiting_project_choice {
@@ -5787,6 +5937,7 @@ impl BonyBuildApp {
                 let root = canonical_project_root(&cwd);
                 let name = AppModel::project_label(&root);
                 let full_path = root.display().to_string();
+                let switch_tip = self.t("plus.chip_project_tip");
                 let resp = Frame::new()
                     .fill(PANEL_2)
                     .corner_radius(CornerRadius::same(10))
@@ -5801,7 +5952,7 @@ impl BonyBuildApp {
                     })
                     .response
                     .interact(egui::Sense::click())
-                    .on_hover_text(format!("{full_path}\n点击切换项目"));
+                    .on_hover_text(format!("{full_path}\n{switch_tip}"));
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 }
@@ -5811,27 +5962,81 @@ impl BonyBuildApp {
             }
 
             if unity_on {
-                let pill = Frame::new()
+                Frame::new()
                     .fill(PANEL_2)
                     .corner_radius(CornerRadius::same(10))
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(
+                        UNITY_ACCENT.r(),
+                        UNITY_ACCENT.g(),
+                        UNITY_ACCENT.b(),
+                        90,
+                    )))
                     .inner_margin(Margin::symmetric(8, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            paint_sidebar_glyph(ui, SidebarGlyph::Unity, MUTED);
+                            paint_sidebar_glyph(ui, SidebarGlyph::Unity, UNITY_ACCENT);
                             ui.add_space(5.0);
                             ui.label(RichText::new("Unity").size(12.0).color(TEXT));
                             ui.add_space(4.0);
-                            if icon_btn(ui, SidebarGlyph::Close, "移除此对话中的 Unity", false)
-                                .clicked()
-                            {
+                            if icon_btn(ui, SidebarGlyph::Close, &unity_tip, false).clicked() {
                                 drop_unity = true;
                             }
                         });
                     })
                     .response
-                    .on_hover_text("此对话使用 Unity CLI；点 × 取消");
-                let _ = pill;
+                    .on_hover_text(&unity_tip);
+            }
+
+            if om_on {
+                Frame::new()
+                    .fill(PANEL_2)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(
+                        OM_ACCENT.r(),
+                        OM_ACCENT.g(),
+                        OM_ACCENT.b(),
+                        90,
+                    )))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            paint_sidebar_glyph(ui, SidebarGlyph::Film, OM_ACCENT);
+                            ui.add_space(5.0);
+                            ui.label(RichText::new("OpenMontage").size(12.0).color(TEXT));
+                            ui.add_space(4.0);
+                            if icon_btn(ui, SidebarGlyph::Close, &om_tip, false).clicked() {
+                                drop_om = true;
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(&om_tip);
+            }
+
+            if bevy_on {
+                Frame::new()
+                    .fill(PANEL_2)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(
+                        BEVY_ACCENT.r(),
+                        BEVY_ACCENT.g(),
+                        BEVY_ACCENT.b(),
+                        90,
+                    )))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            paint_sidebar_glyph(ui, SidebarGlyph::Cube, BEVY_ACCENT);
+                            ui.add_space(5.0);
+                            ui.label(RichText::new("Bevy").size(12.0).color(TEXT));
+                            ui.add_space(4.0);
+                            if icon_btn(ui, SidebarGlyph::Close, &bevy_tip, false).clicked() {
+                                drop_bevy = true;
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(&bevy_tip);
             }
 
             let names: Vec<String> = self.attachments.iter().map(|a| a.name.clone()).collect();
@@ -5861,7 +6066,7 @@ impl BonyBuildApp {
             if names.len() > 1
                 && ui
                     .add(
-                        egui::Button::new(RichText::new("清除文件").size(11.0).color(MUTED))
+                        egui::Button::new(RichText::new(clear_files_label).size(11.0).color(MUTED))
                             .fill(Color32::TRANSPARENT)
                             .frame(false),
                     )
@@ -5876,6 +6081,12 @@ impl BonyBuildApp {
         }
         if drop_unity {
             self.set_chat_interaction(ChatInteraction::Agent);
+        }
+        if drop_om {
+            self.set_openmontage_enabled(false);
+        }
+        if drop_bevy {
+            self.set_bevy_enabled(false);
         }
         if clear_files {
             self.attachments.clear();
@@ -5918,7 +6129,7 @@ impl BonyBuildApp {
         });
     }
 
-    /// Floating 「+」 menu: files + installable plugins for this conversation.
+    /// Floating 「+」 menu — Apple-style sheet: files + every plugin with clear status.
     fn composer_plus_popup(&mut self, ctx: &egui::Context) {
         if !self.show_composer_plus {
             return;
@@ -5928,14 +6139,116 @@ impl BonyBuildApp {
             return;
         };
 
-        let mut close = false;
-        let mut add_files = false;
-        let mut toggle_unity = false;
-        let mut open_plugins = false;
+        #[derive(Clone, Copy)]
+        enum PlusAct {
+            AddFiles,
+            ToggleUnity,
+            SetupUnity,
+            ToggleOpenMontage,
+            SetupOpenMontage,
+            ToggleBevy,
+            SetupBevy,
+            Manage,
+        }
+
         let unity_installed = self.plugin_prefs.unity_enabled;
         let unity_active = self.unity_chat_mode && unity_installed;
+        let om_ready = self.openmontage.status.is_ready();
+        let om_on = self.plugin_prefs.openmontage_enabled && om_ready;
+        let bevy_ready = matches!(self.bevy.status, BevyStatus::Ready);
+        let bevy_on = self.plugin_prefs.bevy_enabled && bevy_ready;
 
-        // Open upward from the + button so the menu does not bury the draft.
+        let mut close = false;
+        let mut act: Option<PlusAct> = None;
+
+        let title = self.t("plus.menu_title").to_owned();
+        let add_title = self.t("plus.add_file").to_owned();
+        let add_sub = self.t("plus.add_file_sub").to_owned();
+        let section = self.t("plus.section_plugins").to_owned();
+        let unity_title = self.t("plus.unity").to_owned();
+        let om_title = self.t("plus.openmontage").to_owned();
+        let bevy_title = self.t("plus.bevy").to_owned();
+        let manage_title = self.t("plus.manage").to_owned();
+        let manage_sub = self.t("plus.manage_sub").to_owned();
+        let status_on = self.t("plus.status_on").to_owned();
+        let status_off = self.t("plus.status_off").to_owned();
+        let status_setup = self.t("plus.status_setup").to_owned();
+
+        let (unity_sub, unity_badge, unity_act, unity_active_row) = if unity_installed {
+            if unity_active {
+                (
+                    self.t("plus.unity_on").to_owned(),
+                    status_on.clone(),
+                    PlusAct::ToggleUnity,
+                    true,
+                )
+            } else {
+                (
+                    self.t("plus.unity_off").to_owned(),
+                    status_off.clone(),
+                    PlusAct::ToggleUnity,
+                    false,
+                )
+            }
+        } else {
+            (
+                self.t("plus.unity_disabled").to_owned(),
+                status_setup.clone(),
+                PlusAct::SetupUnity,
+                false,
+            )
+        };
+
+        let (om_sub, om_badge, om_act, om_active_row) = if om_ready {
+            if om_on {
+                (
+                    self.t("plus.openmontage_on").to_owned(),
+                    status_on.clone(),
+                    PlusAct::ToggleOpenMontage,
+                    true,
+                )
+            } else {
+                (
+                    self.t("plus.openmontage_off").to_owned(),
+                    status_off.clone(),
+                    PlusAct::ToggleOpenMontage,
+                    false,
+                )
+            }
+        } else {
+            (
+                self.t("plus.openmontage_setup").to_owned(),
+                status_setup.clone(),
+                PlusAct::SetupOpenMontage,
+                false,
+            )
+        };
+
+        let (bevy_sub, bevy_badge, bevy_act, bevy_active_row) = if bevy_ready {
+            if bevy_on {
+                (
+                    self.t("plus.bevy_on").to_owned(),
+                    status_on.clone(),
+                    PlusAct::ToggleBevy,
+                    true,
+                )
+            } else {
+                (
+                    self.t("plus.bevy_off").to_owned(),
+                    status_off.clone(),
+                    PlusAct::ToggleBevy,
+                    false,
+                )
+            }
+        } else {
+            (
+                self.t("plus.bevy_setup").to_owned(),
+                status_setup.clone(),
+                PlusAct::SetupBevy,
+                false,
+            )
+        };
+
         let area = egui::Area::new(egui::Id::new("composer_plus_menu"))
             .order(egui::Order::Foreground)
             .pivot(Align2::LEFT_BOTTOM)
@@ -5943,64 +6256,89 @@ impl BonyBuildApp {
             .constrain(true)
             .show(ctx, |ui| {
                 Frame::new()
-                    .fill(Color32::from_rgb(24, 24, 28))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(62, 62, 72)))
-                    .corner_radius(CornerRadius::same(12))
+                    .fill(Color32::from_rgb(28, 28, 32))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(58, 58, 66)))
+                    .corner_radius(CornerRadius::same(14))
                     .shadow(Shadow {
-                        offset: [0, 10],
-                        blur: 32,
+                        offset: [0, 12],
+                        blur: 36,
                         spread: 0,
-                        color: Color32::from_black_alpha(140),
+                        color: Color32::from_black_alpha(150),
                     })
-                    .inner_margin(Margin::symmetric(6, 6))
+                    .inner_margin(Margin::symmetric(8, 8))
                     .show(ui, |ui| {
-                        ui.set_width(272.0);
+                        ui.set_width(300.0);
+
+                        // Title — HIG: clear sheet purpose.
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(&title)
+                                    .size(12.0)
+                                    .strong()
+                                    .color(MUTED),
+                            );
+                        });
+                        ui.add_space(6.0);
 
                         if plus_menu_row(
                             ui,
                             SidebarGlyph::Doc,
-                            self.t("plus.add_file"),
-                            self.t("plus.add_file_sub"),
+                            &add_title,
+                            &add_sub,
+                            "",
                             false,
+                            TEXT,
                         ) {
-                            add_files = true;
-                            close = true;
-                        }
-
-                        ui.add_space(2.0);
-                        plus_menu_divider(ui, self.t("plus.section_plugins"));
-                        ui.add_space(2.0);
-
-                        if unity_installed {
-                            let sub = if unity_active {
-                                self.t("plus.unity_on")
-                            } else {
-                                self.t("plus.unity_off")
-                            };
-                            if plus_menu_row(
-                                ui,
-                                SidebarGlyph::Unity,
-                                self.t("plus.unity"),
-                                sub,
-                                unity_active,
-                            ) {
-                                toggle_unity = true;
-                                close = true;
-                            }
-                        } else if plus_menu_row(
-                            ui,
-                            SidebarGlyph::Unity,
-                            self.t("plus.unity"),
-                            self.t("plus.unity_disabled"),
-                            false,
-                        ) {
-                            open_plugins = true;
+                            act = Some(PlusAct::AddFiles);
                             close = true;
                         }
 
                         ui.add_space(4.0);
+                        plus_menu_divider(ui, &section);
+                        ui.add_space(2.0);
+
+                        if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Unity,
+                            &unity_title,
+                            &unity_sub,
+                            &unity_badge,
+                            unity_active_row,
+                            UNITY_ACCENT,
+                        ) {
+                            act = Some(unity_act);
+                            close = true;
+                        }
+                        if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Film,
+                            &om_title,
+                            &om_sub,
+                            &om_badge,
+                            om_active_row,
+                            OM_ACCENT,
+                        ) {
+                            act = Some(om_act);
+                            close = true;
+                        }
+                        if plus_menu_row(
+                            ui,
+                            SidebarGlyph::Cube,
+                            &bevy_title,
+                            &bevy_sub,
+                            &bevy_badge,
+                            bevy_active_row,
+                            BEVY_ACCENT,
+                        ) {
+                            act = Some(bevy_act);
+                            close = true;
+                        }
+
+                        ui.add_space(6.0);
                         ui.painter().hline(
-                            ui.max_rect().x_range().shrink(6.0),
+                            ui.max_rect().x_range().shrink(8.0),
                             ui.cursor().top() + 0.5,
                             Stroke::new(1.0, Color32::from_rgb(48, 48, 56)),
                         );
@@ -6009,28 +6347,51 @@ impl BonyBuildApp {
                         if plus_menu_row(
                             ui,
                             SidebarGlyph::Plug,
-                            self.t("plus.manage"),
-                            self.t("plus.manage_sub"),
+                            &manage_title,
+                            &manage_sub,
+                            "",
                             false,
+                            MUTED,
                         ) {
-                            open_plugins = true;
+                            act = Some(PlusAct::Manage);
                             close = true;
                         }
+                        ui.add_space(2.0);
                     });
             });
 
-        if add_files {
-            self.pick_attachments();
-        }
-        if toggle_unity {
-            if unity_active {
-                self.set_chat_interaction(ChatInteraction::Agent);
-            } else {
-                self.set_chat_interaction(ChatInteraction::Unity);
+        match act {
+            Some(PlusAct::AddFiles) => self.pick_attachments(),
+            Some(PlusAct::ToggleUnity) => {
+                if unity_active {
+                    self.set_chat_interaction(ChatInteraction::Agent);
+                } else {
+                    self.set_chat_interaction(ChatInteraction::Unity);
+                }
             }
-        }
-        if open_plugins {
-            self.model.main_nav = MainNav::Plugins;
+            Some(PlusAct::SetupUnity) => {
+                self.model.main_nav = MainNav::Plugins;
+                self.plugins_selected = Some(PluginCatalogId::Unity);
+            }
+            Some(PlusAct::ToggleOpenMontage) => {
+                self.set_openmontage_enabled(!om_on);
+            }
+            Some(PlusAct::SetupOpenMontage) => {
+                self.model.main_nav = MainNav::Plugins;
+                self.plugins_selected = Some(PluginCatalogId::OpenMontage);
+            }
+            Some(PlusAct::ToggleBevy) => {
+                self.set_bevy_enabled(!bevy_on);
+            }
+            Some(PlusAct::SetupBevy) => {
+                self.model.main_nav = MainNav::Plugins;
+                self.plugins_selected = Some(PluginCatalogId::Bevy);
+            }
+            Some(PlusAct::Manage) => {
+                self.model.main_nav = MainNav::Plugins;
+                self.plugins_selected = None;
+            }
+            None => {}
         }
 
         if self.composer_plus_just_opened {
@@ -6064,6 +6425,7 @@ impl BonyBuildApp {
         let mut open_usage = false;
         let mut open_config = false;
         let mut do_login = false;
+        let mut toggle_full_control: Option<bool> = None;
         let mut next_lang: Option<Language> = None;
         let needs_login = self.model.needs_login;
         let display_name = self.model.display_name.clone();
@@ -6076,6 +6438,8 @@ impl BonyBuildApp {
         let usage_label = self.t("user.usage");
         let config_label = self.t("user.edit_config");
         let lang_label = self.t("user.language");
+        let full_control_label = self.t("user.full_control");
+        let full_control_on = self.plugin_prefs.auto_approve_tools;
         let auth_label = if needs_login {
             self.t("user.login")
         } else {
@@ -6146,6 +6510,22 @@ impl BonyBuildApp {
                             });
                         });
 
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(full_control_label).size(12.5).color(TEXT));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let mut on = full_control_on;
+                                if ui
+                                    .add(egui::Checkbox::without_text(&mut on))
+                                    .on_hover_text(self.t("user.full_control_tip"))
+                                    .changed()
+                                {
+                                    toggle_full_control = Some(on);
+                                }
+                            });
+                        });
+
                         ui.add_space(6.0);
                         thin_menu_rule(ui);
                         ui.add_space(4.0);
@@ -6159,6 +6539,9 @@ impl BonyBuildApp {
 
         if let Some(lang) = next_lang {
             self.set_language(lang);
+        }
+        if let Some(on) = toggle_full_control {
+            self.set_auto_approve_tools(on);
         }
         if open_usage {
             self.model.show_usage_detail = true;
@@ -7233,19 +7616,209 @@ impl BonyBuildApp {
     fn timeline(&mut self, ui: &mut egui::Ui) {
         let len = self.model.timeline.len();
         for idx in 0..len {
+            let is_flow = matches!(
+                self.model.timeline.get(idx),
+                Some(TimelineItem::Tool(_) | TimelineItem::Thought(_) | TimelineItem::Plan(_))
+            );
+            let next_is_flow = matches!(
+                self.model.timeline.get(idx + 1),
+                Some(TimelineItem::Tool(_) | TimelineItem::Thought(_) | TimelineItem::Plan(_))
+            );
+
             match self.model.timeline.get(idx).cloned() {
-                Some(TimelineItem::Message(msg)) => self.message_block(ui, &msg),
+                Some(TimelineItem::Message(msg)) if msg.role == Role::User => {
+                    // User bubbles stay full-column right-aligned (no process rail).
+                    self.message_block(ui, &msg);
+                }
+                Some(TimelineItem::Message(msg)) => {
+                    // Assistant / system share the same left gutter as tools.
+                    self.timeline_aligned_row(ui, false, false, |ui| {
+                        self.message_block(ui, &msg);
+                    });
+                }
                 Some(TimelineItem::Tool(card)) => {
                     let mut open = card.open;
-                    self.tool_block(ui, &card, &mut open);
+                    self.timeline_aligned_row(ui, true, next_is_flow, |ui| {
+                        self.tool_block(ui, &card, &mut open);
+                    });
                     if let Some(TimelineItem::Tool(c)) = self.model.timeline.get_mut(idx) {
+                        c.open = open;
+                    }
+                }
+                Some(TimelineItem::Thought(card)) => {
+                    let mut open = card.open;
+                    self.timeline_aligned_row(ui, true, next_is_flow, |ui| {
+                        self.thought_block(ui, &card, &mut open);
+                    });
+                    if let Some(TimelineItem::Thought(c)) = self.model.timeline.get_mut(idx) {
+                        c.open = open;
+                    }
+                }
+                Some(TimelineItem::Plan(card)) => {
+                    let mut open = card.open;
+                    self.timeline_aligned_row(ui, true, next_is_flow, |ui| {
+                        self.plan_block(ui, &card, &mut open);
+                    });
+                    if let Some(TimelineItem::Plan(c)) = self.model.timeline.get_mut(idx) {
                         c.open = open;
                     }
                 }
                 None => {}
             }
-            ui.add_space(16.0);
+            ui.add_space(if is_flow && next_is_flow { 8.0 } else { 16.0 });
         }
+    }
+
+    /// Shared left gutter so assistant / thought / plan / tool cards share one edge.
+    fn timeline_aligned_row(
+        &self,
+        ui: &mut egui::Ui,
+        show_rail: bool,
+        connect_down: bool,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        const RAIL_W: f32 = 16.0;
+        ui.horizontal_top(|ui| {
+            let (rail_rect, _) =
+                ui.allocate_exact_size(Vec2::new(RAIL_W, 1.0), egui::Sense::hover());
+            let content_w = ui.available_width().max(40.0);
+            let inner = ui
+                .allocate_ui_with_layout(
+                    Vec2::new(content_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
+                    |ui| {
+                        ui.set_min_width(content_w);
+                        ui.set_max_width(content_w);
+                        ui.set_width(content_w);
+                        add_contents(ui);
+                    },
+                )
+                .response
+                .rect;
+
+            if show_rail {
+                let mid_x = rail_rect.center().x;
+                let top = inner.top() + 14.0;
+                let bottom = if connect_down {
+                    inner.bottom() + 8.0
+                } else {
+                    top + 14.0
+                };
+                let painter = ui.painter();
+                painter.circle_filled(egui::pos2(mid_x, top), 3.0, ACCENT_BAR);
+                if connect_down {
+                    painter.line_segment(
+                        [egui::pos2(mid_x, top + 4.0), egui::pos2(mid_x, bottom)],
+                        Stroke::new(1.5, Color32::from_rgb(55, 58, 68)),
+                    );
+                }
+            }
+        });
+    }
+
+    fn thought_block(
+        &self,
+        ui: &mut egui::Ui,
+        card: &crate::model::ThoughtCard,
+        open: &mut bool,
+    ) {
+        let title = self.t("flow.thought");
+        Frame::new()
+            .fill(TOOL_BG)
+            .corner_radius(CornerRadius::same(10))
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let chevron = if *open { "▾" } else { "▸" };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(format!("{chevron}  {title}"))
+                                    .size(12.5)
+                                    .color(TEXT),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        *open = !*open;
+                    }
+                });
+                if *open && !card.text.is_empty() {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::Label::new(RichText::new(&card.text).size(12.5).color(MUTED)).wrap(),
+                    );
+                }
+            });
+    }
+
+    fn plan_block(&self, ui: &mut egui::Ui, card: &crate::model::PlanCard, open: &mut bool) {
+        let title = self.t("flow.plan");
+        let pending = self.t("flow.plan_pending");
+        let running = self.t("flow.plan_running");
+        let done = self.t("flow.plan_done");
+        Frame::new()
+            .fill(TOOL_BG)
+            .corner_radius(CornerRadius::same(10))
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let chevron = if *open { "▾" } else { "▸" };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(format!("{chevron}  {title}"))
+                                    .size(12.5)
+                                    .color(TEXT),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        *open = !*open;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let steps = self
+                            .t("flow.plan_steps")
+                            .replacen("{}", &card.entries.len().to_string(), 1);
+                        ui.label(RichText::new(steps).size(11.5).color(MUTED));
+                    });
+                });
+                if *open && !card.entries.is_empty() {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    for entry in &card.entries {
+                        let (label, color) = if entry.status.contains("Completed") {
+                            (done, OK)
+                        } else if entry.status.contains("InProgress") {
+                            (running, UNITY_ACCENT)
+                        } else {
+                            (pending, MUTED)
+                        };
+                        ui.horizontal(|ui| {
+                            let (dot, _) =
+                                ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                            ui.painter().circle_filled(dot.center(), 3.0, color);
+                            ui.label(
+                                RichText::new(format!("[{label}] {}", entry.content))
+                                    .size(12.5)
+                                    .color(TEXT),
+                            );
+                        });
+                        ui.add_space(2.0);
+                    }
+                }
+            });
     }
 
     fn message_block(&self, ui: &mut egui::Ui, msg: &crate::model::ChatMessage) {
@@ -7269,7 +7842,7 @@ impl BonyBuildApp {
                         })
                         .inner_margin(Margin::symmetric(14, 11))
                         .show(ui, |ui| {
-                            ui.set_max_width(MAX_CHAT_W * 0.72);
+                            ui.set_max_width((ui.available_width() * 0.78).min(MAX_CHAT_W * 0.72));
                             ui.label(RichText::new(display_text).size(14.5).color(TEXT));
                         });
                 });
@@ -7288,8 +7861,6 @@ impl BonyBuildApp {
                             ui.painter()
                                 .rect_filled(bar, CornerRadius::same(2), ACCENT_BAR);
                             ui.add_space(10.0);
-                            // Pin an explicit content width so wrapped inline code
-                            // never collapses to a 1-glyph column.
                             let content_w = ui.available_width().max(40.0);
                             ui.allocate_ui_with_layout(
                                 Vec2::new(content_w, 0.0),
@@ -7327,6 +7898,7 @@ impl BonyBuildApp {
                     .stroke(Stroke::new(1.0, Color32::from_rgb(90, 50, 50)))
                     .inner_margin(Margin::symmetric(12, 10))
                     .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
                         ui.label(RichText::new("系统").size(11.5).color(DANGER));
                         ui.add_space(4.0);
                         ui.label(RichText::new(&msg.text).size(13.0).color(MUTED));
@@ -7344,6 +7916,7 @@ impl BonyBuildApp {
         } else {
             MUTED
         };
+        let tool_label = self.t("flow.tool");
 
         Frame::new()
             .fill(TOOL_BG)
@@ -7351,14 +7924,18 @@ impl BonyBuildApp {
             .stroke(Stroke::new(1.0, BORDER))
             .inner_margin(Margin::symmetric(10, 8))
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     let chevron = if *open { "▾" } else { "▸" };
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new(format!("{chevron}  工具 · {}", card.title))
-                                    .size(12.5)
-                                    .color(TEXT),
+                                RichText::new(format!(
+                                    "{chevron}  {tool_label} · {}",
+                                    card.title
+                                ))
+                                .size(12.5)
+                                .color(TEXT),
                             )
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::NONE),
@@ -7375,6 +7952,13 @@ impl BonyBuildApp {
                         );
                     });
                 });
+                if !card.kind.is_empty() {
+                    ui.label(
+                        RichText::new(format!("kind · {}", card.kind))
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                }
                 if *open && !card.detail.is_empty() {
                     ui.add_space(6.0);
                     ui.separator();
@@ -7610,7 +8194,11 @@ impl BonyBuildApp {
                     .rect_filled(screen, 0.0, Color32::from_black_alpha(160));
             });
 
-        egui::Window::new("需要批准")
+        let full_control_btn = self.t("perm.full_control").to_owned();
+        let cancel_btn = self.t("common.cancel").to_owned();
+        let blurb = self.t("perm.blurb").to_owned();
+
+        egui::Window::new(self.t("perm.title"))
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
@@ -7631,11 +8219,7 @@ impl BonyBuildApp {
                 ui.set_min_width(420.0);
                 ui.label(RichText::new(&perm.title).size(16.0).strong().color(TEXT));
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new("助手想执行需要你确认的工具。")
-                        .size(13.0)
-                        .color(MUTED),
-                );
+                ui.label(RichText::new(&blurb).size(13.0).color(MUTED));
                 ui.add_space(12.0);
                 for opt in &perm.options {
                     ui.label(
@@ -7669,7 +8253,22 @@ impl BonyBuildApp {
                             self.model.status = if allow { "Working…" } else { "Ready" }.into();
                         }
                     }
-                    if ui.button("取消").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(&full_control_btn).color(BG).strong(),
+                            )
+                            .fill(OK)
+                            .stroke(Stroke::NONE)
+                            .corner_radius(CornerRadius::same(10))
+                            .min_size(Vec2::new(140.0, 34.0)),
+                        )
+                        .on_hover_text(self.t("user.full_control_tip"))
+                        .clicked()
+                    {
+                        self.set_auto_approve_tools(true);
+                    }
+                    if ui.button(&cancel_btn).clicked() {
                         self.model.pending_permission = None;
                         self.send_cmd(UiCommand::PermissionResponse { option_id: None });
                     }
@@ -8371,6 +8970,10 @@ enum SidebarGlyph {
     ChevronRight,
     ChevronDown,
     Close,
+    /// OpenMontage / film strip.
+    Film,
+    /// Bevy / cube.
+    Cube,
 }
 
 fn paint_sidebar_glyph(ui: &mut egui::Ui, glyph: SidebarGlyph, color: Color32) {
@@ -8638,6 +9241,46 @@ fn paint_sidebar_glyph_at(
                 ],
                 stroke,
             );
+        }
+        SidebarGlyph::Film => {
+            let frame =
+                egui::Rect::from_center_size(c, Vec2::new(11.0, 9.0));
+            painter.rect_stroke(
+                frame,
+                CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - 1.5, frame.top() + 1.5),
+                    egui::pos2(c.x - 1.5, frame.bottom() - 1.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + 1.5, frame.top() + 1.5),
+                    egui::pos2(c.x + 1.5, frame.bottom() - 1.5),
+                ],
+                stroke,
+            );
+        }
+        SidebarGlyph::Cube => {
+            // Isometric-ish cube outline for Bevy.
+            let top = egui::pos2(c.x, c.y - 5.0);
+            let left = egui::pos2(c.x - 5.5, c.y - 1.0);
+            let right = egui::pos2(c.x + 5.5, c.y - 1.0);
+            let bottom = egui::pos2(c.x, c.y + 5.5);
+            let mid_l = egui::pos2(c.x - 5.5, c.y + 2.5);
+            let mid_r = egui::pos2(c.x + 5.5, c.y + 2.5);
+            painter.line_segment([top, left], stroke);
+            painter.line_segment([top, right], stroke);
+            painter.line_segment([left, mid_l], stroke);
+            painter.line_segment([right, mid_r], stroke);
+            painter.line_segment([mid_l, bottom], stroke);
+            painter.line_segment([mid_r, bottom], stroke);
+            painter.line_segment([left, right], Stroke::new(1.0, color.linear_multiply(0.65)));
         }
     }
 }
@@ -8970,85 +9613,104 @@ fn plus_menu_divider(ui: &mut egui::Ui, label: &str) {
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(
-            RichText::new(label)
-                .size(11.0)
+            RichText::new(label.to_uppercase())
+                .size(10.5)
                 .color(Color32::from_rgb(120, 122, 132)),
         );
     });
     ui.add_space(2.0);
 }
 
+/// Apple HIG-ish menu row: icon tile · title/subtitle · trailing status · optional check.
 fn plus_menu_row(
     ui: &mut egui::Ui,
     glyph: SidebarGlyph,
     title: &str,
     subtitle: &str,
+    badge: &str,
     active: bool,
+    accent: Color32,
 ) -> bool {
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 44.0), egui::Sense::click());
-    let hovered = resp.hovered();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 48.0), egui::Sense::click());
+    let hovered = resp.hovered() || resp.contains_pointer();
     if hovered || active {
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(9),
+            CornerRadius::same(10),
             if hovered {
-                Color32::from_rgb(38, 40, 48)
+                Color32::from_rgb(42, 44, 52)
             } else {
-                Color32::from_rgb(32, 34, 42)
+                Color32::from_rgb(34, 36, 44)
             },
         );
     }
     if active {
         let bar = egui::Rect::from_min_size(
-            egui::pos2(rect.left() + 2.0, rect.top() + 10.0),
-            Vec2::new(2.5, rect.height() - 20.0),
+            egui::pos2(rect.left() + 2.0, rect.top() + 12.0),
+            Vec2::new(3.0, rect.height() - 24.0),
         );
         ui.painter()
-            .rect_filled(bar, CornerRadius::same(2), UNITY_ACCENT);
+            .rect_filled(bar, CornerRadius::same(2), accent);
     }
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let icon_c = egui::pos2(rect.left() + 22.0, rect.center().y);
-    let icon_bg = egui::Rect::from_center_size(icon_c, Vec2::splat(28.0));
+    let icon_c = egui::pos2(rect.left() + 24.0, rect.center().y);
+    let icon_bg = egui::Rect::from_center_size(icon_c, Vec2::splat(30.0));
     ui.painter().rect_filled(
         icon_bg,
         CornerRadius::same(8),
         if active {
-            Color32::from_rgb(20, 48, 56)
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 48)
         } else {
-            Color32::from_rgb(34, 36, 44)
+            Color32::from_rgb(36, 38, 46)
         },
     );
     paint_sidebar_glyph_at(
         ui.painter(),
         icon_c,
         glyph,
-        if active { UNITY_ACCENT } else { MUTED },
+        if active { accent } else { MUTED },
     );
 
-    let text_left = rect.left() + 44.0;
+    let text_left = rect.left() + 48.0;
+    let badge_w = if badge.is_empty() {
+        0.0
+    } else {
+        36.0
+    };
+    let title_right = rect.right() - 14.0 - badge_w;
     ui.painter().text(
         egui::pos2(text_left, rect.top() + 10.0),
         Align2::LEFT_TOP,
         title,
-        egui::FontId::proportional(13.5),
+        egui::FontId::proportional(14.0),
         TEXT,
     );
+    // Clip subtitle visually by painting (egui text doesn't clip; keep short).
     ui.painter().text(
-        egui::pos2(text_left, rect.top() + 26.0),
+        egui::pos2(text_left, rect.top() + 28.0),
         Align2::LEFT_TOP,
         subtitle,
         egui::FontId::proportional(11.0),
         MUTED,
     );
+    let _ = title_right;
 
-    if active {
-        // Small check on the right.
+    if !badge.is_empty() {
+        let badge_color = if active { accent } else { MUTED };
+        ui.painter().text(
+            egui::pos2(rect.right() - 12.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            badge,
+            egui::FontId::proportional(11.5),
+            badge_color,
+        );
+    } else if active {
         let c = egui::pos2(rect.right() - 16.0, rect.center().y);
-        let s = Stroke::new(1.6, UNITY_ACCENT);
+        let s = Stroke::new(1.7, accent);
         ui.painter().line_segment(
             [egui::pos2(c.x - 4.0, c.y), egui::pos2(c.x - 1.0, c.y + 3.5)],
             s,
