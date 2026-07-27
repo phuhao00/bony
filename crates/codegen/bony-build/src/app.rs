@@ -160,8 +160,6 @@ pub struct BonyBuildApp {
     window_drag_grab: Option<Vec2>,
     /// Cached sidebar grouping — rebuilt only when tasks / filter / cwd change.
     sidebar_groups_cache: Option<(u64, Vec<ConversationGroup>)>,
-    /// Global「新建任务」project chooser (multi-project; never silently pick launch cwd).
-    show_new_task_picker: bool,
     /// Skip backdrop dismiss on the frame the delete dialog opens (same click would close it).
     delete_modal_ignore_click: bool,
 }
@@ -275,7 +273,6 @@ impl BonyBuildApp {
             window_dragging: false,
             window_drag_grab: None,
             sidebar_groups_cache: None,
-            show_new_task_picker: false,
             delete_modal_ignore_click: false,
         }
     }
@@ -504,59 +501,26 @@ impl BonyBuildApp {
     }
 
     fn create_task(&mut self, ctx: &egui::Context) {
-        let projects = self.new_task_candidate_projects();
-        match projects.len() {
-            0 => {
-                // No known projects — ask for a folder, then create there.
-                self.pick_project_for_new_task(ctx);
-            }
-            1 => {
-                self.create_task_for(ctx, projects.into_iter().next().unwrap());
-            }
-            _ => {
-                // Multiple projects: never silently dump into launch cwd (e.g. bony-build).
-                self.show_new_task_picker = true;
-            }
-        }
-    }
-
-    /// Distinct project roots the user can create a task under.
-    fn new_task_candidate_projects(&self) -> Vec<std::path::PathBuf> {
-        let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for path in self
-            .model
-            .recent_projects
-            .iter()
-            .chain(self.tasks.iter().map(|t| &t.project_path))
-        {
-            let root = canonical_project_root(path);
-            let key = project_group_key(&root);
-            if seen.insert(key) {
-                out.push(root);
-            }
-        }
-        out
-    }
-
-    fn pick_project_for_new_task(&mut self, ctx: &egui::Context) {
-        let start = self
-            .model
-            .cwd
-            .clone()
-            .unwrap_or_else(|| self.config.cwd.clone());
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title(self.t("task.pick_project_title"))
-            .set_directory(start)
-            .pick_folder()
-        {
-            self.create_task_for(ctx, canonical_project_root(&path));
-        }
+        // 「新建对话」= current / main project. Per-project「新建」uses create_task_in_project.
+        let project = self
+            .active_task_id
+            .as_ref()
+            .and_then(|id| self.tasks.iter().find(|t| &t.id == id))
+            .map(|t| canonical_project_root(&t.project_path))
+            .unwrap_or_else(|| {
+                canonical_project_root(
+                    &self
+                        .model
+                        .cwd
+                        .clone()
+                        .unwrap_or_else(|| self.config.cwd.clone()),
+                )
+            });
+        self.create_task_for(ctx, project);
     }
 
     /// Create a new task under an explicit project root (used by per-project 「新建」).
     fn create_task_for(&mut self, ctx: &egui::Context, project: std::path::PathBuf) {
-        self.show_new_task_picker = false;
         if self.pending_worktree_rx.is_some() {
             self.model.status = "正在创建上一个工作区，请稍候…".into();
             return;
@@ -1215,7 +1179,6 @@ impl eframe::App for BonyBuildApp {
         self.permission_modal(ctx);
         self.unity_permission_modal(ctx);
         self.model_picker_modal(ctx);
-        self.new_task_project_picker(ctx);
         self.about_modal(ctx);
         self.rename_task_modal(ctx);
         self.delete_task_modal(ctx);
@@ -4601,20 +4564,6 @@ impl BonyBuildApp {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
 
-                // Codex-style: project context sits above the draft.
-                let cwd = self
-                    .model
-                    .cwd
-                    .clone()
-                    .unwrap_or_else(|| self.config.cwd.clone());
-                let project_name = AppModel::project_label(&canonical_project_root(&cwd));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    paint_sidebar_glyph(ui, SidebarGlyph::Folder, MUTED);
-                    ui.label(RichText::new(project_name).size(12.5).color(TEXT));
-                });
-                ui.add_space(8.0);
-
                 // Codex-style context chips: active plugins + files (dismissible).
                 let unity_on = self.unity_chat_mode && self.plugin_prefs.unity_enabled;
                 let has_context = unity_on || !self.attachments.is_empty();
@@ -6115,134 +6064,6 @@ impl BonyBuildApp {
                     );
                 }
             });
-    }
-
-    fn new_task_project_picker(&mut self, ctx: &egui::Context) {
-        if !self.show_new_task_picker {
-            return;
-        }
-
-        egui::Area::new(egui::Id::new("new_task_pick_dim"))
-            .order(egui::Order::Middle)
-            .interactable(true)
-            .fixed_pos(Pos2::ZERO)
-            .show(ctx, |ui| {
-                let screen = ctx.screen_rect();
-                let resp = ui.allocate_rect(screen, egui::Sense::click());
-                ui.painter()
-                    .rect_filled(screen, 0.0, Color32::from_black_alpha(160));
-                if resp.clicked() {
-                    self.show_new_task_picker = false;
-                }
-            });
-
-        let projects = self.new_task_candidate_projects();
-        let mut open = true;
-        let mut chosen: Option<std::path::PathBuf> = None;
-        let mut pick_other = false;
-        let mut dismiss = false;
-        egui::Window::new(self.t("task.pick_project_title"))
-            .collapsible(false)
-            .resizable(false)
-            .title_bar(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .order(egui::Order::Foreground)
-            .frame(
-                Frame::new()
-                    .fill(PANEL)
-                    .corner_radius(CornerRadius::same(16))
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(Margin::same(16))
-                    .shadow(Shadow {
-                        offset: [0, 8],
-                        blur: 28,
-                        spread: 0,
-                        color: Color32::from_black_alpha(120),
-                    }),
-            )
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_min_width(380.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(self.t("task.pick_project_title"))
-                            .size(16.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_btn(ui, SidebarGlyph::Close, self.t("common.close"), false)
-                            .clicked()
-                        {
-                            dismiss = true;
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(self.t("task.pick_project_hint"))
-                        .size(12.5)
-                        .color(MUTED),
-                );
-                ui.add_space(12.0);
-                for path in &projects {
-                    let name = AppModel::project_label(path);
-                    let full = path.display().to_string();
-                    let row = Frame::new()
-                        .fill(PANEL_2)
-                        .corner_radius(CornerRadius::same(10))
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .inner_margin(Margin::symmetric(12, 10))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                paint_sidebar_glyph(ui, SidebarGlyph::Folder, MUTED);
-                                ui.add_space(8.0);
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        RichText::new(&name).size(13.5).strong().color(TEXT),
-                                    );
-                                    ui.label(RichText::new(&full).size(11.0).color(MUTED));
-                                });
-                            });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if row.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if row.clicked() {
-                        chosen = Some(path.clone());
-                    }
-                    ui.add_space(6.0);
-                }
-                ui.add_space(4.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(self.t("task.pick_other_project"))
-                                .size(13.0)
-                                .color(TEXT),
-                        )
-                        .fill(PANEL_2)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .corner_radius(CornerRadius::same(8))
-                        .min_size(Vec2::new(ui.available_width(), 32.0)),
-                    )
-                    .clicked()
-                {
-                    pick_other = true;
-                }
-            });
-
-        if !open || dismiss {
-            self.show_new_task_picker = false;
-        }
-        if let Some(path) = chosen {
-            self.create_task_for(ctx, path);
-        } else if pick_other {
-            self.pick_project_for_new_task(ctx);
-        }
     }
 
     fn model_picker_modal(&mut self, ctx: &egui::Context) {
