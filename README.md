@@ -229,23 +229,35 @@ context_window = 32768
 
 ## 架构
 
-```text
-Bony Build (egui 桌面壳)
-        │  ACP JSON-RPC over stdio
-        ▼
-grok agent stdio  →  MvpAgent / SessionActor
-        │
-        ├─ 采样（多 backend）
-        ├─ 工具（终端 / 文件 / 搜索 …）
-        └─ Workspace / MCP / 子 agent
+概览（GitHub 可渲染）：
 
-旁路：Unity CLI（本机进程，不经 ACP / Agent）
-旁路：详情面板 Git（主仓库 status / show，不经 Agent）
+```mermaid
+flowchart TB
+  UI["Bony Build<br/>egui 桌面壳"]
+  ACP["ACP JSON-RPC<br/>over stdio"]
+  Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
+  Sample["采样 · 多 backend"]
+  Tools["工具 · 终端 / 文件 / 搜索"]
+  WS["Workspace / MCP / 子 agent"]
+  Unity["旁路 · Unity CLI<br/>本机进程，不经 Agent"]
+  Git["旁路 · 详情面板 Git<br/>主仓库 status / show"]
+
+  UI --> ACP --> Agent
+  Agent --> Sample
+  Agent --> Tools
+  Agent --> WS
+  UI -.-> Unity
+  UI -.-> Git
 ```
 
+分层与一次 turn 流程：
+
+![架构分层](docs/architecture-layers.png)
+
+![Turn 流程](docs/architecture-turn-flow.png)
+
 - 桌面 crate：[`crates/codegen/bony-build`](crates/codegen/bony-build)
-- 详细分层与 turn 流程：[`ARCHITECTURE.md`](ARCHITECTURE.md)
-- 架构图：[`docs/architecture-layers.png`](docs/architecture-layers.png)、[`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png)
+- 文字说明：[`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 桌面端**不**内嵌完整 agent 运行时，而是驱动已安装的 `grok` 子进程。
 
