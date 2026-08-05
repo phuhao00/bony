@@ -1,4 +1,4 @@
-//! ZeroClaw (fork: <https://github.com/phuhao000/zeroclaw.git>) — the second,
+//! ZeroClaw (<https://github.com/zeroclaw-labs/zeroclaw>) — the second,
 //! non-coding ACP backend. Deep-fused, not a plugin: no Plugins-panel card, no
 //! enable/disable toggle. This module owns the fully background self-heal
 //! lifecycle (clone → build → generate config) and the lightweight intent
@@ -20,8 +20,8 @@ use std::time::Duration;
 use crate::process;
 use crate::usage::usage_dir;
 
-/// User's fork, tracked at `main` — same convention as `bevy.rs`.
-pub const SOURCE_GIT_URL: &str = "https://github.com/phuhao000/zeroclaw.git";
+/// Official ZeroClaw tree (`zeroclaw-labs/zeroclaw`, default branch `master`).
+pub const SOURCE_GIT_URL: &str = "https://github.com/zeroclaw-labs/zeroclaw.git";
 /// Minimum rustc version the zeroclaw workspace requires (observed via a
 /// failed build: `zeroclawlabs@x.y.z requires rustc 1.96.0`). Older toolchains
 /// fail the build with a clear message we can detect and self-heal via
