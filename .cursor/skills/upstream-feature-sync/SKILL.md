@@ -154,7 +154,7 @@ cargo check -p bony-build
 ```powershell
 git push --force-with-lease origin main
 # This repo often needs SSH as phuhao00 if gh HTTPS is phuhao000 (read-only):
-# git push --force-with-lease git@github.com:phuhao00/bony-build.git HEAD:main
+# git push --force-with-lease git@github.com:phuhao00/bony.git HEAD:main
 ```
 
 Never force-push `main` without user request. Prefer `--force-with-lease` over `--force`.
