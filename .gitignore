@@ -4,3 +4,21 @@
 
 # Local packaging / release artifacts (never commit binaries)
 .local-dist/
+
+# Submodule third_party/buzz is tracked via .gitmodules — only ignore local build junk
+/third_party/buzz/target/
+/third_party/buzz/**/node_modules/
+/third_party/buzz/**/dist/
+/third_party/buzz/**/.turbo/
+/third_party/buzz/.env
+
+# Local agent smoke / relay logs
+/tmp-*.log
+/tmp-*.err
+/tmp-*.out
+/tmp-*.diff
+tmp-*.log
+tmp-*.out
+tmp-*.err
+tmp-buzz*.diff
+tmp-discovery*.diff

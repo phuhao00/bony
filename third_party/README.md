@@ -1,9 +1,12 @@
-# Third-party vendored crates
+# Third-party dependencies
 
-This directory holds **upstream source** vendored into the repository. It is
-**not** first-party application code.
+This directory holds **upstream** code used by bony — vendored crates **or** git submodules.
 
-## Why vendor
+| Path | What |
+|------|------|
+| [`buzz/`](./buzz/) | **Git submodule** — [block/buzz](https://github.com/block/buzz). See [`BUZZ.md`](./BUZZ.md). |
+
+## Why vendor (Mermaid stack)
 
 These crates sit on the path that renders **untrusted model output** (diagram
 source → SVG). Vendoring gives a full audit surface, pins exact source, and

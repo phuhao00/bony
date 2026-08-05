@@ -1747,6 +1747,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bony-room-tools-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "borrow-or-share"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
