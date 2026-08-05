@@ -397,8 +397,39 @@ fn format_tool_detail(
 }
 
 fn pretty_json_truncated(value: &serde_json::Value) -> String {
-    let raw = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    let raw = format_tool_payload(value);
     truncate_chars(&raw, TOOL_DETAIL_MAX / 2)
+}
+
+/// Human-readable tool payload: keep JSON strings as multi-line text
+/// instead of a single quoted blob with literal `\n` escapes.
+fn format_tool_payload(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => {
+            if items.len() == 1 {
+                if let Some(s) = items[0].as_str() {
+                    return s.to_string();
+                }
+            }
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        serde_json::Value::Object(map) => {
+            for key in ["content", "text", "result", "output", "message", "stdout"] {
+                if let Some(inner) = map.get(key) {
+                    if let Some(s) = inner.as_str() {
+                        if s.lines().count() > 1 || s.len() > 80 {
+                            return s.to_string();
+                        }
+                    }
+                }
+            }
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+    }
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -458,14 +489,19 @@ pub fn spawn_bridge(
     cmd_tx
 }
 
+/// How long we wait for `session/load` before treating a resumed session as
+/// stuck. Observed hang: corrupt/stale JSONL sessions freeze forever after
+/// "Loading session data", so `connected` stays false and Send never works.
+const SESSION_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
 async fn run_bridge_loop(
-    config: BridgeConfig,
+    mut config: BridgeConfig,
     egui_ctx: egui::Context,
     event_tx: std::sync::mpsc::Sender<AgentEvent>,
     mut cmd_rx: mpsc::UnboundedReceiver<UiCommand>,
 ) -> anyhow::Result<()> {
     loop {
-        match run_session(&config, &egui_ctx, &event_tx, &mut cmd_rx).await {
+        match run_session(&mut config, &egui_ctx, &event_tx, &mut cmd_rx).await {
             SessionEnd::Shutdown => break,
             SessionEnd::Reconnect => {
                 let _ = event_tx.send(AgentEvent::Disconnected);
@@ -505,7 +541,7 @@ enum SessionEnd {
 }
 
 async fn run_session(
-    config: &BridgeConfig,
+    config: &mut BridgeConfig,
     egui_ctx: &egui::Context,
     event_tx: &std::sync::mpsc::Sender<AgentEvent>,
     cmd_rx: &mut mpsc::UnboundedReceiver<UiCommand>,
@@ -734,34 +770,69 @@ async fn run_session(
                 .cloned(),
         );
     }
-    let restored = config.resume_session_id.is_some();
-    let (session_id, current_model_id, current_model_name, mut models, current_mode_id, modes) =
-        if let Some(saved_id) = config.resume_session_id.as_ref() {
-            match conn
-                .load_session(acp::LoadSessionRequest::new(
-                    acp::SessionId::new(saved_id.clone()),
-                    config.cwd.clone(),
+
+    // Resume path can hang forever on certain stale sessions (never emits
+    // Connected → Send stays disabled). Time out and start a fresh session.
+    let mut restored = false;
+    let loaded = if let Some(saved_id) = config.resume_session_id.clone() {
+        emit(AgentEvent::Status(format!("Restoring session…")));
+        match tokio::time::timeout(
+            SESSION_LOAD_TIMEOUT,
+            conn.load_session(acp::LoadSessionRequest::new(
+                acp::SessionId::new(saved_id.clone()),
+                config.cwd.clone(),
+            )),
+        )
+        .await
+        {
+            Ok(Ok(s)) => {
+                restored = true;
+                let (model_id, model_name, models) =
+                    extract_model_state(s.models.as_ref(), &catalog);
+                let (mode_id, modes) = extract_modes(s.modes.as_ref());
+                Some((
+                    acp::SessionId::new(saved_id),
+                    model_id,
+                    model_name,
+                    models,
+                    mode_id,
+                    modes,
                 ))
-                .await
-            {
-                Ok(s) => {
-                    let (model_id, model_name, models) =
-                        extract_model_state(s.models.as_ref(), &catalog);
-                    let (mode_id, modes) = extract_modes(s.modes.as_ref());
-                    (
-                        acp::SessionId::new(saved_id.clone()),
-                        model_id,
-                        model_name,
-                        models,
-                        mode_id,
-                        modes,
-                    )
-                }
-                Err(e) => {
-                    let _ = child.kill().await;
-                    return SessionEnd::Fatal(format!("session/load failed for {saved_id}: {e}"));
-                }
             }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %saved_id,
+                    "session/load failed; clearing resume and reconnecting"
+                );
+                config.resume_session_id = None;
+                let _ = child.kill().await;
+                emit(AgentEvent::Status(
+                    "会话恢复失败，正在新建会话…".into(),
+                ));
+                return SessionEnd::Reconnect;
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    session_id = %saved_id,
+                    timeout_secs = SESSION_LOAD_TIMEOUT.as_secs(),
+                    "session/load timed out; clearing resume and reconnecting"
+                );
+                config.resume_session_id = None;
+                let _ = child.kill().await;
+                emit(AgentEvent::Status(
+                    "会话恢复超时，正在新建会话…".into(),
+                ));
+                return SessionEnd::Reconnect;
+            }
+        }
+    } else {
+        None
+    };
+
+    let (session_id, current_model_id, current_model_name, mut models, current_mode_id, modes) =
+        if let Some(tuple) = loaded {
+            tuple
         } else {
             match conn.new_session(session_req).await {
                 Ok(s) => {
