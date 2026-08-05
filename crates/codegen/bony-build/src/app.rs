@@ -38,7 +38,7 @@ const PANEL: Color32 = Color32::from_rgb(32, 32, 36);
 const PANEL_2: Color32 = Color32::from_rgb(40, 40, 46);
 const BORDER: Color32 = Color32::from_rgb(55, 55, 62);
 const TEXT: Color32 = Color32::from_rgb(236, 236, 240);
-const MUTED: Color32 = Color32::from_rgb(148, 150, 160);
+const MUTED: Color32 = Color32::from_rgb(170, 172, 184);
 const ACCENT: Color32 = Color32::from_rgb(245, 245, 247);
 const USER_BG: Color32 = Color32::from_rgb(48, 52, 64);
 const ASSIST_BG: Color32 = Color32::from_rgb(28, 28, 32);
@@ -214,6 +214,13 @@ pub struct BonyBuildApp {
     plugins_search: String,
     /// Selected catalog card → show detail (existing config UI).
     plugins_selected: Option<PluginCatalogId>,
+    /// ZeroClaw background self-heal (clone/build/config) + bridge lifecycle.
+    /// Deep-fused second ACP backend — no Plugins-panel card, no toggle.
+    zeroclaw: crate::zeroclaw::ZeroclawState,
+    zc_cmd_tx: Option<tokio_mpsc::UnboundedSender<UiCommand>>,
+    zc_event_rx: mpsc::Receiver<AgentEvent>,
+    zc_event_tx: mpsc::Sender<AgentEvent>,
+    zc_started: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -311,6 +318,7 @@ impl BonyBuildApp {
             .store(prefs.auto_approve_tools, Ordering::Relaxed);
         let openmontage = OpenMontageState::from_prefs(&prefs);
         let bevy = BevyState::from_prefs(&prefs);
+        let (zc_event_tx, zc_event_rx) = mpsc::channel();
         Self {
             model,
             event_rx,
@@ -375,6 +383,11 @@ impl BonyBuildApp {
             plugins_subnav: PluginsSubNav::Plugins,
             plugins_search: String::new(),
             plugins_selected: None,
+            zeroclaw: crate::zeroclaw::ZeroclawState::default(),
+            zc_cmd_tx: None,
+            zc_event_rx,
+            zc_event_tx,
+            zc_started: false,
         }
     }
 
@@ -519,6 +532,48 @@ impl BonyBuildApp {
             if finish_unity_planner {
                 self.finish_unity_planner();
             }
+        }
+    }
+
+    /// Lazily spawn the ZeroClaw bridge on first use — decoupled from grok's
+    /// `ensure_started`/`switch_project` lifecycle since ZeroClaw isn't tied
+    /// to a project worktree, and shouldn't restart every time the coding
+    /// backend reconnects.
+    fn ensure_zc_started(&mut self, ctx: &egui::Context) -> bool {
+        if self.zc_started {
+            return self.zc_cmd_tx.is_some();
+        }
+        let Some(bin) = self.zeroclaw.bin_path.clone() else {
+            return false;
+        };
+        if !self.zeroclaw.status.is_ready() {
+            return false;
+        }
+        self.zc_started = true;
+        let cwd = self.config.cwd.clone();
+        let provider_env = crate::zeroclaw::resolve_provider_env();
+        let cmd_tx = crate::zeroclaw_bridge::spawn_zeroclaw_bridge(
+            crate::zeroclaw_bridge::ZcBridgeConfig {
+                bin,
+                cwd,
+                provider_env,
+            },
+            ctx.clone(),
+            self.zc_event_tx.clone(),
+        );
+        self.zc_cmd_tx = Some(cmd_tx);
+        true
+    }
+
+    fn send_zc_cmd(&self, cmd: UiCommand) {
+        if let Some(tx) = &self.zc_cmd_tx {
+            let _ = tx.send(cmd);
+        }
+    }
+
+    fn drain_zc_events(&mut self) {
+        while let Ok(ev) = self.zc_event_rx.try_recv() {
+            self.model.apply_zc(ev);
         }
     }
 
@@ -962,7 +1017,7 @@ impl BonyBuildApp {
         }
     }
 
-    fn send_prompt(&mut self) {
+    fn send_prompt(&mut self, ctx: &egui::Context) {
         let text = self.model.draft.trim().to_string();
         if self.try_send_unity_chat_command(&text) {
             self.model.draft.clear();
@@ -992,17 +1047,142 @@ impl BonyBuildApp {
             }
         }
         self.model.draft.clear();
+
+        // Route per message: coding stays on grok (unchanged default
+        // behavior); general/non-coding text — or an explicit `/zc ` escape
+        // hatch — goes to the ZeroClaw backend, deep-fused into this same
+        // timeline rather than a separate plugin panel. Attachments aren't
+        // supported by the ZeroClaw bridge yet, so they always keep grok.
+        let decision = crate::zeroclaw::classify_intent_detail(&text);
+        let intended_zc = self.attachments.is_empty()
+            && matches!(decision.backend, crate::zeroclaw::Backend::General);
+        let zc_text = text
+            .strip_prefix(crate::zeroclaw::FORCE_ZC_PREFIX)
+            .map(|rest| rest.trim_start().to_string())
+            .unwrap_or_else(|| text.clone());
+
+        let zc_status_label = self.zeroclaw.status.label(self.lang());
+        let mut route_zc = intended_zc;
+        let mut degrade_reason: Option<String> = None;
+
+        if !self.attachments.is_empty() && matches!(decision.backend, crate::zeroclaw::Backend::General)
+        {
+            route_zc = false;
+            degrade_reason = Some(self.t("route.degrade_attachments").to_string());
+        } else if intended_zc {
+            if !self.zeroclaw.status.is_ready() || self.zeroclaw.bin_path.is_none() {
+                // Kick self-heal; this turn still falls back to grok.
+                let _ = self.ensure_zc_started(ctx);
+                route_zc = false;
+                degrade_reason = Some(format!(
+                    "{} ({})",
+                    self.t("route.degrade_zc_not_ready"),
+                    zc_status_label
+                ));
+            } else if !self.ensure_zc_started(ctx) {
+                route_zc = false;
+                degrade_reason = Some(self.t("route.degrade_zc_start_failed").to_string());
+            }
+        }
+
+        let actual = if route_zc { "zeroclaw" } else { "grok" };
+        let intended = if intended_zc { "zeroclaw" } else { "grok" };
+        let intent = match decision.backend {
+            crate::zeroclaw::Backend::General => "general",
+            crate::zeroclaw::Backend::Coding => "coding",
+        };
+
+        let mut steps = Vec::new();
+        steps.push(format!(
+            "1. {} → {}",
+            self.t("route.step_intent"),
+            if intent == "general" {
+                self.t("route.intent_general")
+            } else {
+                self.t("route.intent_coding")
+            }
+        ));
+        if let Some(kw) = &decision.matched_keyword {
+            steps.push(format!("   · {}「{}」", self.t("route.matched"), kw));
+        } else if decision.reason == "default_coding" {
+            steps.push(format!("   · {}", self.t("route.default_coding")));
+        } else if decision.forced {
+            steps.push(format!("   · {}", self.t("route.forced_zc")));
+        }
+        steps.push(format!(
+            "2. {} → {}",
+            self.t("route.step_target"),
+            if intended == "zeroclaw" {
+                self.t("route.backend_zc")
+            } else {
+                self.t("route.backend_grok")
+            }
+        ));
+        steps.push(format!(
+            "3. {} → {}",
+            self.t("route.step_zc_status"),
+            zc_status_label
+        ));
+        if route_zc {
+            steps.push(format!(
+                "4. {} → {}",
+                self.t("route.step_dispatch"),
+                self.t("route.backend_zc")
+            ));
+        } else if intended_zc {
+            steps.push(format!(
+                "4. {} → {} ({})",
+                self.t("route.step_dispatch"),
+                self.t("route.backend_grok"),
+                self.t("route.degraded")
+            ));
+            if let Some(r) = &degrade_reason {
+                steps.push(format!("   · {r}"));
+            }
+        } else {
+            steps.push(format!(
+                "4. {} → {}",
+                self.t("route.step_dispatch"),
+                self.t("route.backend_grok")
+            ));
+        }
+
         self.model.push_user(if text.is_empty() {
             format!("已附加 {} 个文件", self.attachments.len())
+        } else if route_zc {
+            zc_text.clone()
         } else {
             text.clone()
         });
-        let attachments = std::mem::take(&mut self.attachments);
-        let agent_text = self.augment_prompt_for_active_plugins(&text);
-        self.send_cmd(UiCommand::Prompt {
-            text: agent_text,
-            attachments,
+        if route_zc {
+            self.model.mark_last_user_zeroclaw();
+        }
+        self.model.push_route(crate::model::RouteCard {
+            intent: intent.into(),
+            intent_reason: decision.reason.clone(),
+            matched_keyword: decision.matched_keyword.clone(),
+            intended: intended.into(),
+            actual: actual.into(),
+            zc_status: zc_status_label,
+            steps,
+            degraded: intended_zc && !route_zc,
+            degrade_reason: degrade_reason.clone(),
+            open: true,
         });
+
+        let attachments = std::mem::take(&mut self.attachments);
+        if route_zc {
+            self.send_zc_cmd(UiCommand::Prompt {
+                text: zc_text,
+                attachments,
+            });
+        } else {
+            let agent_text = self.augment_prompt_for_active_plugins(&text);
+            self.send_cmd(UiCommand::Prompt {
+                text: agent_text,
+                attachments,
+            });
+        }
     }
 
     /// When plugins like OpenMontage are on, wrap the agent-facing prompt with
@@ -1238,6 +1418,11 @@ impl eframe::App for BonyBuildApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_started(ctx);
         self.drain_events();
+        self.zeroclaw.ensure_started();
+        if self.zeroclaw.poll() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        self.drain_zc_events();
         self.try_auto_approve_pending_permission();
         self.poll_pending_worktree(ctx);
         self.tick_window_drag(ctx);
@@ -5724,6 +5909,15 @@ impl BonyBuildApp {
                     ui.add_space(8.0);
                 }
 
+                if self.zeroclaw.status.is_busy() {
+                    ui.label(
+                        RichText::new(self.zeroclaw.status.label(self.lang()))
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                    ui.add_space(4.0);
+                }
+
                 let hint = if self.model.needs_login {
                     self.t("composer.hint_login")
                 } else if unity_on {
@@ -5742,7 +5936,9 @@ impl BonyBuildApp {
                     .desired_rows(2)
                     .frame(false)
                     .interactive(!self.model.needs_login)
-                    .hint_text(RichText::new(hint).size(14.0).color(MUTED));
+                    .text_color(TEXT)
+                    .font(egui::FontId::proportional(15.0))
+                    .hint_text(RichText::new(hint).size(15.0).color(MUTED));
                 let response = ui.add(edit);
                 if self.model.focus_composer {
                     response.request_focus();
@@ -5765,7 +5961,7 @@ impl BonyBuildApp {
                         .trim_end_matches('\n')
                         .trim_end_matches('\r')
                         .to_string();
-                    self.send_prompt();
+                    self.send_prompt(ui.ctx());
                 }
 
                 if unity_on {
@@ -5813,7 +6009,7 @@ impl BonyBuildApp {
                             )
                             .on_hover_text(send_hint);
                         if can_send && send.clicked() {
-                            self.send_prompt();
+                            self.send_prompt(ui.ctx());
                         }
 
                         if (self.model.busy || self.stop_armed_force)
@@ -7618,11 +7814,21 @@ impl BonyBuildApp {
         for idx in 0..len {
             let is_flow = matches!(
                 self.model.timeline.get(idx),
-                Some(TimelineItem::Tool(_) | TimelineItem::Thought(_) | TimelineItem::Plan(_))
+                Some(
+                    TimelineItem::Tool(_)
+                        | TimelineItem::Thought(_)
+                        | TimelineItem::Plan(_)
+                        | TimelineItem::Route(_)
+                )
             );
             let next_is_flow = matches!(
                 self.model.timeline.get(idx + 1),
-                Some(TimelineItem::Tool(_) | TimelineItem::Thought(_) | TimelineItem::Plan(_))
+                Some(
+                    TimelineItem::Tool(_)
+                        | TimelineItem::Thought(_)
+                        | TimelineItem::Plan(_)
+                        | TimelineItem::Route(_)
+                )
             );
 
             match self.model.timeline.get(idx).cloned() {
@@ -7660,6 +7866,15 @@ impl BonyBuildApp {
                         self.plan_block(ui, &card, &mut open);
                     });
                     if let Some(TimelineItem::Plan(c)) = self.model.timeline.get_mut(idx) {
+                        c.open = open;
+                    }
+                }
+                Some(TimelineItem::Route(card)) => {
+                    let mut open = card.open;
+                    self.timeline_aligned_row(ui, true, next_is_flow, |ui| {
+                        self.route_block(ui, &card, &mut open);
+                    });
+                    if let Some(TimelineItem::Route(c)) = self.model.timeline.get_mut(idx) {
                         c.open = open;
                     }
                 }
@@ -7714,6 +7929,97 @@ impl BonyBuildApp {
                 }
             }
         });
+    }
+
+    fn route_block(&self, ui: &mut egui::Ui, card: &crate::model::RouteCard, open: &mut bool) {
+        let title = if card.degraded {
+            format!(
+                "{} · {} → {} · {}",
+                self.t("route.title"),
+                if card.intended == "zeroclaw" {
+                    self.t("route.backend_zc")
+                } else {
+                    self.t("route.backend_grok")
+                },
+                if card.actual == "zeroclaw" {
+                    self.t("route.backend_zc")
+                } else {
+                    self.t("route.backend_grok")
+                },
+                self.t("route.degraded")
+            )
+        } else {
+            format!(
+                "{} · {}",
+                self.t("route.title"),
+                if card.actual == "zeroclaw" {
+                    self.t("route.backend_zc")
+                } else {
+                    self.t("route.backend_grok")
+                }
+            )
+        };
+        let accent = if card.degraded {
+            Color32::from_rgb(210, 160, 70)
+        } else if card.actual == "zeroclaw" {
+            Color32::from_rgb(90, 170, 220)
+        } else {
+            ACCENT_BAR
+        };
+        Frame::new()
+            .fill(TOOL_BG)
+            .corner_radius(CornerRadius::same(10))
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let chevron = if *open { "▾" } else { "▸" };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(format!("{chevron}  {title}"))
+                                    .size(12.5)
+                                    .color(TEXT),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        *open = !*open;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(if card.intent == "general" {
+                            self.t("route.intent_general")
+                        } else {
+                            self.t("route.intent_coding")
+                        })
+                        .size(11.0)
+                        .color(accent),
+                    );
+                });
+                if *open {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    for step in &card.steps {
+                        ui.label(RichText::new(step).size(12.0).color(TEXT));
+                        ui.add_space(2.0);
+                    }
+                    if card.degraded {
+                        if let Some(reason) = &card.degrade_reason {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(format!("{}：{reason}", self.t("route.note")))
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(210, 160, 70)),
+                            );
+                        }
+                    }
+                }
+            });
     }
 
     fn thought_block(
@@ -7872,6 +8178,10 @@ impl BonyBuildApp {
                             );
                         });
                     });
+                if msg.source == crate::model::MessageSource::Zeroclaw {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(self.t("zeroclaw.source_tag")).size(10.5).color(MUTED));
+                }
                 if let Some(u) = &msg.turn_usage {
                     ui.add_space(4.0);
                     ui.label(
@@ -7917,6 +8227,12 @@ impl BonyBuildApp {
             MUTED
         };
         let tool_label = self.t("flow.tool");
+        let status_label = short_status(&card.status);
+        // Prefer readable multi-line body over a single dumped JSON string.
+        let detail = normalize_tool_detail_display(&card.detail);
+        let show_kind = !card.kind.is_empty()
+            && card.kind != "other"
+            && !card.kind.eq_ignore_ascii_case("unknown");
 
         Frame::new()
             .fill(TOOL_BG)
@@ -7946,32 +8262,41 @@ impl BonyBuildApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new(short_status(&card.status))
+                            RichText::new(status_label)
                                 .size(11.5)
                                 .color(status_color),
                         );
                     });
                 });
-                if !card.kind.is_empty() {
+                if show_kind {
                     ui.label(
                         RichText::new(format!("kind · {}", card.kind))
                             .size(11.0)
                             .color(MUTED),
                     );
                 }
-                if *open && !card.detail.is_empty() {
+                if *open && !detail.is_empty() {
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(&card.detail)
-                                .size(12.0)
-                                .monospace()
-                                .color(MUTED),
-                        )
-                        .wrap(),
-                    );
+                    // Soft body panel: real newlines, slightly brighter than
+                    // secondary labels so multi-line tool results are scannable.
+                    Frame::new()
+                        .fill(Color32::from_rgb(18, 22, 30))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(8, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&detail)
+                                        .size(12.0)
+                                        .monospace()
+                                        .color(Color32::from_rgb(196, 205, 220)),
+                                )
+                                .wrap(),
+                            );
+                        });
                 }
             });
     }
@@ -9953,6 +10278,80 @@ fn short_status(status: &str) -> &str {
     }
 }
 
+/// Heuristics for tool card bodies that were (or still are) stored as a
+/// single JSON string: strip outer quotes, turn `\n` / `\t` / `\"` into
+/// real control chars so multi-line weather/shell output is readable.
+fn normalize_tool_detail_display(detail: &str) -> String {
+    let trimmed = detail.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Full JSON document → re-format via the same humanizing rules, then
+    // fall back to the original string if parse fails.
+    if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+    {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return match value {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Null => String::new(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                serde_json::Value::Number(n) => n.to_string(),
+                other => {
+                    for key in ["content", "text", "result", "output", "message", "stdout"] {
+                        if let Some(s) = other.get(key).and_then(|v| v.as_str()) {
+                            if s.lines().count() > 1 || s.len() > 80 {
+                                return s.to_string();
+                            }
+                        }
+                    }
+                    serde_json::to_string_pretty(&other).unwrap_or_else(|_| detail.to_string())
+                }
+            };
+        }
+    }
+
+    // Not valid JSON, but still has JSON-style escapes from a bad dump.
+    if trimmed.contains("\\n") || trimmed.contains("\\t") {
+        return unescape_json_ish(trimmed);
+    }
+
+    detail.to_string()
+}
+
+fn unescape_json_ish(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    // Drop a single pair of surrounding quotes if present.
+    let strip_quotes = s.starts_with('"') && s.ends_with('"') && s.len() >= 2;
+    let body = if strip_quotes {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn configure_style(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = BG;
@@ -9972,6 +10371,19 @@ fn configure_style(ctx: &egui::Context) {
     style.spacing.button_padding = Vec2::new(12.0, 6.0);
     style.spacing.scroll.bar_width = 10.0;
     style.spacing.scroll.handle_min_length = 32.0;
+    // Integer body size renders sharper with ab_glyph CJK faces on Windows.
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        egui::FontId::new(15.0, egui::FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Button,
+        egui::FontId::new(14.0, egui::FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::new(13.0, egui::FontFamily::Proportional),
+    );
     // Sidebar rows use deferred hover chrome — keep tooltips snappy too.
     style.interaction.tooltip_delay = 0.05;
     style.interaction.show_tooltips_only_when_still = false;
