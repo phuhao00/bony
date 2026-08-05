@@ -5,7 +5,7 @@
 # Local packaging / release artifacts (never commit binaries)
 .local-dist/
 
-# Submodule third_party/buzz is tracked via .gitmodules — only ignore local build junk
+# Buzz sources live in-tree (not a git submodule). Ignore local build junk only.
 /third_party/buzz/target/
 /third_party/buzz/**/node_modules/
 /third_party/buzz/**/dist/
@@ -22,3 +22,7 @@ tmp-*.out
 tmp-*.err
 tmp-buzz*.diff
 tmp-discovery*.diff
+
+# Local runtime PIDs/logs for room stack
+.local-runtime/
+

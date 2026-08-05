@@ -4,7 +4,7 @@ This directory holds **upstream** code used by bony — vendored crates **or** g
 
 | Path | What |
 |------|------|
-| [`buzz/`](./buzz/) | **Git submodule** — [block/buzz](https://github.com/block/buzz). See [`BUZZ.md`](./BUZZ.md). |
+| [`buzz/`](./buzz/) | **In-tree** Buzz sources (formerly a submodule of [phuhao00/buzz](https://github.com/phuhao00/buzz)). First-class members of the monorepo root Cargo workspace. |
 
 ## Why vendor (Mermaid stack)
 

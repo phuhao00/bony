@@ -1,0 +1,30 @@
+[package]
+name = "buzz-voice"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+repository = "https://github.com/phuhao00/buzz"
+description = "Reusable local voice primitives for Buzz"
+
+[dependencies]
+atomic-write-file = "0.3"
+hex = { workspace = true }
+# load-dynamic: resolve OrtGetApiBase via LoadLibrary at *runtime* instead of
+# link.exe at compile time. Avoids LNK2019 on machines whose onnxruntime.lib
+# doesn't match the linked MSVC toolset; app still builds if the actual
+# onnxruntime dylib is absent, TTS just errors at call time instead.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-24", "ndarray", "std", "load-dynamic"] }
+ort-sys = { version = "=2.0.0-rc.12", features = ["disable-linking"] }
+rand = "0.10"
+sentencepiece-model = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+# No sherpa-onnx here: prebuilt Windows libs need a newer MSVC toolset than many
+# machines have (LNK2001 `__std_find_end_*`). Desktop STT keeps its own optional dep.
+symphonia = { version = "0.5", default-features = false, features = ["aac", "aiff", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+
+[dev-dependencies]
+tempfile = "3"

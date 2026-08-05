@@ -1,0 +1,44 @@
+[package]
+name = "buzz-test-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+repository = "https://github.com/phuhao00/buzz"
+description = "Integration test client and E2E test suite for Buzz"
+
+[dependencies]
+anyhow = { workspace = true }
+buzz-core = { workspace = true }
+buzz-ws-client = { workspace = true }
+nostr = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+rustls = "0.23"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+base64 = "0.22"
+hex = { workspace = true }
+rand = "0.10"
+sha2 = "0.11"
+sqlx = { workspace = true }
+chrono = { workspace = true }
+s3 = { version = "0.37", package = "rust-s3", default-features = false, features = ["tokio-rustls-tls", "fail-on-err", "tags"] }
+buzz-media = { workspace = true }
+buzz-sdk = { workspace = true }
+
+[[bin]]
+name = "buzz-test-cli"
+path = "src/main.rs"

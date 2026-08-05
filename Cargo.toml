@@ -2,6 +2,9 @@
 
 [patch.crates-io]
 async-openai = { git = "https://github.com/our-forks/async-openai.git", rev = "95b52ebdedf42143083cf3d6f0e0be7c84e9c808" }
+# Temporary fork pin: aws-creds 0.39.1 (via rust-s3) cannot read EKS Pod Identity
+# credentials. Revert to crates.io once durch/rust-s3#449 lands upstream.
+aws-creds = { git = "https://github.com/tlongwell-block/rust-s3", rev = "c9fce3620dd434c1f810101d672cf384268dbb0f" }
 
 [workspace]
 resolver = "2"
@@ -100,6 +103,38 @@ members = [
     "third_party/graphlib_rust",
     "third_party/mermaid-to-svg",
     "third_party/ordered_hashmap",
+    # Buzz (formerly submodule third_party/buzz) — first-class monorepo members
+    "third_party/buzz/crates/buzz-relay",
+    "third_party/buzz/crates/buzz-core",
+    "third_party/buzz/crates/buzz-conformance",
+    "third_party/buzz/crates/buzz-push-gateway",
+    "third_party/buzz/crates/buzz-db",
+    "third_party/buzz/crates/buzz-pubsub",
+    "third_party/buzz/crates/buzz-auth",
+    "third_party/buzz/crates/buzz-search",
+    "third_party/buzz/crates/buzz-audit",
+    "third_party/buzz/crates/buzz-acp",
+    "third_party/buzz/crates/buzz-agent",
+    "third_party/buzz/crates/sprig",
+    "third_party/buzz/crates/buzz-test-client",
+    "third_party/buzz/crates/buzz-ws-client",
+    "third_party/buzz/crates/buzz-admin",
+    "third_party/buzz/crates/buzz-workflow",
+    "third_party/buzz/crates/buzz-media",
+    "third_party/buzz/crates/buzz-cli",
+    "third_party/buzz/crates/buzz-pairing-cli",
+    "third_party/buzz/crates/buzz-sdk",
+    "third_party/buzz/crates/buzz-persona",
+    "third_party/buzz/crates/git-credential-nostr",
+    "third_party/buzz/crates/git-sign-nostr",
+    "third_party/buzz/crates/buzz-pair-relay",
+    "third_party/buzz/crates/buzz-relay-mesh",
+    "third_party/buzz/crates/buzz-dev-mcp",
+    "third_party/buzz/crates/buzz-voice",
+    "third_party/buzz/crates/buzz-backend-kubernetes",
+    "third_party/buzz/examples/countdown-bot",
+    "third_party/buzz/desktop/src-tauri",
+    "third_party/buzz/desktop/src-tauri/crates/buzz-terminal",
 ]
 
 [workspace.package]
@@ -192,7 +227,7 @@ md5 = "0.8"
 mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 minijinja = "2.9"
 mockito = "1"
-moka = "0.12"
+moka = { version = "0.12", features = ["sync"] }
 nix = { version = "0.30", features = ["poll", "process", "signal", "sched", "term", "mount", "fs", "ioctl", "mman", "reboot", "user"] }
 notify = "8"
 notify-debouncer-mini = "0.6"
@@ -201,11 +236,11 @@ num_cpus = "1"
 oauth2 = "5"
 obfstr = "0.4"
 once_cell = "1"
-opentelemetry = "0.32"
+opentelemetry = { version = "0.32", features = ["trace"] }
 opentelemetry-http = { version = "0.32", features = ["reqwest-blocking"] }
-opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "reqwest-blocking-client", "tls-roots"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic", "reqwest-blocking-client", "tls-roots", "tls-ring"] }
 opentelemetry-proto = { version = "0.32", features = ["gen-tonic"] }
-opentelemetry_sdk = { version = "0.32.1", features = ["spec_unstable_metrics_views"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["trace", "rt-tokio", "spec_unstable_metrics_views"] }
 parking_lot = "0.12.4"
 pbjson-build = "0.9"
 pdf_oxide = { version = "0.3.43", features = ["rendering"] }
@@ -275,11 +310,11 @@ toml_edit = "0.22"
 tonic = { version = "0.14", features = ["tls-aws-lc", "gzip", "deflate", "zstd"] }
 tonic-prost = "0.14"
 tonic-prost-build = "0.14"
-tower = "0.5"
-tower-http = "0.6"
+tower = { version = "0.5", features = ["timeout", "util", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "limit", "timeout", "fs"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.33"
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "smallvec", "tracing-log", "std", "ansi", "json"] }
 ts-rs = "12.0"
 tui-scrollbar = "0.2"
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }
@@ -361,9 +396,63 @@ zbus = { version = "5" }
 zip = "3"
 zstd = "0.13"
 
+# --- Buzz stack (shared workspace deps; version conflicts with Grok stay as literals in Buzz crates) ---
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "1.0", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
+deadpool-redis = { version = "0.23", features = ["rt_tokio_1"] }
+kube = { version = "2.0", default-features = false, features = ["client", "rustls-tls"] }
+k8s-openapi = { version = "0.26", features = ["v1_31"] }
+nostr = { version = "0.44", features = ["nip44", "nip98"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring"] }
+evalexpr = "11"
+cron = "0.16"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
+metrics-util = "0.20"
+hex = "0.4"
+hmac = "0.13"
+subtle = "2.6"
+zeroize = "1.8"
+proptest = "1"
+rmcp = { version = "1.1.0", features = ["server", "transport-io", "macros"] }
+# Ensure shared deps cover Buzz feature needs (union with existing)
+# note: tokio/axum/tower already declared above — crate-level feature activation still works
+
+buzz-core = { path = "third_party/buzz/crates/buzz-core" }
+buzz-conformance = { path = "third_party/buzz/crates/buzz-conformance" }
+buzz-db = { path = "third_party/buzz/crates/buzz-db" }
+buzz-auth = { path = "third_party/buzz/crates/buzz-auth" }
+buzz-pubsub = { path = "third_party/buzz/crates/buzz-pubsub" }
+buzz-search = { path = "third_party/buzz/crates/buzz-search" }
+buzz-audit = { path = "third_party/buzz/crates/buzz-audit" }
+buzz-workflow = { path = "third_party/buzz/crates/buzz-workflow" }
+buzz-media = { path = "third_party/buzz/crates/buzz-media" }
+buzz-sdk = { path = "third_party/buzz/crates/buzz-sdk" }
+buzz-ws-client = { path = "third_party/buzz/crates/buzz-ws-client" }
+buzz-relay-mesh = { path = "third_party/buzz/crates/buzz-relay-mesh" }
+
 [profile.release]
 incremental = true
 panic = "abort"
+
+# CI profile — was in third_party/buzz workspace (relay desktop e2e).
+[profile.ci]
+inherits = "release"
+lto = false
+opt-level = 1
+
+[profile.ci.package."*"]
+opt-level = 3
+
+# Sprig size-focused release profile (was in third_party/buzz).
+[profile.sprig]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
 
 # Hardened release profile for shipping to end users (alpha + stable).
 # Use `cargo build --profile release-dist` for distribution builds.
