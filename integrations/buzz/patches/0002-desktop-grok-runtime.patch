@@ -1,0 +1,85 @@
+diff --git a/desktop/src-tauri/src/managed_agents/discovery.rs b/desktop/src-tauri/src/managed_agents/discovery.rs
+index ab7696525..2333dd1c0 100644
+--- a/desktop/src-tauri/src/managed_agents/discovery.rs
++++ b/desktop/src-tauri/src/managed_agents/discovery.rs
+@@ -18,6 +18,9 @@ const CLAUDE_CODE_AVATAR_URL: &str = "https://anthropic.gallerycdn.vsassets.io/e
+ const CODEX_AVATAR_URL: &str = "https://openai.gallerycdn.vsassets.io/extensions/openai/chatgpt/26.5313.41514/1773706730621/Microsoft.VisualStudio.Services.Icons.Default";
+ const BUZZ_AGENT_AVATAR_URL: &str =
+     "https://raw.githubusercontent.com/block/buzz/refs/heads/main/crates/buzz-agent/buzz-agent.png";
++/// Bony / Grok Build product avatar (xAI brand mark is used as runtime icon).
++const GROK_AVATAR_URL: &str =
++    "https://raw.githubusercontent.com/xai-org/grok-build/main/docs/logo.png";
+ 
+ fn common_binary_paths() -> &'static [PathBuf] {
+     static PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+@@ -194,6 +197,44 @@ const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
+         login_hint: None,
+         auth_probe_args: None,
+     },
++    KnownAcpRuntime {
++        id: "grok",
++        label: "Grok",
++        commands: &["grok"],
++        aliases: &["bony", "bony-build", "xai-grok"],
++        avatar_url: GROK_AVATAR_URL,
++        // Inject buzz-dev-mcp so Grok can run shell + buzz CLI against the relay.
++        mcp_command: Some("buzz-dev-mcp"),
++        mcp_hooks: false,
++        underlying_cli: Some("grok"),
++        cli_install_commands: &["npm install -g @xai-official/grok"],
++        cli_install_commands_windows: &[
++            "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"npm install -g @xai-official/grok\"",
++        ],
++        adapter_install_commands: &[],
++        cli_install_instructions_url: "https://github.com/xai-org/grok-build",
++        adapter_install_instructions_url: "",
++        cli_install_hint:
++            "Install the grok CLI (`npm i -g @xai-official/grok`) and configure ~/.grok/config.toml or XAI_API_KEY.",
++        adapter_install_hint: "",
++        skill_dir: Some(".agents/skills"),
++        supports_acp_model_switching: true,
++        model_env_var: None,
++        provider_env_var: None,
++        provider_locked: false,
++        default_env: &[],
++        config_file_path: Some("~/.grok/config.toml"),
++        config_file_format: Some("toml"),
++        supports_acp_native_config: false,
++        thinking_env_var: None,
++        max_tokens_env_var: None,
++        context_limit_env_var: None,
++        required_normalized_fields: &[],
++        login_hint: Some(
++            "Run `grok login` or set BYOK models in ~/.grok/config.toml with api_key/env_key.",
++        ),
++        auth_probe_args: Some(&["grok", "--version"]),
++    },
+ ];
+ 
+ /// Skill discovery directories declared by known runtimes.
+@@ -229,7 +270,15 @@ fn normalize_command_identity(command: &str) -> String {
+             _ => character.to_ascii_lowercase(),
+         })
+         .collect::<String>();
+-    let lower = lower.strip_suffix(".exe").unwrap_or(&lower).to_string();
++    // Strip common Windows shim suffixes (npm global installs often create `*.cmd`).
++    let lower = lower
++        .strip_suffix(".cmd")
++        .or_else(|| lower.strip_suffix(".bat"))
++        .or_else(|| lower.strip_suffix(".ps1"))
++        .or_else(|| lower.strip_suffix(".com"))
++        .or_else(|| lower.strip_suffix(".exe"))
++        .unwrap_or(&lower)
++        .to_string();
+ 
+     if let Some(suffix) = std::env::consts::EXE_SUFFIX.strip_prefix('.') {
+         return lower
+@@ -349,6 +398,8 @@ pub use overrides::{apply_agent_command_update, create_time_agent_command_overri
+ fn default_agent_args(command: &str) -> Option<Vec<String>> {
+     match normalize_command_identity(command).as_str() {
+         "goose" => Some(vec!["acp".to_string()]),
++        // Grok speaks ACP over stdio via `grok agent stdio` (see bony-build agent_bridge).
++        "grok" | "xai-grok" => Some(vec!["agent".to_string(), "stdio".to_string()]),
+         "codex" | "codex-acp" | "claude-agent-acp" | "claude-code-acp" | "claude-code"
+         | "claudecode" | "buzz-agent" => Some(Vec::new()),
+         _ => None,

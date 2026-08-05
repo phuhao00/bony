@@ -1,0 +1,3 @@
+# keys/*.json hold agent nsec — never commit secrets
+*
+!.gitignore
