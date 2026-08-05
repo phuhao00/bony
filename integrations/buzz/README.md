@@ -1,12 +1,15 @@
 # Block/Buzz integration (bony)
 
-- **Submodule**: [`../../third_party/buzz`](../../third_party/buzz) → https://github.com/phuhao00/buzz  
-  (see [`.gitmodules`](../../.gitmodules), [`BONY.md`](../../third_party/buzz/BONY.md))
-- **Patches** (apply after submodule init): [`patches/`](./patches/)
+- **In-tree**: [`../../third_party/buzz`](../../third_party/buzz) — ordinary monorepo sources (not a submodule)
+- **Workspace**: root [`Cargo.toml`](../../Cargo.toml) members include all Buzz crates + `buzz-desktop`
+- **Patches** (legacy, if still needed): [`patches/`](./patches/)
 - **Room automation**: [`../../scripts/buzz-room`](../../scripts/buzz-room)
 - **Docs**: [`../../docs/buzz-room-collab.md`](../../docs/buzz-room-collab.md)
 
 ```powershell
-git submodule update --init --recursive
-powershell -File scripts/buzz-room/setup-buzz.ps1
+# Single workspace build
+cargo build -p buzz-desktop
+# Or:
+powershell -File scripts/buzz-room/build-desktop.ps1
+powershell -File scripts/buzz-room/start-desktop.ps1
 ```

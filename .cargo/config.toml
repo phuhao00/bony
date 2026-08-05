@@ -59,10 +59,14 @@ rustflags = [
 ]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+# No +crt-static: static CRT breaks linking against prebuilt native deps used by
+# Buzz desktop voice (sherpa-onnx, onnxruntime-style libs). Dynamic CRT is fine
+# for local/dev; set RUSTFLAGS=-Ctarget-feature=+crt-static only for fully-static
+# redistributable Grok CLI builds if you intentionally need it.
+rustflags = ["-C", "force-unwind-tables=yes"]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+rustflags = ["-C", "force-unwind-tables=yes"]
 
 
 # jemalloc page size for Apple Silicon (macOS aarch64 uses 16KB pages = 2^14).
@@ -79,3 +83,16 @@ AARCH64_APPLE_DARWIN_JEMALLOC_SYS_WITH_LG_PAGE = "14"
 AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "16"
 AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "16"
 AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_BACKGROUND_THREADS = "0"
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+# Thin local debug caches (esp. Windows) — large PDBs from full debuginfo are multi-GB.
+[profile.dev]
+debug = false
+strip = "debuginfo"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[build]
+jobs = 16
