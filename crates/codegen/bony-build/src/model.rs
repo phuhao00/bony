@@ -15,12 +15,23 @@ pub enum Role {
     System,
 }
 
+/// Which ACP backend produced a message — used only to render a small,
+/// unobtrusive source tag on assistant bubbles. Not a plugin toggle: both
+/// backends share one timeline, one composer, one chat window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MessageSource {
+    #[default]
+    Grok,
+    Zeroclaw,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: Role,
     pub text: String,
     /// Per-turn token bill (set on assistant messages when a turn completes).
     pub turn_usage: Option<TokenUsage>,
+    pub source: MessageSource,
 }
 
 #[derive(Debug, Clone)]
@@ -46,11 +57,30 @@ pub struct PlanCard {
 }
 
 #[derive(Debug, Clone)]
+pub struct RouteCard {
+    /// Fixed intent backend name: "coding" | "general"
+    pub intent: String,
+    /// Why we classified that way.
+    pub intent_reason: String,
+    pub matched_keyword: Option<String>,
+    /// Intended target before degrade: "grok" | "zeroclaw"
+    pub intended: String,
+    /// Actual backend used: "grok" | "zeroclaw"
+    pub actual: String,
+    pub zc_status: String,
+    pub steps: Vec<String>,
+    pub degraded: bool,
+    pub degrade_reason: Option<String>,
+    pub open: bool,
+}
+
+#[derive(Debug, Clone)]
 pub enum TimelineItem {
     Message(ChatMessage),
     Tool(ToolCard),
     Thought(ThoughtCard),
     Plan(PlanCard),
+    Route(RouteCard),
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +286,7 @@ impl AppModel {
                         role: Role::Assistant,
                         text: delta,
                         turn_usage: None,
+                        source: MessageSource::Grok,
                     })),
                 }
             }
@@ -415,9 +446,134 @@ impl AppModel {
                     role: Role::System,
                     text: err,
                     turn_usage: None,
+                    source: MessageSource::Grok,
                 }));
             }
         }
+    }
+
+    /// Apply an [`AgentEvent`] produced by the ZeroClaw backend into the same
+    /// shared timeline `apply()` uses for grok — deliberately a *separate*
+    /// method rather than a `source` parameter on `apply()`: ZeroClaw is a
+    /// second, independent ACP connection with its own session lifecycle, so
+    /// its `Connected`/`Disconnected`/`NeedsLogin`/model/mode events must
+    /// never clobber grok's connection state (`connected`, `session_id`,
+    /// `available_models`, …), which the rest of the UI treats as singular.
+    /// Only the message/tool/thought stream — the part that genuinely
+    /// belongs on one unified timeline — is handled here.
+    pub fn apply_zc(&mut self, event: AgentEvent) {
+        match event {
+            AgentEvent::Status(s) => self.status = s,
+            AgentEvent::AssistantDelta(delta) => {
+                self.ensure_live_view();
+                self.busy = true;
+                self.status = "Working…".into();
+                match self.timeline.last_mut() {
+                    Some(TimelineItem::Message(m))
+                        if m.role == Role::Assistant && m.source == MessageSource::Zeroclaw =>
+                    {
+                        merge_stream_text(&mut m.text, &delta);
+                    }
+                    _ => self.timeline.push(TimelineItem::Message(ChatMessage {
+                        role: Role::Assistant,
+                        text: delta,
+                        turn_usage: None,
+                        source: MessageSource::Zeroclaw,
+                    })),
+                }
+            }
+            AgentEvent::ThoughtDelta(delta) => {
+                self.ensure_live_view();
+                self.busy = true;
+                match self.timeline.last_mut() {
+                    Some(TimelineItem::Thought(t)) => merge_stream_text(&mut t.text, &delta),
+                    _ => self.timeline.push(TimelineItem::Thought(ThoughtCard {
+                        text: delta,
+                        open: true,
+                    })),
+                }
+            }
+            AgentEvent::ToolStart { id, title, kind, detail } => {
+                self.ensure_live_view();
+                self.busy = true;
+                if let Some(card) = self.find_tool_mut(&id) {
+                    card.title = title;
+                    card.status = "InProgress".into();
+                    card.detail = detail;
+                    card.open = true;
+                } else {
+                    self.timeline.push(TimelineItem::Tool(ToolCard {
+                        id,
+                        title,
+                        kind,
+                        status: "InProgress".into(),
+                        detail,
+                        open: true,
+                    }));
+                }
+            }
+            AgentEvent::ToolUpdate { id, status, kind, detail } => {
+                self.ensure_live_view();
+                if let Some(card) = self.find_tool_mut(&id) {
+                    if !status.is_empty() {
+                        card.status = status;
+                    }
+                    if !kind.is_empty() {
+                        card.kind = kind;
+                    }
+                    if !detail.is_empty() {
+                        card.detail = detail;
+                    }
+                } else {
+                    self.timeline.push(TimelineItem::Tool(ToolCard {
+                        id,
+                        title: "Tool".into(),
+                        kind,
+                        status,
+                        detail,
+                        open: true,
+                    }));
+                }
+            }
+            AgentEvent::TurnDone { .. } => {
+                self.busy = false;
+                self.status = "Ready".into();
+            }
+            AgentEvent::Error(err) => {
+                self.ensure_live_view();
+                self.busy = false;
+                self.status = "Error".into();
+                self.timeline.push(TimelineItem::Message(ChatMessage {
+                    role: Role::System,
+                    text: err,
+                    turn_usage: None,
+                    source: MessageSource::Zeroclaw,
+                }));
+            }
+            // Connection/model/mode/permission events belong to grok's
+            // singular connection state; ZeroClaw's bridge intentionally
+            // never emits `PermissionRequest` (auto-answered at the bridge
+            // layer) and the rest don't apply to a stdio-only backend.
+            _ => {}
+        }
+    }
+
+    /// Tag the just-sent user bubble as routed to ZeroClaw, so the timeline
+    /// can (optionally) reflect it — called right after `push_user`.
+    pub fn mark_last_user_zeroclaw(&mut self) {
+        if let Some(TimelineItem::Message(m)) = self.timeline.last_mut()
+            && m.role == Role::User
+        {
+            m.source = MessageSource::Zeroclaw;
+        }
+    }
+
+    /// Append a routing card after the user bubble so every turn shows who
+    /// handled it and why (including degrade path).
+    pub fn push_route(&mut self, card: RouteCard) {
+        self.ensure_live_view();
+        self.timeline.push(TimelineItem::Route(card));
+        self.auto_scroll = true;
     }
 
     pub fn push_user(&mut self, text: String) {
@@ -430,6 +586,7 @@ impl AppModel {
             role: Role::User,
             text,
             turn_usage: None,
+            source: MessageSource::Grok,
         }));
         self.busy = true;
         self.status = "Working…".into();
@@ -442,6 +599,7 @@ impl AppModel {
             role: Role::Assistant,
             text,
             turn_usage: None,
+            source: MessageSource::Grok,
         }));
         self.busy = false;
         self.status = "Ready".into();
@@ -454,6 +612,7 @@ impl AppModel {
             role: Role::User,
             text,
             turn_usage: None,
+            source: MessageSource::Grok,
         }));
         self.busy = true;
         self.status = "正在控制 Unity…".into();
@@ -523,6 +682,7 @@ impl AppModel {
                     role: Role::User,
                     text: turn.user_text.clone(),
                     turn_usage: None,
+                    source: MessageSource::Grok,
                 }));
             }
             for tool in &turn.tool_titles {
@@ -540,6 +700,7 @@ impl AppModel {
                     role: Role::Assistant,
                     text: turn.assistant_text.clone(),
                     turn_usage: Some(turn.usage_delta.clone()),
+                    source: MessageSource::Grok,
                 }));
             }
         }

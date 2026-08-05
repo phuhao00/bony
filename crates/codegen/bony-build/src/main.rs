@@ -19,6 +19,8 @@ mod process;
 mod task;
 mod unity;
 mod usage;
+mod zeroclaw;
+mod zeroclaw_bridge;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
