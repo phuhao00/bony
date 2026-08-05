@@ -34,10 +34,10 @@ if (Test-Path (Join-Path $BuzzRoot "rust-toolchain.toml")) {
     Write-Host "    using Buzz toolchain channel=$channel"
   }
 }
-cargo build -p buzz-acp -p buzz-cli -p buzz-admin -p buzz-dev-mcp -p buzz-agent
+cargo build -p buzz-acp -p buzz-cli -p buzz-admin -p buzz-dev-mcp -p buzz-agent -p buzz-relay
 if ($LASTEXITCODE -ne 0) { throw "buzz crate build failed" }
 
 Write-Host "Done."
 Write-Host "  bony MCP: $BonyRoot\target\release\bony-room-tools-mcp.exe"
-Write-Host "  buzz bins: $BuzzRoot\target\debug\ (buzz-acp.exe, buzz-agent.exe, buzz-dev-mcp.exe, buzz-admin.exe, buzz.exe)"
-Write-Host "Next: mint keys, start-infra, start-relay, then start-grok-agent.ps1"
+Write-Host "  buzz bins: $BuzzRoot\target\debug\ (buzz-acp, buzz-agent, buzz-dev-mcp, buzz-admin, buzz, buzz-relay)"
+Write-Host "Next: start-room-stack.ps1  (or start-infra + start-relay + start-grok-agent)"

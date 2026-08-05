@@ -1,0 +1,17 @@
+[package]
+name = "buzz-search"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+repository = "https://github.com/phuhao00/buzz"
+description = "Postgres full-text search for Buzz, scoped by community"
+
+[dependencies]
+buzz-core   = { workspace = true }
+sqlx        = { workspace = true }
+uuid        = { workspace = true }
+thiserror   = { workspace = true }
+
+[dev-dependencies]
+tokio       = { workspace = true }

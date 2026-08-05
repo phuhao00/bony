@@ -1,0 +1,25 @@
+[package]
+name = "buzz-pairing-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+repository = "https://github.com/phuhao00/buzz"
+description = "CLI tool for NIP-AB device pairing interop testing"
+
+[[bin]]
+name = "buzz-pair"
+path = "src/main.rs"
+
+[dependencies]
+buzz-core = { workspace = true }
+nostr = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+hex = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = { workspace = true }
+zeroize = { workspace = true }

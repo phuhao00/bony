@@ -1,0 +1,30 @@
+[package]
+name = "buzz-workflow"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+repository = "https://github.com/phuhao00/buzz"
+description = "YAML-as-code workflow engine for Buzz"
+
+[dependencies]
+buzz-core = { workspace = true }
+buzz-db   = { workspace = true }
+hex         = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+serde_yaml  = { workspace = true }
+dashmap     = { workspace = true }
+moka        = { workspace = true }
+evalexpr    = "11"
+cron        = "0.16"
+nostr       = { workspace = true }
+uuid        = { workspace = true }
+chrono      = { workspace = true }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+thiserror   = { workspace = true }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"], optional = true }
+
+[features]
+reqwest = ["dep:reqwest"]

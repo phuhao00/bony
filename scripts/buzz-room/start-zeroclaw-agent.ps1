@@ -1,6 +1,7 @@
 # Start ZeroClaw specialist behind buzz-acp (mentions-only).
 param(
   [string]$BuzzRoot = "",
+  [string]$BonyRoot = "",
   [string]$RelayUrl = "ws://localhost:3000",
   [string]$ZeroclawBin = "$env:USERPROFILE\.bony-build\zeroclaw\target\release\zeroclaw.exe",
   [string]$KeysFile = (Join-Path $PSScriptRoot "keys\zeroclaw.json"),
@@ -8,17 +9,20 @@ param(
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_paths.ps1")
+if (-not $BonyRoot) { $BonyRoot = Get-BonyRoot }
 if (-not $BuzzRoot) { $BuzzRoot = Get-BuzzRoot }
 
-function Find-Bin([string]$name, [string]$root) {
-  foreach ($prof in @("debug", "release")) {
-    $p = Join-Path $root "target\$prof\$name.exe"
-    if (Test-Path $p) { return $p }
+function Find-Bin([string]$name, [string[]]$roots) {
+  foreach ($r in $roots) {
+    foreach ($prof in @("debug", "release")) {
+      $p = Join-Path $r "target\$prof\$name.exe"
+      if (Test-Path $p) { return $p }
+    }
   }
   return $null
 }
-$acp = Find-Bin "buzz-acp" $BuzzRoot
-if (-not $acp) { throw "buzz-acp missing — build with scripts/buzz-room/build-tools.ps1" }
+$acp = Find-Bin "buzz-acp" @($BonyRoot, $BuzzRoot)
+if (-not $acp) { throw "buzz-acp missing — cargo build -p buzz-acp  (or build-tools.ps1)" }
 if (-not (Test-Path $ZeroclawBin)) { throw "ZeroClaw binary not found: $ZeroclawBin" }
 
 $nsec = $env:BUZZ_PRIVATE_KEY
@@ -37,7 +41,9 @@ $env:BUZZ_ACP_SUBSCRIBE = "mentions"
 $env:BUZZ_ACP_RESPOND_TO = "anyone"
 $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
+$env:BUZZ_ACP_DISPLAY_NAME = "ZeroClaw"
 
 Write-Host "ZeroClaw specialist → $ZeroclawBin"
+Write-Host "  acp: $acp"
 Write-Host "  buzz: $BuzzRoot"
 & $acp
