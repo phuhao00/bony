@@ -37,7 +37,7 @@
 
 常见用法：解释仓库结构、排查近期改动、补测试、总结认证 / 架构。任务权限：只读 / 询问 / 允许编辑 / 完全控制；也可用 `--ask-permissions` 全局要求人工批准。
 
-**产品品牌与桌面壳为 Bony Build**；agent / TUI 运行时对齐开源上游 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（见 [与上游关系](#与上游关系)）。仓库：[`phuhao00/bony-build`](https://github.com/phuhao00/bony-build)。
+**产品品牌与桌面壳为 Bony Build**；agent / TUI 运行时对齐开源上游 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（见 [与上游关系](#与上游关系)）。仓库：[`phuhao00/bony`](https://github.com/phuhao00/bony)。
 
 ---
 
@@ -45,7 +45,7 @@
 
 GitHub Releases 提供桌面 zip（需本机另装 `grok` CLI）：
 
-- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.3)
+- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony/releases/tag/v0.1.3)
   - `bony-build-v0.1.3-windows-x86_64.zip`
   - `bony-build-v0.1.3-macos-aarch64.zip`
   - `bony-build-v0.1.3-macos-x86_64.zip`
