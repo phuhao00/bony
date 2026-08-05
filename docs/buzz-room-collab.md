@@ -2,7 +2,7 @@
 
 Grok is the **room lead**. Buzz is the **shared office**. Specialists: ZeroClaw, Unity, OpenMontage.
 
-Buzz lives in this monorepo as a **git submodule**: `third_party/buzz` → https://github.com/block/buzz
+Buzz lives in this monorepo as a **git submodule**: `third_party/buzz` → https://github.com/phuhao00/buzz
 
 ## Layout
 

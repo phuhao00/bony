@@ -1,17 +1,16 @@
-# Block/Buzz submodule
+﻿# Buzz submodule (phuhao00/buzz)
 
 | | |
 |--|--|
 | Path | [`buzz/`](./buzz/) |
-| Remote | https://github.com/block/buzz |
+| Remote | https://github.com/phuhao00/buzz (fork of [block/buzz](https://github.com/block/buzz)) |
 | Init | `git submodule update --init --recursive` |
-| Helper | `powershell -File scripts/buzz-room/setup-buzz.ps1` (also applies Grok patches) |
-| Patches | [`../integrations/buzz/patches/`](../integrations/buzz/patches/) |
-| Docs | [`../docs/buzz-room-collab.md`](../docs/buzz-room-collab.md) |
+| Helper | `powershell -File scripts/buzz-room/setup-buzz.ps1` |
 
-Pins are **gitlinks** in the parent repo (mode `160000`), not a full tree import.
+Grok ACP runtime (`agent stdio` + desktop catalog) is **committed on this fork**.  
+Parent pins the submodule commit (mode `160000`).
 
 ```powershell
-# show pin
 git ls-tree HEAD third_party/buzz
+git submodule update --init --recursive
 ```

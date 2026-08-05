@@ -47,7 +47,7 @@ $cfg = Join-Path $BuzzRoot "crates\buzz-acp\src\config.rs"
 $alreadyHasGrok = (Test-Path $cfg) -and (Select-String -Path $cfg -Pattern '"grok" \| "xai-grok"' -Quiet)
 
 if ($alreadyHasGrok -and -not $ForceReapplyPatches) {
-  Write-Host "==> Grok patches already present (skip apply)"
+  Write-Host "==> Grok runtime already present on phuhao00/buzz pin (skip apply)"
 } elseif (Test-Path $PatchesDir) {
   Write-Host "==> Applying bony Grok patches (local worktree; does not change pinned submodule commit until you commit inside submodule)"
   Push-Location $BuzzRoot
