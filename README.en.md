@@ -37,7 +37,7 @@ Good fit if you want to:
 
 Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
 
-**The product brand and desktop shell are Bony Build.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony-build`](https://github.com/phuhao00/bony-build).
+**The product brand and desktop shell are Bony Build.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony`](https://github.com/phuhao00/bony).
 
 ---
 
@@ -45,7 +45,7 @@ Typical uses: explain repo structure, dig into recent changes, add tests, summar
 
 GitHub Releases ship desktop zips (you still need a local `grok` CLI):
 
-- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony-build/releases/tag/v0.1.3)
+- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony/releases/tag/v0.1.3)
   - `bony-build-v0.1.3-windows-x86_64.zip`
   - `bony-build-v0.1.3-macos-aarch64.zip`
   - `bony-build-v0.1.3-macos-x86_64.zip`
