@@ -57,10 +57,10 @@ $env:BUZZ_ACP_PROGRESS_POST = "true"
 . (Join-Path $PSScriptRoot "_mention-map.ps1")
 Set-RoomAgentMentionMap
 
-# Load MaaS secrets if present (from .local-runtime/maas-llm.env)
-$maasEnv = Join-Path (Get-BonyRoot) ".local-runtime\maas-llm.env"
-if (Test-Path $maasEnv) {
-  Get-Content $maasEnv | ForEach-Object {
+# Load local LLM secrets if present (.local-runtime is gitignored)
+function Import-DotEnvFile([string]$Path) {
+  if (-not (Test-Path $Path)) { return }
+  Get-Content $Path | ForEach-Object {
     if ($_ -match '^\s*#' -or $_ -match '^\s*$') { return }
     if ($_ -match '^\s*([^=]+)=(.*)$') {
       $n = $Matches[1].Trim(); $v = $Matches[2].Trim().Trim('"')
@@ -68,9 +68,15 @@ if (Test-Path $maasEnv) {
     }
   }
 }
+$runtime = Join-Path (Get-BonyRoot) ".local-runtime"
+Import-DotEnvFile (Join-Path $runtime "maas-llm.env")
+Import-DotEnvFile (Join-Path $runtime "bailian-coding-plan.env")
 
-# DashScope / MaaS OpenAI-compatible — ensure key is visible to Hidden launches.
-foreach ($k in @("DASHSCOPE_API_KEY", "QWEN_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL")) {
+# DashScope / MaaS / Coding Plan — ensure keys visible to Hidden launches.
+foreach ($k in @(
+  "DASHSCOPE_API_KEY", "QWEN_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+  "BAILIAN_CODING_PLAN_API_KEY", "DASHSCOPE_CODING_API_KEY", "CODING_DASHSCOPE_BASE_URL"
+)) {
   if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($k, "Process"))) { continue }
   $u = [Environment]::GetEnvironmentVariable($k, "User")
   if ([string]::IsNullOrEmpty($u)) { $u = [Environment]::GetEnvironmentVariable($k, "Machine") }
@@ -84,9 +90,13 @@ Write-Host "ZeroClaw specialist → $ZeroclawBin"
 Write-Host "  acp: $acp"
 Write-Host "  buzz: $BuzzRoot"
 if ($env:DASHSCOPE_API_KEY) {
-  Write-Host "  llm key: set (len=$($env:DASHSCOPE_API_KEY.Length))"
+  Write-Host "  maas/llm key: set (len=$($env:DASHSCOPE_API_KEY.Length))"
   if ($env:OPENAI_BASE_URL) { Write-Host "  base: $($env:OPENAI_BASE_URL)" }
 } else {
-  Write-Warning "  llm key: MISSING — model calls will 401"
+  Write-Warning "  maas/llm key: MISSING — model calls will 401"
+}
+if ($env:BAILIAN_CODING_PLAN_API_KEY) {
+  Write-Host "  coding-plan key: set (len=$($env:BAILIAN_CODING_PLAN_API_KEY.Length))"
+  if ($env:CODING_DASHSCOPE_BASE_URL) { Write-Host "  coding base: $($env:CODING_DASHSCOPE_BASE_URL)" }
 }
 & $acp

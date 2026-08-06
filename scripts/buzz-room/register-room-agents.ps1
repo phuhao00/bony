@@ -317,15 +317,17 @@ if (-not $SkipManagedAgents) {
             if ($roomPks -contains $pkL) { continue }
             if ($roomNames -contains $nmL) { continue }
             if ($ReplaceStore) {
-              # Keep only real builtins (not orphan room clones).
-              $isBu = ($a.is_builtin -eq $true) -or ([string]$a.persona_id -match '^builtin:')
-              if (-not $isBu) { continue }
+              # Local room stack: only the five seat instances. Desktop re-injects
+              # keyless builtin definitions (with 100KB+ data-URL avatars) on its own
+              # and those clones re-trigger keyring thrash / slow get_channels.
+              continue
             }
-            # Base64 data-URL avatars (~200KB) break Windows keyring (2560-byte
-            # CREDENTIAL blob) when Desktop flushes secrets — strip them.
+            # Base64 data-URL avatars (~200KB) bloat the store.
             try {
               $av = [string]$a.avatar_url
-              if ($av.Length -gt 2000) { $a.avatar_url = $null }
+              if ($av.Length -gt 500) {
+                $a | Add-Member -NotePropertyName avatar_url -NotePropertyValue $null -Force
+              }
             } catch {}
             # Never let Desktop spawn room external seats (double process).
             try { $a.start_on_app_launch = $false } catch {}

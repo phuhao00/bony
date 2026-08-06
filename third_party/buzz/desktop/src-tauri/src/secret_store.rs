@@ -43,6 +43,96 @@ pub enum KeyringProbe {
 /// as a JSON map under this name within the service.
 const BLOB_KEY: &str = "secrets";
 
+/// Windows Credential Manager Generic credential password max (UTF-16 units).
+/// The `keyring` crate surfaces writes over this as:
+/// `Attribute 'password encoded as UTF-16' is longer than platform limit of 2560 chars`.
+#[cfg(all(feature = "system-keyring", windows))]
+const WIN_CRED_PASSWORD_MAX_UTF16: usize = 2560;
+
+/// Soft target so a last agent nsec can still be inserted after prune.
+#[cfg(all(feature = "system-keyring", windows))]
+const WIN_CRED_PASSWORD_SOFT_UTF16: usize = 2400;
+
+#[cfg(all(feature = "system-keyring", windows))]
+fn blob_utf16_len(map: &HashMap<String, String>) -> usize {
+    match serde_json::to_string(map) {
+        Ok(s) => s.encode_utf16().count(),
+        Err(_) => usize::MAX,
+    }
+}
+
+/// Keys we always try to keep when compressing a Windows secrets blob.
+#[cfg(all(feature = "system-keyring", windows))]
+fn is_essential_secret_key(key: &str) -> bool {
+    key == "identity"
+        || key.starts_with("agent:")
+        || key.starts_with("_dev_migration")
+        || key.starts_with("identity.")
+        || key.ends_with(".migrated")
+}
+
+#[cfg(all(feature = "system-keyring", windows))]
+fn is_windows_credential_size_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("2560")
+        || lower.contains("platform limit")
+        || (lower.contains("password") && lower.contains("utf-16"))
+}
+
+/// Drop non-essential / oversized values so the blob fits under the Windows
+/// credential limit. Identity + agent nsecs are hex/nsec-sized (~64–128 chars)
+/// and must survive; long junk from migrations is the usual overflow source.
+#[cfg(all(feature = "system-keyring", windows))]
+fn prune_windows_blob_if_needed(map: &mut HashMap<String, String>) {
+    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
+        return;
+    }
+    prune_windows_blob_hard(map);
+}
+
+#[cfg(all(feature = "system-keyring", windows))]
+fn prune_windows_blob_hard(map: &mut HashMap<String, String>) {
+    // Drop huge values first (anything that cannot be an nsec / short secret).
+    let long_keys: Vec<String> = map
+        .iter()
+        .filter(|(_, v)| v.len() > 512)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in long_keys {
+        map.remove(&k);
+        eprintln!("buzz-desktop: pruned oversized keyring value for key {k}");
+    }
+    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
+        return;
+    }
+    // Drop non-essential keys entirely.
+    let drop_keys: Vec<String> = map
+        .keys()
+        .filter(|k| !is_essential_secret_key(k))
+        .cloned()
+        .collect();
+    for k in drop_keys {
+        map.remove(&k);
+        eprintln!("buzz-desktop: pruned non-essential keyring key {k}");
+    }
+    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_MAX_UTF16 {
+        return;
+    }
+    // Last resort: keep identity + agent:* only (drop migration markers too).
+    let drop_more: Vec<String> = map
+        .keys()
+        .filter(|k| *k != "identity" && !k.starts_with("agent:"))
+        .cloned()
+        .collect();
+    for k in drop_more {
+        map.remove(&k);
+    }
+    eprintln!(
+        "buzz-desktop: hard-pruned keyring blob to identity+agent keys (utf16≈{})",
+        blob_utf16_len(map)
+    );
+}
+
 // ── Interprocess advisory lock ─────────────────────────────────────────────
 //
 // Two concurrent Buzz processes (e.g. the signed DMG build and an unsigned dev
@@ -433,18 +523,48 @@ impl SecretStore {
         }
 
         // Write to keyring while still holding the file lock.
-        let json = serde_json::to_string(&next).map_err(|e| format!("blob serialize: {e}"))?;
+        //
+        // Windows Credential Manager caps Generic credential "password" blobs at
+        // 2560 UTF-16 code units. A bloated secrets map (migrated junk, long
+        // values) makes every agent write fail with "password encoded as UTF-16
+        // is longer than platform limit". Prune non-essential entries / oversized
+        // values before write, then retry once on a size error so room agent
+        // nsecs still land.
+        let mut to_write = next;
+        #[cfg(windows)]
+        prune_windows_blob_if_needed(&mut to_write);
+        let json =
+            serde_json::to_string(&to_write).map_err(|e| format!("blob serialize: {e}"))?;
         match self.write_blob_raw(json.as_bytes()) {
             Ok(()) => {
-                // Advance the cache to `next` only after the durable write succeeds.
+                // Advance the cache to `to_write` only after the durable write succeeds.
                 let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                *guard = Some(next);
+                *guard = Some(to_write);
                 Ok(())
             }
             Err(e) => {
+                #[cfg(windows)]
+                {
+                    if is_windows_credential_size_error(&e) {
+                        eprintln!(
+                            "buzz-desktop: keyring blob over Windows 2560 UTF-16 limit — \
+                             pruning to identity/agent keys and retrying ({e})"
+                        );
+                        let mut pruned = to_write;
+                        prune_windows_blob_hard(&mut pruned);
+                        if let Ok(json2) = serde_json::to_string(&pruned) {
+                            if self.write_blob_raw(json2.as_bytes()).is_ok() {
+                                let mut guard =
+                                    self.cache.lock().unwrap_or_else(|err| err.into_inner());
+                                *guard = Some(pruned);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
                 // On write failure, clear the cache so the next caller re-reads
                 // from the keychain rather than building on a stale state.
-                let mut guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = self.cache.lock().unwrap_or_else(|err| err.into_inner());
                 *guard = None;
                 Err(e)
             }

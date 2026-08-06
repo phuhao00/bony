@@ -107,7 +107,8 @@ function Start-RoomAgent {
 # Prefer User-level API keys (XAI / DashScope / etc.) even under Hidden launches
 foreach (`$k in @(
   'XAI_API_KEY','GROK_API_KEY','OPENAI_API_KEY','ANTHROPIC_API_KEY',
-  'DASHSCOPE_API_KEY','QWEN_API_KEY','ZEROCLAW_API_KEY','BUZZ_AGENT_PROVIDER'
+  'DASHSCOPE_API_KEY','QWEN_API_KEY','ZEROCLAW_API_KEY','BUZZ_AGENT_PROVIDER',
+  'BAILIAN_CODING_PLAN_API_KEY','DASHSCOPE_CODING_API_KEY','CODING_DASHSCOPE_BASE_URL'
 )) {
   if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable(`$k, 'Process'))) { continue }
   `$u = [Environment]::GetEnvironmentVariable(`$k, 'User')
