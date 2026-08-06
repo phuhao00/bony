@@ -1282,11 +1282,20 @@ pub fn resolve_channel_filters(
             }
         }
         SubscribeMode::All => {
+            // None = wildcard at the relay; default to stream message kinds so
+            // subscribe=all does not flood the agent with reactions/presence.
+            let kinds = Some(config.kinds_override.clone().unwrap_or_else(|| {
+                vec![
+                    KIND_STREAM_MESSAGE,
+                    KIND_STREAM_REMINDER,
+                    KIND_WORKFLOW_APPROVAL_REQUESTED,
+                ]
+            }));
             for ch in &target_channels {
                 result.insert(
                     *ch,
                     ChannelFilter {
-                        kinds: config.kinds_override.clone(),
+                        kinds: kinds.clone(),
                         require_mention: false,
                     },
                 );
@@ -1378,7 +1387,13 @@ pub fn resolve_dynamic_channel_filter(
             require_mention: !config.no_mention_filter,
         }),
         SubscribeMode::All => Some(ChannelFilter {
-            kinds: config.kinds_override.clone(),
+            kinds: Some(config.kinds_override.clone().unwrap_or_else(|| {
+                vec![
+                    KIND_STREAM_MESSAGE,
+                    KIND_STREAM_REMINDER,
+                    KIND_WORKFLOW_APPROVAL_REQUESTED,
+                ]
+            })),
             require_mention: false,
         }),
         SubscribeMode::Config => {

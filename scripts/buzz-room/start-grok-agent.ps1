@@ -69,10 +69,18 @@ $env:BUZZ_ACP_AGENT_COMMAND = $grok
 $env:BUZZ_ACP_AGENT_ARGS = "agent,stdio"
 if ($devMcp) { $env:BUZZ_ACP_MCP_COMMAND = $devMcp }
 $env:BUZZ_ACP_SUBSCRIBE = "all"
+# Critical: bare subscribe=all with empty kinds = wildcard → reactions, presence,
+# control noise all become turns → multi "Understood…" spam. Restrict to stream
+# message kinds only (same set Mentions mode uses by default).
+$env:BUZZ_ACP_KINDS = "9,46010,40007"
 $env:BUZZ_ACP_RESPOND_TO = "anyone"
 $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
 $env:BUZZ_ACP_DISPLAY_NAME = "Grok"
+# Fast path: don't cancel in-flight turns when messages pile up (re-asks, specialist posts).
+$env:BUZZ_ACP_MULTIPLE_EVENT_HANDLING = "queue"
+$env:BUZZ_ACP_CONTEXT_MESSAGE_LIMIT = "6"
+$env:BUZZ_ACP_NO_MEMORY = "true"
 
 . (Join-Path $PSScriptRoot "_agent-owner.ps1")
 Set-RoomAgentOwner -BonyRoot (Get-BonyRoot)
@@ -80,6 +88,10 @@ Set-RoomAgentOwner -BonyRoot (Get-BonyRoot)
 # Grok is subscribe=all and must post visible kind:9 replies (stream alone is UI-invisible).
 # Specialists often don't call buzz messages send either — same auto-post safety net.
 $env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+
+# Auto-post "@ZeroClaw …" must include p-tags or Mentions-mode specialists never fire.
+. (Join-Path $PSScriptRoot "_mention-map.ps1")
+Set-RoomAgentMentionMap
 
 Write-Host "Grok coordinator"
 Write-Host "  buzz:    $BuzzRoot"
