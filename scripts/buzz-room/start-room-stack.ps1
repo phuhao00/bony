@@ -76,16 +76,45 @@ if (-not (Test-Path $envFile) -and (Test-Path (Join-Path $BuzzRoot ".env.example
   Copy-Item (Join-Path $BuzzRoot ".env.example") $envFile
 }
 Import-DotEnv $envFile
+# Local monorepo: open rate limits (HTTP bridge uses human_api for all NIP-98 callers).
+foreach ($pair in @(
+  @('BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN','1000000'),
+  @('BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN','1000000'),
+  @('BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC','100000'),
+  @('BUZZ_RATE_LIMIT_AGENT_STANDARD_MESSAGES_PER_MIN','1000000'),
+  @('BUZZ_RATE_LIMIT_AGENT_STANDARD_API_CALLS_PER_MIN','1000000'),
+  @('BUZZ_RATE_LIMIT_AGENT_ELEVATED_MESSAGES_PER_MIN','1000000'),
+  @('BUZZ_RATE_LIMIT_AGENT_PLATFORM_MESSAGES_PER_MIN','1000000'),
+  @('BUZZ_MAX_CONCURRENT_HANDLERS','8192')
+)) {
+  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($pair[0], 'Process'))) {
+    [Environment]::SetEnvironmentVariable($pair[0], $pair[1], 'Process')
+  }
+}
+Write-Host "==> local rate limits opened (human/agent + concurrent handlers)"
 Set-Location $BuzzRoot
 
-$admin = Join-Path $BuzzRoot "target\debug\buzz-admin.exe"
-$relay = Join-Path $BuzzRoot "target\debug\buzz-relay.exe"
-if (-not (Test-Path $admin)) { throw "missing $admin — run without -SkipBuild" }
-if (-not (Test-Path $relay)) { throw "missing $relay — run without -SkipBuild" }
+function Find-RoomBin([string]$name) {
+  foreach ($root in @($BonyRoot, $BuzzRoot)) {
+    foreach ($prof in @("debug", "release")) {
+      $p = Join-Path $root "target\$prof\$name.exe"
+      if (Test-Path $p) { return $p }
+    }
+  }
+  return $null
+}
 
-Write-Host "==> migrate via $admin"
-& $admin migrate
-if ($LASTEXITCODE -ne 0) { throw "migrate failed" }
+$admin = Find-RoomBin "buzz-admin"
+$relay = Find-RoomBin "buzz-relay"
+if (-not $relay) { throw "missing buzz-relay.exe under $BonyRoot\target or $BuzzRoot\target — run without -SkipBuild" }
+if ($admin) {
+  Write-Host "==> migrate via $admin"
+  & $admin migrate
+  if ($LASTEXITCODE -ne 0) { throw "migrate failed" }
+} else {
+  Write-Warning "buzz-admin.exe missing — skip migrate (existing docker DB assumed OK)"
+}
+Write-Host "==> using relay: $relay"
 
 # relay pid file
 $pidFile = Join-Path $RuntimeDir "buzz-relay.pid"
@@ -102,24 +131,50 @@ if ($ForegroundRelay) {
   exit $LASTEXITCODE
 }
 
-# Background: PowerShell process that inherits env from this script
+# Background: PowerShell inherits env; redirect logs (avoid Tee-Object + Hidden exit)
 $runner = Join-Path $RuntimeDir "run-relay.ps1"
-@"
+$relayLog = Join-Path $RuntimeDir "relay.log"
+$relayErr = Join-Path $RuntimeDir "relay.err"
+$runnerBody = @"
 Set-Location '$BuzzRoot'
-Get-Content '$envFile' | ForEach-Object {
-  if (`$_ -match '^\s*#' -or `$_ -match '^\s*`$') { return }
-  if (`$_ -match '^\s*([^=]+)=(.*)`$') {
-    [Environment]::SetEnvironmentVariable(`$Matches[1].Trim(), `$Matches[2].Trim().Trim('"'), 'Process')
+if (Test-Path '$envFile') {
+  Get-Content '$envFile' | ForEach-Object {
+    if (`$_ -match '^\s*#' -or `$_ -match '^\s*`$') { return }
+    if (`$_ -match '^\s*([^=]+)=(.*)`$') {
+      [Environment]::SetEnvironmentVariable(`$Matches[1].Trim(), `$Matches[2].Trim().Trim('"'), 'Process')
+    }
   }
 }
-& '$relay' *>&1 | Tee-Object -FilePath '$RuntimeDir\relay.log'
-"@ | Set-Content -Encoding utf8 $runner
+# Local room stack: no practical rate limits (same defaults as start-relay.ps1).
+`$rl = @{
+  BUZZ_RATE_LIMIT_HUMAN_MESSAGES_PER_MIN = '1000000'
+  BUZZ_RATE_LIMIT_HUMAN_API_CALLS_PER_MIN = '1000000'
+  BUZZ_RATE_LIMIT_HUMAN_WS_EVENTS_PER_SEC = '100000'
+  BUZZ_RATE_LIMIT_AGENT_STANDARD_MESSAGES_PER_MIN = '1000000'
+  BUZZ_RATE_LIMIT_AGENT_STANDARD_API_CALLS_PER_MIN = '1000000'
+  BUZZ_RATE_LIMIT_AGENT_ELEVATED_MESSAGES_PER_MIN = '1000000'
+  BUZZ_RATE_LIMIT_AGENT_PLATFORM_MESSAGES_PER_MIN = '1000000'
+  BUZZ_MAX_CONCURRENT_HANDLERS = '8192'
+}
+foreach (`$k in `$rl.Keys) {
+  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable(`$k, 'Process'))) {
+    [Environment]::SetEnvironmentVariable(`$k, `$rl[`$k], 'Process')
+  }
+}
+& '$relay'
+"@
+[System.IO.File]::WriteAllText($runner, $runnerBody)
+
+if (Test-Path $relayLog) { Remove-Item $relayLog -Force -ErrorAction SilentlyContinue }
+if (Test-Path $relayErr) { Remove-Item $relayErr -Force -ErrorAction SilentlyContinue }
 
 $relayProc = Start-Process -FilePath "powershell.exe" `
   -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runner) `
-  -WorkingDirectory $BuzzRoot -WindowStyle Hidden -PassThru
-$relayProc.Id | Set-Content $pidFile
-Write-Host "    relay wrapper pid=$($relayProc.Id)  log=$RuntimeDir\relay.log"
+  -WorkingDirectory $BuzzRoot -WindowStyle Hidden -PassThru `
+  -RedirectStandardOutput $relayLog `
+  -RedirectStandardError $relayErr
+[System.IO.File]::WriteAllText($pidFile, "$($relayProc.Id)")
+Write-Host "    relay wrapper pid=$($relayProc.Id)  log=$relayLog"
 
 Write-Host "==> waiting health http://127.0.0.1:3000/health"
 $ok = $false
@@ -143,23 +198,11 @@ if (-not $SkipGrok) {
     Write-Host "==> mint keys"
     & (Join-Path $PSScriptRoot "mint-agent-keys.ps1") -BuzzRoot $BuzzRoot
   }
-  Write-Host "==> Grok coordinator (background)"
-  $grokRunner = Join-Path $RuntimeDir "run-grok.ps1"
-  $startGrok = Join-Path $PSScriptRoot "start-grok-agent.ps1"
-  @"
-& '$startGrok' *>&1 | Tee-Object -FilePath '$RuntimeDir\grok-agent.log'
-"@ | Set-Content -Encoding utf8 $grokRunner
-  $grokProc = Start-Process -FilePath "powershell.exe" `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $grokRunner) `
-    -WorkingDirectory $BonyRoot -WindowStyle Hidden -PassThru
-  $grokProc.Id | Set-Content (Join-Path $RuntimeDir "grok-agent.pid")
-  Write-Host "    grok wrapper pid=$($grokProc.Id)  log=$RuntimeDir\grok-agent.log"
-  Start-Sleep -Seconds 5
-  if ($grokProc.HasExited) {
-    Write-Warning "Grok agent exited early (code=$($grokProc.ExitCode)). See log."
-    Get-Content (Join-Path $RuntimeDir "grok-agent.log") -Tail 40 -ErrorAction SilentlyContinue
-  } else {
-    Write-Host "    Grok harness running"
+  Write-Host "==> External room agents (Grok/ZeroClaw/Unity/OpenMontage)"
+  try {
+    & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
+  } catch {
+    Write-Warning "start-external-room-agents failed: $_"
   }
 }
 
