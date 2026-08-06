@@ -2,6 +2,8 @@
 
 Grok is the **room lead**. Buzz is the **shared office**. Specialists: ZeroClaw, Unity, OpenMontage.
 
+![Buzz room: Grok hands weather to ZeroClaw in Welcome](buzz-room-welcome-handoff.png)
+
 Buzz source lives **in this monorepo tree** at `third_party/buzz` (ordinary directory — not a git submodule).
 All Buzz crates and `buzz-desktop` are members of the **root** `Cargo.toml` workspace:
 one `cargo build`, one `Cargo.lock`, one `target/` at the repo root.
