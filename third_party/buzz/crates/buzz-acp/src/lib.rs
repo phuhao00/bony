@@ -297,6 +297,58 @@ async fn author_allowed(
     }
 }
 
+/// Pubkeys of peer room bots that should not trigger this agent unless they
+/// p-tag us. Built from `BUZZ_ACP_PEER_AGENT_PUBKEYS` (comma hex) and/or the
+/// hex values in `BUZZ_ACP_MENTION_MAP` (excluding self).
+///
+/// Purpose: Grok is subscribe=all; specialist replies / human re-asks mid-hop
+/// otherwise cancel Grok (meh=steer) and add tens of seconds of thrash.
+fn peer_agent_pubkey_set(self_pubkey_hex: &str) -> HashSet<String> {
+    let self_pk = self_pubkey_hex.to_ascii_lowercase();
+    let mut set = HashSet::new();
+    if let Ok(raw) = std::env::var("BUZZ_ACP_PEER_AGENT_PUBKEYS") {
+        for part in raw.split(',') {
+            let pk = part.trim().to_ascii_lowercase();
+            if pk.len() == 64 && pk.chars().all(|c| c.is_ascii_hexdigit()) && pk != self_pk {
+                set.insert(pk);
+            }
+        }
+    }
+    if let Ok(raw) = std::env::var("BUZZ_ACP_MENTION_MAP") {
+        for part in raw.split(',') {
+            if let Some((_, pk)) = part.rsplit_once(':') {
+                let pk = pk.trim().to_ascii_lowercase();
+                if pk.len() == 64 && pk.chars().all(|c| c.is_ascii_hexdigit()) && pk != self_pk {
+                    set.insert(pk);
+                }
+            }
+        }
+    }
+    set
+}
+
+/// Drop peer-bot channel traffic that does not @-mention this agent.
+fn should_skip_peer_agent_event(author_hex: &str, event: &nostr::Event, self_pubkey_hex: &str) -> bool {
+    let author = author_hex.to_ascii_lowercase();
+    let self_pk = self_pubkey_hex.to_ascii_lowercase();
+    if author == self_pk {
+        return false;
+    }
+    let peers = peer_agent_pubkey_set(self_pubkey_hex);
+    if peers.is_empty() || !peers.contains(&author) {
+        return false;
+    }
+    let tags = queue::parse_thread_tags(event);
+    let mentioned = tags
+        .mentioned_pubkeys
+        .iter()
+        .any(|p| p.eq_ignore_ascii_case(&self_pk));
+    if mentioned {
+        return false;
+    }
+    true
+}
+
 /// Resolve whether `channel_id` is a DM, for the inbound author gate.
 ///
 /// Resolution order:
@@ -1547,10 +1599,20 @@ async fn tokio_main() -> Result<()> {
             }]
         }
         SubscribeMode::All => {
+            // Default must NOT be empty (wildcard) — otherwise reactions /
+            // presence / control events each fire a turn and generate
+            // repeated filler replies under auto-post. Match Mentions kinds.
+            let kinds = config.kinds_override.clone().unwrap_or_else(|| {
+                vec![
+                    KIND_STREAM_MESSAGE,
+                    KIND_WORKFLOW_APPROVAL_REQUESTED,
+                    KIND_STREAM_REMINDER,
+                ]
+            });
             vec![SubscriptionRule {
                 name: "all".into(),
                 channels: filter::ChannelScope::All("all".into()),
-                kinds: config.kinds_override.clone().unwrap_or_default(),
+                kinds,
                 require_mention: false,
                 filter: None,
                 compiled_filter: None,
@@ -2300,6 +2362,22 @@ async fn tokio_main() -> Result<()> {
                                         mode = %config.respond_to,
                                         is_dm,
                                         "inbound author gate — dropping event"
+                                    );
+                                    continue;
+                                }
+                                // Room bots: ignore unsolicited peer-agent posts so
+                                // subscribe=all coordinators don't re-fire / cancel
+                                // when a specialist publishes the actual answer.
+                                let author = buzz_event.event.pubkey.to_hex();
+                                if should_skip_peer_agent_event(
+                                    &author,
+                                    &buzz_event.event,
+                                    &pubkey_hex,
+                                ) {
+                                    tracing::debug!(
+                                        channel_id = %buzz_event.channel_id,
+                                        author = %author,
+                                        "peer agent without @us — skipping turn"
                                     );
                                     continue;
                                 }

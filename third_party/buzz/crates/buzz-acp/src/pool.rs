@@ -3885,6 +3885,102 @@ pub(crate) async fn post_failure_notice(
 
 /// Best-effort: post a durable channel message (kind:9) with optional thread
 /// anchor. Shared by failure notices and `BUZZ_ACP_AUTO_POST_REPLY`.
+/// Normalize a display name for case-insensitive @mention matching.
+fn normalize_mention_label(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// `BUZZ_ACP_MENTION_MAP` format: `ZeroClaw:hex,Unity Agent:hex,Grok:hex`
+/// (comma-separated name:64hex pairs). Used so auto-posted text like
+/// `@ZeroClaw please…` gets real `p` tags — specialists on subscribe=mentions
+/// ignore presentation-only @names without tags.
+fn mention_map_from_env() -> Vec<(String, String)> {
+    let Ok(raw) = std::env::var("BUZZ_ACP_MENTION_MAP") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((name, pk)) = part.rsplit_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let pk = pk.trim().to_ascii_lowercase();
+        if name.is_empty()
+            || pk.len() != 64
+            || !pk.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        out.push((normalize_mention_label(name), pk));
+    }
+    out
+}
+
+/// Resolve @Name / @hex tokens in `content` to pubkey hexes for p-tags.
+fn resolve_mention_pubkeys_from_content(content: &str) -> Vec<String> {
+    let map = mention_map_from_env();
+    let mut found: Vec<String> = Vec::new();
+    let lower = content.to_ascii_lowercase();
+
+    // Prefer longest configured names first so "unityagent" wins over shorter stems.
+    let mut names = map;
+    names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    for (norm_name, pk) in &names {
+        if norm_name.is_empty() {
+            continue;
+        }
+        let mut search_from = 0usize;
+        while search_from < lower.len() {
+            let Some(rel) = lower[search_from..].find('@') else {
+                break;
+            };
+            let at = search_from + rel;
+            let after = &lower[at + 1..];
+            // Normalize a window of following text so "@Unity Agent" and
+            // "@ZeroClaw," both match map keys.
+            let window: String = after.chars().take(norm_name.len() + 24).collect();
+            let after_norm = normalize_mention_label(&window);
+            if after_norm.starts_with(norm_name.as_str()) {
+                if !found.iter().any(|x| x == pk) {
+                    found.push(pk.clone());
+                }
+                break;
+            }
+            search_from = at + 1;
+        }
+    }
+
+    // Bare @<64 hex> tokens (explicit). Iterate char indices (not raw byte
+    // offsets) so multi-byte UTF-8 content (Chinese, emoji, …) never panics
+    // on a non-boundary slice.
+    let char_indices: Vec<(usize, char)> = content.char_indices().collect();
+    let mut ci = 0usize;
+    while ci < char_indices.len() {
+        let (byte_pos, ch) = char_indices[ci];
+        if ch == '@' && ci + 65 <= char_indices.len() {
+            let candidate: String = char_indices[ci + 1..ci + 65].iter().map(|(_, c)| *c).collect();
+            if candidate.len() == 64 && candidate.chars().all(|c| c.is_ascii_hexdigit()) {
+                let pk = candidate.to_ascii_lowercase();
+                if !found.iter().any(|x| x == &pk) {
+                    found.push(pk);
+                }
+                ci += 65;
+                continue;
+            }
+        }
+        let _ = byte_pos;
+        ci += 1;
+    }
+    found
+}
+
 pub(crate) async fn post_channel_message(
     rest: &crate::relay::RestClient,
     channel_id: Uuid,
@@ -3908,6 +4004,16 @@ pub(crate) async fn post_channel_message(
             parent_event_id: parent_id,
         })
     });
+    let mention_pks = resolve_mention_pubkeys_from_content(content);
+    if !mention_pks.is_empty() {
+        tracing::info!(
+            channel = %channel_id,
+            count = mention_pks.len(),
+            "{log_label}: attaching {} mention p-tag(s)",
+            mention_pks.len()
+        );
+    }
+    let mention_refs: Vec<&str> = mention_pks.iter().map(|s| s.as_str()).collect();
 
     // Prefer in-thread reply when tags are valid. Relay may reject with
     // `invalid: reply parent not found` after cancel/steer merges point
@@ -3918,11 +4024,12 @@ pub(crate) async fn post_channel_message(
         channel_id: Uuid,
         content: &str,
         thread_ref: Option<&buzz_sdk::ThreadRef>,
+        mentions: &[&str],
         log_label: &str,
         attempt_label: &str,
     ) -> bool {
         let builder =
-            match buzz_sdk::build_message(channel_id, content, thread_ref, &[], false, &[]) {
+            match buzz_sdk::build_message(channel_id, content, thread_ref, mentions, false, &[]) {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::warn!(
@@ -3973,6 +4080,7 @@ pub(crate) async fn post_channel_message(
             channel_id,
             content,
             thread_ref.as_ref(),
+            &mention_refs,
             log_label,
             "threaded",
         )
@@ -3984,9 +4092,28 @@ pub(crate) async fn post_channel_message(
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    if !submit_once(rest, channel_id, content, None, log_label, "top-level").await {
+    if !submit_once(
+        rest,
+        channel_id,
+        content,
+        None,
+        &mention_refs,
+        log_label,
+        "top-level",
+    )
+    .await
+    {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let _ = submit_once(rest, channel_id, content, None, log_label, "top-level-retry").await;
+        let _ = submit_once(
+            rest,
+            channel_id,
+            content,
+            None,
+            &mention_refs,
+            log_label,
+            "top-level-retry",
+        )
+        .await;
     }
 }
 
@@ -4003,6 +4130,38 @@ fn auto_post_reply_enabled() -> bool {
 /// If `BUZZ_ACP_AUTO_POST_REPLY` is set, publish buffered agent_message_chunk
 /// text as a kind:9 so channel timelines show the answer even when the agent
 /// never called `buzz messages send` (common for tool-only specialists).
+/// Skip auto-posting known empty/filler replies that generate channel spam.
+/// Models often emit self-intros when the prompt batch lacked a real human ask.
+fn is_auto_post_filler(content: &str) -> bool {
+    let t = content.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let lower = t.to_ascii_lowercase();
+    // Exact-ish self-intro Grok has been spamming in room tests.
+    if lower.contains("engineering lead in this buzz room")
+        && (lower.contains("understood")
+            || lower.contains("i'm grok")
+            || lower.contains("i am grok")
+            || lower.contains("respond promptly"))
+    {
+        return true;
+    }
+    // Near-duplicate padding: same non-trivial line thrice.
+    let lines: Vec<&str> = t
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() >= 3 {
+        let first = lines[0];
+        if first.chars().count() > 40 && lines.iter().all(|l| *l == first) {
+            return true;
+        }
+    }
+    false
+}
+
 async fn maybe_auto_post_agent_reply(
     agent: &mut OwnedAgent,
     batch: Option<&FlushBatch>,
@@ -4018,6 +4177,13 @@ async fn maybe_auto_post_agent_reply(
     };
     let content = text.trim();
     if content.is_empty() {
+        return;
+    }
+    if is_auto_post_filler(content) {
+        tracing::info!(
+            channel = %batch.channel_id,
+            "auto-post reply: dropped filler/self-intro to prevent duplicate channel spam"
+        );
         return;
     }
     // Anchor on the triggering message so Desktop keeps the reply in-thread.
