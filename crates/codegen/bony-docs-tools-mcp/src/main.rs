@@ -123,13 +123,13 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "pdf_create",
-            "description": "Create a simple multi-page PDF from plain text or markdown-like lines. Output path ends with .pdf.",
+            "description": "Create a printable multi-page PDF (not markdown). Prefer .pdf output path. Embeds a system CJK font when available so Chinese preview works. Markdown markers in body are stripped for a clean preview layout.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Output .pdf path" },
+                    "path": { "type": "string", "description": "Output path ending in .pdf" },
                     "title": { "type": "string" },
-                    "body": { "type": "string", "description": "Full document body; blank lines become paragraph breaks" }
+                    "body": { "type": "string", "description": "Document body as plain text or light markdown; not a .md file path" }
                 },
                 "required": ["path", "body"]
             }
@@ -325,7 +325,15 @@ fn tool_pdf_inspect(args: &Value) -> Result<String, String> {
 }
 
 fn tool_pdf_create(args: &Value) -> Result<String, String> {
-    let path = arg_path(args)?;
+    let mut path = arg_path(args)?;
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        != Some(true)
+    {
+        path.set_extension("pdf");
+    }
     let body = args
         .get("body")
         .and_then(|v| v.as_str())
@@ -336,40 +344,515 @@ fn tool_pdf_create(args: &Value) -> Result<String, String> {
         .unwrap_or("Document");
     ensure_parent(&path)?;
 
-    let (doc, page1, layer1) = PdfDocument::new(title, Mm(210.0), Mm(297.0), "Layer 1");
-    let font = doc
-        .add_builtin_font(BuiltinFont::Helvetica)
-        .map_err(|e| format!("font: {e}"))?;
+    let plain_title = clean_inline(title.trim());
+    let layout = build_pdf_layout(body, &plain_title);
 
-    let lines: Vec<&str> = body.lines().collect();
+    let page_w = Mm(210.0);
+    let page_h = Mm(297.0);
+    let margin_x = 16.0_f32;
+    let margin_top = 18.0_f32;
+    let margin_bottom = 16.0_f32;
+    // A4 content ~178mm; unit model fills the usable width (was ~42 → huge right gutter).
+    let body_units = 90usize;
+
+    let (doc, page1, layer1) = PdfDocument::new(&plain_title, page_w, page_h, "Layer 1");
+    let font = load_pdf_font(&doc)?;
+
     let mut page_idx = 0usize;
-    let mut current_layer = doc.get_page(page1).get_layer(layer1);
-    let mut y = 280.0_f32;
+    let mut layer = doc.get_page(page1).get_layer(layer1);
+    let mut y = 297.0 - margin_top;
 
-    // Title on first page
-    current_layer.use_text(title, 16.0, Mm(20.0), Mm(y), &font);
-    y -= 12.0;
+    // (text, size, indent_mm, gap_after_mm, wrap_units)
+    let mut jobs: Vec<(String, f32, f32, f32, usize)> = Vec::new();
+    for title_chunk in wrap_pdf_lines(&plain_title, 72) {
+        jobs.push((title_chunk, 18.0, 0.0, 7.5, 72));
+    }
+    // small gap after title block
+    jobs.push((String::new(), 0.0, 0.0, 4.0, body_units));
 
-    for line in lines {
-        if y < 20.0 {
+    for item in layout {
+        match item.kind {
+            PdfLineKind::Blank => jobs.push((String::new(), 0.0, 0.0, 3.2, body_units)),
+            PdfLineKind::Subtitle => {
+                for c in wrap_pdf_lines(&item.text, body_units) {
+                    jobs.push((c, 10.0, 0.0, 5.5, body_units));
+                }
+            }
+            PdfLineKind::Heading => {
+                jobs.push((String::new(), 0.0, 0.0, 2.0, body_units));
+                for c in wrap_pdf_lines(&item.text, body_units) {
+                    jobs.push((c, 12.5, 0.0, 5.0, body_units));
+                }
+            }
+            PdfLineKind::Bullet => {
+                for c in wrap_pdf_lines(&item.text, body_units.saturating_sub(4)) {
+                    jobs.push((c, 10.5, 7.0, 4.6, body_units.saturating_sub(4)));
+                }
+            }
+            PdfLineKind::Body => {
+                for c in wrap_pdf_lines(&item.text, body_units) {
+                    jobs.push((c, 10.5, 0.0, 4.6, body_units));
+                }
+            }
+            PdfLineKind::Url => {
+                for c in wrap_pdf_lines(&item.text, body_units.saturating_sub(6)) {
+                    jobs.push((c, 9.0, 10.0, 4.2, body_units.saturating_sub(6)));
+                }
+            }
+        }
+    }
+
+    for (text, size, indent, gap_after, _units) in jobs {
+        if size <= 0.0 {
+            y -= gap_after;
+            continue;
+        }
+        if y < margin_bottom + size {
             page_idx += 1;
-            let (page, layer) = doc.add_page(Mm(210.0), Mm(297.0), format!("Page {}", page_idx + 1));
-            current_layer = doc.get_page(page).get_layer(layer);
-            y = 280.0;
+            let (page, l) = doc.add_page(page_w, page_h, format!("Page {}", page_idx + 1));
+            layer = doc.get_page(page).get_layer(l);
+            y = 297.0 - margin_top;
         }
-        let clip: String = line.chars().take(95).collect();
-        current_layer.use_text(&clip, 11.0, Mm(20.0), Mm(y), &font);
-        y -= 6.0;
-        if line.trim().is_empty() {
-            y -= 3.0;
+        if !text.is_empty() {
+            layer.use_text(&text, size, Mm(margin_x + indent), Mm(y), &font);
         }
+        y -= gap_after;
     }
 
     use std::io::BufWriter;
     let file = File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
     doc.save(&mut BufWriter::new(file))
         .map_err(|e| format!("save pdf: {e}"))?;
-    Ok(format!("wrote {}", path.display()))
+    Ok(format!(
+        "wrote {} (A4 full-width layout — open in a PDF reader)",
+        path.display()
+    ))
+}
+
+#[derive(Clone, Copy)]
+enum PdfLineKind {
+    Blank,
+    Subtitle,
+    Heading,
+    Bullet,
+    Body,
+    Url,
+}
+
+struct PdfLayoutLine {
+    kind: PdfLineKind,
+    text: String,
+}
+
+fn build_pdf_layout(body: &str, doc_title: &str) -> Vec<PdfLayoutLine> {
+    let mut out: Vec<PdfLayoutLine> = Vec::new();
+    let mut in_fence = false;
+    let mut saw_title_dup = false;
+    let title_norm = normalize_cmp(doc_title);
+
+    for raw in body.lines() {
+        let t = raw.trim_end();
+        if t.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Body,
+                text: clean_inline(t.trim()),
+            });
+            continue;
+        }
+
+        let trimmed = t.trim();
+        if trimmed.is_empty() {
+            // collapse multiple blanks
+            if out.last().map(|l| matches!(l.kind, PdfLineKind::Blank)) != Some(true) {
+                out.push(PdfLayoutLine {
+                    kind: PdfLineKind::Blank,
+                    text: String::new(),
+                });
+            }
+            continue;
+        }
+
+        // Pure HR
+        if is_md_hr(trimmed) {
+            if out.last().map(|l| matches!(l.kind, PdfLineKind::Blank)) != Some(true) {
+                out.push(PdfLayoutLine {
+                    kind: PdfLineKind::Blank,
+                    text: String::new(),
+                });
+            }
+            continue;
+        }
+
+        // Detect header level before stripping '#'
+        let (heading_level, after_hash) = strip_atx_heading(trimmed);
+        let mut line = after_hash;
+        line = strip_simple_html(&line);
+        line = expand_md_links(&line);
+        line = clean_inline(&line);
+        // Drop pure anchor leftovers like "#grok45" at end of TOC lines (already in expand)
+        line = drop_orphan_md_anchors(&line);
+
+        if line.is_empty() {
+            continue;
+        }
+
+        // Skip duplicate of document title (prevents title twice on first page)
+        if !saw_title_dup && normalize_cmp(&line) == title_norm {
+            saw_title_dup = true;
+            continue;
+        }
+
+        // Standalone URL line
+        if looks_like_url(&line) {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Url,
+                text: format!("链接 {line}"),
+            });
+            continue;
+        }
+
+        // Source line often "来源：url"
+        if line.starts_with("来源") || line.starts_with("Source") {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Url,
+                text: line,
+            });
+            continue;
+        }
+
+        if heading_level == 1 {
+            // Already shown as doc title or secondary big heading
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Heading,
+                text: line,
+            });
+            continue;
+        }
+        if heading_level >= 2 {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Heading,
+                text: line,
+            });
+            continue;
+        }
+
+        // italic-only date line under title
+        if (line.contains('·') || line.contains("年"))
+            && line.chars().count() < 40
+            && !line.starts_with('·')
+            && out.iter().filter(|l| !matches!(l.kind, PdfLineKind::Blank)).count() < 3
+        {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Subtitle,
+                text: line.trim_matches('*').trim().to_string(),
+            });
+            continue;
+        }
+
+        // bullets
+        if let Some(rest) = line
+            .strip_prefix("· ")
+            .or_else(|| line.strip_prefix("- "))
+            .or_else(|| line.strip_prefix("* "))
+            .or_else(|| line.strip_prefix("+ "))
+        {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Bullet,
+                text: format!("• {}", rest.trim()),
+            });
+            continue;
+        }
+
+        // numbered "1. " section often used as heading in digests
+        if is_numbered_heading(&line) {
+            out.push(PdfLayoutLine {
+                kind: PdfLineKind::Heading,
+                text: line,
+            });
+            continue;
+        }
+
+        out.push(PdfLayoutLine {
+            kind: PdfLineKind::Body,
+            text: line,
+        });
+    }
+
+    // trim trailing blanks
+    while out
+        .last()
+        .map(|l| matches!(l.kind, PdfLineKind::Blank))
+        == Some(true)
+    {
+        out.pop();
+    }
+    out
+}
+
+fn strip_atx_heading(s: &str) -> (u8, String) {
+    let mut level = 0u8;
+    let bytes = s.as_bytes();
+    while (level as usize) < bytes.len() && bytes[level as usize] == b'#' && level < 6 {
+        level += 1;
+    }
+    if level == 0 {
+        return (0, s.to_string());
+    }
+    if (level as usize) < bytes.len() && bytes[level as usize] == b' ' {
+        return (level, s[level as usize + 1..].trim().to_string());
+    }
+    // emoji headers like "# 🌐 title"
+    if (level as usize) < s.len() {
+        return (level, s[level as usize..].trim().to_string());
+    }
+    (0, s.to_string())
+}
+
+fn is_md_hr(s: &str) -> bool {
+    let n = s
+        .chars()
+        .filter(|c| *c == '-' || *c == '*' || *c == '_')
+        .count();
+    n >= 3
+        && s.chars()
+            .all(|c| c == '-' || c == '*' || c == '_' || c.is_whitespace())
+}
+
+fn is_numbered_heading(s: &str) -> bool {
+    let mut chars = s.chars();
+    let mut saw_digit = false;
+    loop {
+        match chars.next() {
+            Some(c) if c.is_ascii_digit() => saw_digit = true,
+            _ => break,
+        }
+    }
+    if !saw_digit {
+        return false;
+    }
+    // Peek remaining: need ". " or "、" after digits — re-scan
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i >= s.len() {
+        return false;
+    }
+    let rest = &s[i..];
+    rest.starts_with(". ")
+        || rest.starts_with("．")
+        || rest.starts_with('、')
+        || rest.starts_with(". ")
+}
+
+fn looks_like_url(s: &str) -> bool {
+    let t = s.trim();
+    (t.starts_with("http://") || t.starts_with("https://")) && !t.contains(' ')
+}
+
+fn clean_inline(s: &str) -> String {
+    let mut line = s.to_string();
+    line = line.replace("**", "").replace("__", "");
+    // strip single-char italic only when wrapping whole segment — keep underscores in code ids
+    // remove common emphasis asterisks around words
+    while line.contains(" *") || line.contains("* ") || line.starts_with('*') || line.ends_with('*')
+    {
+        let next = line.replace(" *", " ").replace("* ", " ");
+        let next = next.trim_matches('*').to_string();
+        if next == line {
+            break;
+        }
+        line = next;
+    }
+    line = line.replace('\u{00a0}', " ");
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_cmp(s: &str) -> String {
+    clean_inline(s)
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '🌐' && *c != '#' && *c != '*' && *c != '·')
+        .collect::<String>()
+        .to_lowercase()
+}
+
+fn drop_orphan_md_anchors(s: &str) -> String {
+    // "title #grok45" or "title(#grok45)" leftovers
+    let mut out = s.to_string();
+    if let Some(idx) = out.rfind(" #") {
+        let tail = out[idx + 2..].trim();
+        if tail.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !tail.is_empty()
+            && tail.len() < 40
+        {
+            out.truncate(idx);
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Prefer a system CJK TTF; fall back to Helvetica (Latin only).
+fn load_pdf_font(doc: &printpdf::PdfDocumentReference) -> Result<printpdf::IndirectFontRef, String> {
+    // Prefer lighter Chinese fonts (full Noto SC TTF embeds to ~10MB+ PDFs).
+    let candidates = [
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\simkai.ttf",
+        r"C:\Windows\Fonts\simfang.ttf",
+        r"C:\Windows\Fonts\NotoSansSC.ttf",
+        r"C:\Windows\Fonts\msyh.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ];
+    for candidate in candidates {
+        let p = Path::new(candidate);
+        if !p.is_file() {
+            continue;
+        }
+        if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("ttc"))
+            == Some(true)
+        {
+            continue;
+        }
+        match File::open(p) {
+            Ok(mut f) => match doc.add_external_font(&mut f) {
+                Ok(font) => {
+                    eprintln!("pdf_create: using font {}", p.display());
+                    return Ok(font);
+                }
+                Err(e) => eprintln!("pdf_create: skip font {}: {e}", p.display()),
+            },
+            Err(e) => eprintln!("pdf_create: open font {}: {e}", p.display()),
+        }
+    }
+    doc.add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| format!("font: {e} (no CJK TTF found — Chinese may not render)"))
+}
+
+fn strip_simple_html(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for ch in s.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn expand_md_links(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    let mut out = String::new();
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            if let Some(close) = s[i..].find(']') {
+                let text = &s[i + 1..i + close];
+                let after = i + close + 1;
+                if after < bytes.len() && bytes[after] == b'(' {
+                    if let Some(end) = s[after + 1..].find(')') {
+                        let url = &s[after + 1..after + 1 + end];
+                        out.push_str(text);
+                        // Internal TOC anchors (#foo) → keep text only
+                        if !url.is_empty() && !url.starts_with('#') {
+                            out.push(' ');
+                            out.push('(');
+                            out.push_str(url);
+                            out.push(')');
+                        }
+                        i = after + 1 + end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(s[i..].chars().next().unwrap_or('?'));
+        i += s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+    }
+    out
+}
+
+/// Wrap by approximate print width: prefer breaks after CJK or at ASCII spaces/slashes.
+/// Unit model: Latin/ASCII ≈ 1, fullwidth/CJK ≈ 2 (fills A4 ~90 units at body size).
+fn wrap_pdf_lines(text: &str, max_units: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    if text.is_empty() {
+        return lines;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut start = 0usize;
+    while start < chars.len() {
+        let mut units = 0usize;
+        let mut last_break = None; // index after a preferred break char
+        let mut end = start;
+        while end < chars.len() {
+            let ch = chars[end];
+            let w = char_units(ch);
+            if units + w > max_units && end > start {
+                break;
+            }
+            units += w;
+            end += 1;
+            if is_break_after(ch) {
+                last_break = Some(end);
+            }
+        }
+        if end == start {
+            // single oversize char
+            end = (start + 1).min(chars.len());
+        } else if end < chars.len() {
+            if let Some(b) = last_break {
+                if b > start {
+                    end = b;
+                }
+            }
+        }
+        let slice: String = chars[start..end].iter().collect();
+        lines.push(slice.trim_end().to_string());
+        // skip leading spaces on next line
+        start = end;
+        while start < chars.len() && chars[start] == ' ' {
+            start += 1;
+        }
+    }
+    lines
+}
+
+fn char_units(ch: char) -> usize {
+    if ch <= '\u{00ff}' {
+        1
+    } else if ('\u{ff00}'..='\u{ffef}').contains(&ch) || ch > '\u{2e7f}' {
+        2
+    } else {
+        1
+    }
+}
+
+fn is_break_after(ch: char) -> bool {
+    ch == ' '
+        || ch == '/'
+        || ch == '\\'
+        || ch == '-'
+        || ch == '，'
+        || ch == '。'
+        || ch == '、'
+        || ch == '；'
+        || ch == '：'
+        || ch == ','
+        || ch == '.'
+        || ch == ';'
+        || ch == ':'
 }
 
 fn tool_docx_read(args: &Value) -> Result<String, String> {
