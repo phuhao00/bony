@@ -9,6 +9,7 @@
 [预编译包](#预编译包) ·
 [快速开始](#快速开始) ·
 [功能](#功能) ·
+[Buzz 本地协作房间](#buzz-本地协作房间) ·
 [详情与版本管理](#详情与版本管理) ·
 [插件与 Unity](#插件与-unity) ·
 [Web 监控](#web-监控) ·
@@ -76,6 +77,16 @@ GitHub Releases 提供桌面 zip（需本机另装 `grok` CLI）：
 | Web 监控 | 架构分层、「怎么工作」、功能影响矩阵与提交影响时间线 |
 
 侧栏主导航当前为：**新建对话** · **聊天** · **插件**。站点 / PR / 定时等仍为占位。
+
+---
+
+## Buzz 本地协作房间
+
+本仓库另含 [Block/Buzz](third_party/buzz) 本地房间栈：Grok 作协调员，ZeroClaw / Unity / OpenMontage 专员在共享频道协作（`@` 交接、工具中途状态可见）。
+
+![Buzz 房间：Grok 交接 ZeroClaw 查询深圳天气](docs/buzz-room-welcome-handoff.png)
+
+一键脚本与策略见 [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md)、[`scripts/buzz-room`](scripts/buzz-room)。
 
 ---
 
@@ -300,7 +311,9 @@ git push --force-with-lease origin main
 | `scripts/run-monitor.ps1` | 启动 Web 监控（默认 :8787） |
 | `scripts/run-dev.ps1` | TUI 开发启动 |
 | `.github/workflows/release-desktop.yml` | 多平台桌面 zip release |
-| `docs/` | 截图与架构图 |
+| `docs/` | 截图与架构图（含 Buzz 房间协作） |
+| `scripts/buzz-room/` | 本地 Buzz 房间：relay / Desktop / 外部 agent |
+| `third_party/buzz` | Buzz 源码（in-tree 工作区成员） |
 | `SOURCE_REV` | 上游 monorepo 同步修订 |
 
 完整上游说明见各 crate 文档与 [user guide](crates/codegen/xai-grok-pager/docs/user-guide/)。
