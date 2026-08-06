@@ -57,7 +57,20 @@ pub fn get_default_relay_url() -> String {
 
 #[tauri::command]
 pub fn auto_connect_default_relay_enabled() -> bool {
-    option_env!("BUZZ_DESKTOP_BUILD_AUTO_CONNECT_DEFAULT_RELAY").is_some()
+    if option_env!("BUZZ_DESKTOP_BUILD_AUTO_CONNECT_DEFAULT_RELAY").is_some() {
+        return true;
+    }
+    // Local monorepo / start-desktop: first-run (and empty community lists)
+    // must auto-seed the configured loopback community. Otherwise create
+    // channel/#hh lands nowhere useful while BUZZ_RELAY_URL already points at
+    // ws://localhost:3000, and agents auth against a different community.
+    if std::env::var("BUZZ_FORCE_LOCAL_COMMUNITY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    relay::is_loopback_relay_url(&relay::relay_ws_url())
 }
 
 #[cfg(test)]

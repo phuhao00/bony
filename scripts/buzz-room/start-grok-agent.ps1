@@ -74,6 +74,13 @@ $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
 $env:BUZZ_ACP_DISPLAY_NAME = "Grok"
 
+. (Join-Path $PSScriptRoot "_agent-owner.ps1")
+Set-RoomAgentOwner -BonyRoot (Get-BonyRoot)
+
+# Grok is subscribe=all and must post visible kind:9 replies (stream alone is UI-invisible).
+# Specialists often don't call buzz messages send either — same auto-post safety net.
+$env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+
 Write-Host "Grok coordinator"
 Write-Host "  buzz:    $BuzzRoot"
 Write-Host "  relay:   $RelayUrl"

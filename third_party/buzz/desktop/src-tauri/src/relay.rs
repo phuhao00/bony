@@ -54,19 +54,89 @@ pub fn relay_api_base_url_with_override(state: &AppState) -> String {
     }
 }
 
+/// True when `url` targets a loopback host (local monorepo / start-desktop).
+pub(crate) fn is_loopback_relay_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    let Ok(parsed) = url::Url::parse(trimmed) else {
+        // Fall back when url crate is picky: bare host-port forms should not match.
+        let lower = trimmed.to_ascii_lowercase();
+        return lower.contains("://localhost")
+            || lower.contains("://127.0.0.1")
+            || lower.contains("://[::1]")
+            || lower.contains("://0.0.0.0");
+    };
+    matches!(
+        parsed.host_str(),
+        Some("localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+    )
+}
+
+/// Map all loopback hosts to `localhost`. buzz-relay multi-tenant hosts are
+/// keyed by the connect Host (`localhost:3000` ≠ `127.0.0.1:3000`); the latter
+/// produces WebSocket HTTP 404 and kills managed agents before they can answer.
+pub(crate) fn canonicalize_loopback_relay_url(url: &str) -> String {
+    let trimmed = url.trim();
+    let Ok(mut parsed) = url::Url::parse(trimmed) else {
+        return trimmed
+            .replace("://127.0.0.1", "://localhost")
+            .replace("://[::1]", "://localhost")
+            .replace("://0.0.0.0", "://localhost")
+            .to_string();
+    };
+    if matches!(
+        parsed.host_str(),
+        Some("127.0.0.1" | "::1" | "0.0.0.0")
+    ) {
+        let _ = parsed.set_host(Some("localhost"));
+        return parsed.to_string();
+    }
+    trimmed.to_string()
+}
+
+/// Monorepo `start-desktop` pins agents to the loopback `BUZZ_RELAY_URL` even if
+/// a stale non-local community is still marked active in localStorage. Without
+/// this, create-channel+@agent appears to work in UI while buzz-acp hits a
+/// closed production community and dies with `restricted: not a relay member`.
+fn monorepo_force_loopback_agent_relay() -> Option<String> {
+    let force = match std::env::var("BUZZ_FORCE_LOCAL_COMMUNITY") {
+        Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
+        Ok(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
+        // Default: when the process was launched with a loopback BUZZ_RELAY_URL
+        // (scripts/buzz-room/start-desktop.ps1), prefer it for agents.
+        _ => configured_env_var("BUZZ_RELAY_URL")
+            .as_deref()
+            .is_some_and(is_loopback_relay_url),
+    };
+    if !force {
+        return None;
+    }
+    configured_env_var("BUZZ_RELAY_URL")
+        .filter(|u| is_loopback_relay_url(u))
+        .map(|u| canonicalize_loopback_relay_url(&u))
+}
+
 /// Selects the relay a managed agent should use for a relay operation.
 ///
-/// Always the active workspace relay. The legacy per-record `relay_url` pin is
-/// deliberately IGNORED (agents-everywhere, #2122): every agent is eligible on
-/// every community, and the pair the caller is acting on is identified by the
-/// workspace relay, never by a stored pin. The record field is still parsed
-/// and persisted untouched — old records need no migration and a rollback to a
-/// pin-honoring build reads the same file — so the parameter stays in the
-/// signature as documentation of what is being ignored at the one choke point
-/// all agent relay resolution flows through. Resolving at read-time also means
-/// a stale stored value can never leak into reconcile, spawn, or profile sync.
-/// Uniform for both Local and Provider backends.
+/// Always the active workspace relay, except monorepo local stacks (see
+/// [`monorepo_force_loopback_agent_relay`]). The legacy per-record `relay_url`
+/// pin is deliberately IGNORED (agents-everywhere, #2122): every agent is
+/// eligible on every community, and the pair the caller is acting on is
+/// identified by the workspace relay, never by a stored pin. The record field
+/// is still parsed and persisted untouched — old records need no migration and
+/// a rollback to a pin-honoring build reads the same file — so the parameter
+/// stays in the signature as documentation of what is being ignored at the one
+/// choke point all agent relay resolution flows through. Resolving at read-time
+/// also means a stale stored value can never leak into reconcile, spawn, or
+/// profile sync. Uniform for both Local and Provider backends.
 pub fn effective_agent_relay_url(_record_relay: &str, workspace_relay: &str) -> String {
+    if let Some(forced) = monorepo_force_loopback_agent_relay() {
+        return forced;
+    }
+    // Even without force env, avoid 127.0.0.1 / ::1 community hosts on a single
+    // local Open relay whose tenant is registered as `localhost:3000`.
+    if is_loopback_relay_url(workspace_relay) {
+        return canonicalize_loopback_relay_url(workspace_relay);
+    }
     workspace_relay.to_string()
 }
 

@@ -2120,6 +2120,8 @@ pub async fn run_prompt_task(
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
                         )
                         .await;
+                        maybe_auto_post_agent_reply(&mut agent, batch.as_ref(), &ctx.rest_client)
+                            .await;
                         send_prompt_result(
                             &result_tx,
                             &turn_id,
@@ -2182,6 +2184,9 @@ pub async fn run_prompt_task(
                 Some(core_stop),
             )
             .await;
+
+            // Durable channel reply when agent streamed text but never posted.
+            maybe_auto_post_agent_reply(&mut agent, batch.as_ref(), &ctx.rest_client).await;
 
             send_prompt_result(
                 &result_tx,
@@ -3875,6 +3880,22 @@ pub(crate) async fn post_failure_notice(
     thread_tags: &ThreadTags,
     content: &str,
 ) {
+    post_channel_message(rest, channel_id, thread_tags, content, "failure notice").await;
+}
+
+/// Best-effort: post a durable channel message (kind:9) with optional thread
+/// anchor. Shared by failure notices and `BUZZ_ACP_AUTO_POST_REPLY`.
+pub(crate) async fn post_channel_message(
+    rest: &crate::relay::RestClient,
+    channel_id: Uuid,
+    thread_tags: &ThreadTags,
+    content: &str,
+    log_label: &str,
+) {
+    let content = content.trim();
+    if content.is_empty() {
+        return;
+    }
     let thread_ref = thread_tags.root_event_id.as_deref().and_then(|root| {
         let root_id = nostr::EventId::from_hex(root).ok()?;
         let parent_id = thread_tags
@@ -3887,26 +3908,147 @@ pub(crate) async fn post_failure_notice(
             parent_event_id: parent_id,
         })
     });
-    let builder =
-        match buzz_sdk::build_message(channel_id, content, thread_ref.as_ref(), &[], false, &[]) {
-            Ok(b) => b,
+
+    // Prefer in-thread reply when tags are valid. Relay may reject with
+    // `invalid: reply parent not found` after cancel/steer merges point
+    // parent at ephemeral steer/control events — fall back to top-level
+    // channel post so the answer still shows in the timeline.
+    async fn submit_once(
+        rest: &crate::relay::RestClient,
+        channel_id: Uuid,
+        content: &str,
+        thread_ref: Option<&buzz_sdk::ThreadRef>,
+        log_label: &str,
+        attempt_label: &str,
+    ) -> bool {
+        let builder =
+            match buzz_sdk::build_message(channel_id, content, thread_ref, &[], false, &[]) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(
+                        channel = %channel_id,
+                        "{log_label}: build failed ({attempt_label}): {e}"
+                    );
+                    return false;
+                }
+            };
+        let event = match builder.sign_with_keys(&rest.keys) {
+            Ok(e) => e,
             Err(e) => {
-                tracing::warn!(channel = %channel_id, "failure notice: build failed: {e}");
-                return;
+                tracing::warn!(
+                    channel = %channel_id,
+                    "{log_label}: sign failed ({attempt_label}): {e}"
+                );
+                return false;
             }
         };
-    let event = match builder.sign_with_keys(&rest.keys) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!(channel = %channel_id, "failure notice: sign failed: {e}");
+        match tokio::time::timeout(Duration::from_secs(30), rest.submit_event(&event)).await {
+            Ok(Ok(_)) => {
+                tracing::info!(
+                    channel = %channel_id,
+                    "{log_label}: posted visible reply ({attempt_label})"
+                );
+                true
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    "{log_label} failed ({attempt_label}): {e}"
+                );
+                false
+            }
+            Err(_) => {
+                tracing::warn!(
+                    channel = %channel_id,
+                    "{log_label} timed out ({attempt_label})"
+                );
+                false
+            }
+        }
+    }
+
+    if thread_ref.is_some() {
+        if submit_once(
+            rest,
+            channel_id,
+            content,
+            thread_ref.as_ref(),
+            log_label,
+            "threaded",
+        )
+        .await
+        {
             return;
         }
-    };
-    match tokio::time::timeout(Duration::from_secs(5), rest.submit_event(&event)).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::warn!(channel = %channel_id, "failure notice failed: {e}"),
-        Err(_) => tracing::warn!(channel = %channel_id, "failure notice timed out"),
+        // brief pause then unthreaded retry (also covers transient rate-limit)
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
+
+    if !submit_once(rest, channel_id, content, None, log_label, "top-level").await {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let _ = submit_once(rest, channel_id, content, None, log_label, "top-level-retry").await;
+    }
+}
+
+fn auto_post_reply_enabled() -> bool {
+    match std::env::var("BUZZ_ACP_AUTO_POST_REPLY") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            !(t.is_empty() || t == "0" || t == "false" || t == "no" || t == "off")
+        }
+        Err(_) => false,
+    }
+}
+
+/// If `BUZZ_ACP_AUTO_POST_REPLY` is set, publish buffered agent_message_chunk
+/// text as a kind:9 so channel timelines show the answer even when the agent
+/// never called `buzz messages send` (common for tool-only specialists).
+async fn maybe_auto_post_agent_reply(
+    agent: &mut OwnedAgent,
+    batch: Option<&FlushBatch>,
+    rest: &crate::relay::RestClient,
+) {
+    if !auto_post_reply_enabled() {
+        let _ = agent.acp.take_agent_message_buf();
+        return;
+    }
+    let text = agent.acp.take_agent_message_buf();
+    let Some(batch) = batch else {
+        return;
+    };
+    let content = text.trim();
+    if content.is_empty() {
+        return;
+    }
+    // Anchor on the triggering message so Desktop keeps the reply in-thread.
+    let mut tags = batch
+        .events
+        .last()
+        .map(|be| crate::queue::parse_thread_tags(&be.event))
+        .unwrap_or(ThreadTags {
+            root_event_id: None,
+            parent_event_id: None,
+            mentioned_pubkeys: Vec::new(),
+        });
+    if tags.root_event_id.is_none() {
+        if let Some(last) = batch.events.last() {
+            let id = last.event.id.to_hex();
+            tags.root_event_id = Some(id.clone());
+            tags.parent_event_id = Some(id);
+        }
+    } else if tags.parent_event_id.is_none() {
+        if let Some(last) = batch.events.last() {
+            tags.parent_event_id = Some(last.event.id.to_hex());
+        }
+    }
+    post_channel_message(
+        rest,
+        batch.channel_id,
+        &tags,
+        content,
+        "auto-post reply",
+    )
+    .await;
 }
 
 /// Best-effort: remove a reaction via a signed kind:5 (NIP-09) deletion event.

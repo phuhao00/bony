@@ -66,6 +66,18 @@ if (-not (Test-Path "node_modules")) {
   Write-Host "    node_modules OK"
 }
 
+# Start-Process children often lose a stripped PATH from agent shells; reinject Node/npm.
+$nodeDir = "C:\Program Files\nodejs"
+$npmDir = Join-Path $env:APPDATA "npm"
+$pathParts = @($env:Path -split ';' | Where-Object { $_ })
+foreach ($p in @($nodeDir, $npmDir)) {
+  if ((Test-Path $p) -and ($pathParts -notcontains $p)) { $pathParts = @($p) + $pathParts }
+}
+$env:Path = ($pathParts -join ';')
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  throw "node not on PATH after reinject (expected under $nodeDir). Install Node or fix PATH."
+}
+
 $env:BUZZ_RELAY_URL = $RelayUrl
 # Always pair HTTP base with WS for local-only stacks (avoids leftover wss://…buzz.xyz).
 if ($RelayUrl -match '^ws://(localhost|127\.0\.0\.1)') {
@@ -82,7 +94,36 @@ $env:VITE_PORT = "$VitePort"
 $env:BUZZ_DEV_KEYRING_SERVICE = "buzz-desktop-dev.bony"
 # Isolate local monorepo Desktop from any previously installed official Buzz profile
 $env:BUZZ_DESKTOP_INSTANCE_ID = "bony-local"
+# Pin create-channel / managed-agent AUTH to this loopback relay (not a stale prod community).
+$env:BUZZ_FORCE_LOCAL_COMMUNITY = "1"
 Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
+
+# Repair Agents page store + Local Room membership before UI opens so a normal
+# Desktop create-agent/create-channel path has keys + directory profiles ready.
+if (-not $Standalone) {
+  Write-Host "==> Register / repair room agents (managed-agents + directory)"
+  try {
+    & (Join-Path $PSScriptRoot "register-room-agents.ps1") `
+      -RelayHttp ($env:BUZZ_RELAY_HTTP) `
+      -RelayWs $RelayUrl
+  } catch {
+    Write-Warning "register-room-agents failed (Desktop still launching): $_"
+  }
+  # Critical: register sets BUZZ_PRIVATE_KEY per-agent; leave last agent key in the
+  # process env and Desktop becomes that bot (white-screen identity chaos).
+  Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
+  Remove-Item Env:NOSTR_PRIVATE_KEY -ErrorAction SilentlyContinue
+  Remove-Item Env:BUZZ_SHARE_IDENTITY -ErrorAction SilentlyContinue
+
+  # External ACP for Grok / ZeroClaw / Unity / OpenMontage on localhost
+  # (Desktop managed spawn dies on setup-mode or ws://127.0.0.1 Host 404).
+  Write-Host "==> External room agents (Grok/ZeroClaw/Unity/OpenMontage)"
+  try {
+    & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
+  } catch {
+    Write-Warning "start-external-room-agents failed: $_"
+  }
+}
 
 $configPath = Join-Path $RuntimeDir "tauri.dev.override.json"
 $configJson = @"
@@ -105,10 +146,15 @@ if ($wantFast -and $exe) {
   Write-Host "    $exe"
   Write-Host "    (Rust hot-reload needs: -TauriDev ; full rebuild: build-desktop.ps1)"
   $viteLog = Join-Path $RuntimeDir "vite.log"
-  $vite = Start-Process -FilePath "pnpm.cmd" `
-    -ArgumentList @("exec", "vite", "--port", "$VitePort", "--strictPort") `
+  $viteErr = Join-Path $RuntimeDir "vite.err"
+  $pnpmCmd = (Get-Command pnpm.cmd -ErrorAction SilentlyContinue).Source
+  if (-not $pnpmCmd) { $pnpmCmd = Join-Path $npmDir "pnpm.cmd" }
+  if (-not (Test-Path $pnpmCmd)) { throw "pnpm.cmd not found (expected $pnpmCmd)" }
+  # cmd.exe wrapper keeps Node/npm PATH visible to pnpm+vite on Windows.
+  $vite = Start-Process -FilePath "cmd.exe" `
+    -ArgumentList @("/c", "`"$pnpmCmd`" exec vite --port $VitePort --strictPort") `
     -WorkingDirectory $Desktop -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput $viteLog -RedirectStandardError (Join-Path $RuntimeDir "vite.err")
+    -RedirectStandardOutput $viteLog -RedirectStandardError $viteErr
   $vite.Id | Set-Content (Join-Path $RuntimeDir "vite.pid")
 
   Write-Host "    waiting for http://localhost:$VitePort ..."

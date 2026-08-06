@@ -54,10 +54,12 @@ test("signed-build relay defaults auto-connect during first-run onboarding", () 
     shouldAutoConnectDefaultRelay("wss://buzz.block.builderlab.xyz"),
     true,
   );
-  assert.equal(shouldAutoConnectDefaultRelay("ws://localhost:3000"), false);
-  assert.equal(shouldAutoConnectDefaultRelay("ws://127.0.0.1:3000"), false);
-  assert.equal(shouldAutoConnectDefaultRelay("ws://[::1]:3000"), false);
-  assert.equal(shouldAutoConnectDefaultRelay("ws://0.0.0.0:3000"), false);
+  // Local monorepo stack must also auto-connect so create-channel lands on
+  // the open ws://localhost:3000 relay (previously excluded, which orphaned UI).
+  assert.equal(shouldAutoConnectDefaultRelay("ws://localhost:3000"), true);
+  assert.equal(shouldAutoConnectDefaultRelay("ws://127.0.0.1:3000"), true);
+  assert.equal(shouldAutoConnectDefaultRelay("ws://[::1]:3000"), true);
+  assert.equal(shouldAutoConnectDefaultRelay("ws://0.0.0.0:3000"), true);
   assert.equal(shouldAutoConnectDefaultRelay("http://localhost:3000"), false);
   assert.equal(
     shouldAutoConnectDefaultRelay("https://relay.example.com"),
