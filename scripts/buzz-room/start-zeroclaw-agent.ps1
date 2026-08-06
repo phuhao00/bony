@@ -42,6 +42,9 @@ $env:BUZZ_ACP_RESPOND_TO = "anyone"
 $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
 $env:BUZZ_ACP_DISPLAY_NAME = "ZeroClaw"
+$env:BUZZ_ACP_MULTIPLE_EVENT_HANDLING = "queue"
+$env:BUZZ_ACP_CONTEXT_MESSAGE_LIMIT = "4"
+$env:BUZZ_ACP_NO_MEMORY = "true"
 
 . (Join-Path $PSScriptRoot "_agent-owner.ps1")
 Set-RoomAgentOwner -BonyRoot $BonyRoot
@@ -50,6 +53,8 @@ Set-RoomAgentOwner -BonyRoot $BonyRoot
 # calling `buzz messages send`. With auto-post, buzz-acp publishes the stream
 # buffer as a durable kind:9 so Desktop channel timelines show the reply.
 $env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+. (Join-Path $PSScriptRoot "_mention-map.ps1")
+Set-RoomAgentMentionMap
 
 # Load MaaS secrets if present (from .local-runtime/maas-llm.env)
 $maasEnv = Join-Path (Get-BonyRoot) ".local-runtime\maas-llm.env"
