@@ -14,7 +14,8 @@ if (-not $BuzzRoot) { $BuzzRoot = Get-BuzzRoot }
 
 function Find-Bin([string]$name, [string[]]$roots) {
   foreach ($r in $roots) {
-    foreach ($prof in @("debug", "release")) {
+    # Prefer release so DocSmith picks improved CJK pdf_create over stale debug.
+    foreach ($prof in @("release", "debug")) {
       $p = Join-Path $r "target\$prof\$name.exe"
       if (Test-Path $p) { return $p }
     }

@@ -406,6 +406,19 @@ fn write_agent_store(
     let mut all = definitions;
     all.extend(instances);
 
+    // Strip base64 / data-URL avatars. Embedded persona art is often 100–200KB
+    // apiece; when Desktop serializes and later re-reads the store, that bloat
+    // also couples with keyring migration churn and makes the Agents UI slow.
+    // UI can re-resolve builtin art from assets; room agents do not need inline.
+    const MAX_STORED_AVATAR_CHARS: usize = 2000;
+    for record in &mut all {
+        if let Some(url) = record.avatar_url.as_ref() {
+            if url.len() > MAX_STORED_AVATAR_CHARS {
+                record.avatar_url = None;
+            }
+        }
+    }
+
     let path = managed_agents_store_path(app)?;
     let payload = serde_json::to_vec_pretty(&all)
         .map_err(|error| format!("failed to serialize agent store: {error}"))?;

@@ -75,7 +75,8 @@ powershell -File .\scripts\buzz-room\start-desktop.ps1
 
 | 能力 | 做法 |
 |------|------|
-| PDF / Word / Excel / PPT | `@DocSmith` → `bony-docs-tools-mcp`（`pdf_*` / `docx_*` / `xlsx_*` / `pptx_*`） |
+| **今天资讯 / 新闻 / 实时** + PDF/PPT/Word | Grok → `@ZeroClaw`（`web_search`）→ ZeroClaw 贴正文并 `@DocSmith` → `pdf_create` 等。**禁止**跳过 ZeroClaw 让 DocSmith 编造资讯 |
+| 已有正文 / 路径整理成文档 | `@DocSmith` → `bony-docs-tools-mcp`（`pdf_*` / `docx_*` / `xlsx_*` / `pptx_*`） |
 | 重编码 | Grok 调 `open_coding_task` 或 `scripts/buzz-room/open-coding-task.ps1` → 新开 `bony-build --seed-prompt-file` 窗口 |
 | 代码分析 | Grok 自用工具 + 可选 `code-graph`，不交给 DocSmith |
 
