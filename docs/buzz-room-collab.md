@@ -1,6 +1,6 @@
 # Buzz Room Collaboration (Grok lead)
 
-Grok is the **room lead**. Buzz is the **shared office**. Specialists: ZeroClaw, Unity, OpenMontage.
+Grok is the **room lead**. Buzz is the **shared office**. Specialists: ZeroClaw, Unity, OpenMontage, DocSmith.
 
 ![Buzz room: Grok hands weather to ZeroClaw in Welcome](buzz-room-welcome-handoff.png)
 
@@ -56,19 +56,28 @@ Notes:
 | Delete PDB + incremental (keep executables / most rlib) | `powershell -File .\scripts\buzz-room\clean-target-bloat.ps1` |
 | Wipe all caches (next build full recompile) | `...\clean-target-bloat.ps1 -Nuclear` |
 
-## 让 Desktop 能「看到」Grok / ZeroClaw / Unity / OpenMontage
+## 让 Desktop 能「看到」Grok / ZeroClaw / Unity / OpenMontage / DocSmith
 
 它们不是编译进侧边栏的固定入口，而是 **外部 `buzz-acp` + 本机密钥**。Agents 页读的是本地 `managed-agents.json`，目录还查 relay 的 **kind:10100**。进程在线但未注册时，界面列表为空。
 
 ```powershell
 # Relay 已启动、密钥已 mint 后：
+powershell -File .\scripts\buzz-room\mint-agent-keys.ps1
 powershell -File .\scripts\buzz-room\register-room-agents.ps1
 
 # 再开 Desktop（需已加入 community: ws://localhost:3000）
 powershell -File .\scripts\buzz-room\start-desktop.ps1
 ```
 
-脚本会：发布 kind:0 / kind:10100 显示名、创建/复用 open 频道 `Local Room`、把四套身份写入 Desktop 的 managed-agents（`%AppData%\xyz.block.buzz.app\agents`）。之后重开 Agents 页即可看到卡片。频道成员栏要看到 agent 徽章，需加入 `Local Room`。
+脚本会：发布 kind:0 / kind:10100 显示名、创建/复用 open 频道 `Local Room`、把房间席位写入 Desktop 的 managed-agents（`%AppData%\xyz.block.buzz.app\agents`）。之后重开 Agents 页即可看到卡片。频道成员栏要看到 agent 徽章，需加入 `Local Room`。
+
+### DocSmith（文档）与重编码桌面窗
+
+| 能力 | 做法 |
+|------|------|
+| PDF / Word / Excel / PPT | `@DocSmith` → `bony-docs-tools-mcp`（`pdf_*` / `docx_*` / `xlsx_*` / `pptx_*`） |
+| 重编码 | Grok 调 `open_coding_task` 或 `scripts/buzz-room/open-coding-task.ps1` → 新开 `bony-build --seed-prompt-file` 窗口 |
+| 代码分析 | Grok 自用工具 + 可选 `code-graph`，不交给 DocSmith |
 
 ## Agent 约束
 
@@ -79,5 +88,5 @@ powershell -File .\scripts\buzz-room\start-desktop.ps1
 ## Policy
 
 - Grok: `subscribe=all`
-- Specialists: `subscribe=mentions`
+- Specialists (ZeroClaw / Unity / OpenMontage / DocSmith): `subscribe=mentions`
 - Permission: `accept-edits`

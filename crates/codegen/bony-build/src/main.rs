@@ -47,6 +47,15 @@ struct Args {
     /// Require manual approval for every tool (overrides saved Full Control).
     #[arg(long = "ask-permissions")]
     ask_permissions: bool,
+
+    /// Path to a UTF-8 text file whose contents are sent as the first user message
+    /// after the agent session is ready (for room "open coding task" windows).
+    #[arg(long = "seed-prompt-file")]
+    seed_prompt_file: Option<PathBuf>,
+
+    /// Optional task title for the initial session/worktree label.
+    #[arg(long = "task-title")]
+    task_title: Option<String>,
 }
 
 fn main() -> eframe::Result<()> {
@@ -66,11 +75,24 @@ fn main() -> eframe::Result<()> {
     let prefs = load_plugin_prefs();
     let always_approve = !args.ask_permissions && prefs.auto_approve_tools;
 
+    let seed_prompt = args.seed_prompt_file.as_ref().and_then(|p| {
+        std::fs::read_to_string(p)
+            .map_err(|e| {
+                tracing::warn!("failed to read --seed-prompt-file {}: {e}", p.display());
+                e
+            })
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+
     let config = BridgeConfig {
         grok_bin,
         cwd,
         always_approve: Arc::new(AtomicBool::new(always_approve)),
         resume_session_id: None,
+        seed_prompt,
+        task_title: args.task_title.filter(|s| !s.trim().is_empty()),
     };
 
     let app_icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/bony-build.png"))

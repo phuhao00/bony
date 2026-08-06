@@ -221,6 +221,9 @@ pub struct BonyBuildApp {
     zc_event_rx: mpsc::Receiver<AgentEvent>,
     zc_event_tx: mpsc::Sender<AgentEvent>,
     zc_started: bool,
+    /// Initial prompt from `--seed-prompt-file` (consumed once session is ready).
+    seed_prompt: Option<String>,
+    seed_prompt_sent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -274,6 +277,9 @@ impl BonyBuildApp {
                 .flatten()
                 .unwrap_or_else(|| config.cwd.clone());
             let mut task = TaskState::draft(project.clone(), String::new());
+            if let Some(title) = config.task_title.as_ref().filter(|s| !s.trim().is_empty()) {
+                task.title = title.clone();
+            }
             match GitWorkspaceService::create_worktree(&project, &task.id, &task.title) {
                 Ok(worktree) => {
                     task.worktree_path = worktree.path;
@@ -319,6 +325,7 @@ impl BonyBuildApp {
         let openmontage = OpenMontageState::from_prefs(&prefs);
         let bevy = BevyState::from_prefs(&prefs);
         let (zc_event_tx, zc_event_rx) = mpsc::channel();
+        let seed_prompt = config.seed_prompt.clone();
         Self {
             model,
             event_rx,
@@ -388,6 +395,8 @@ impl BonyBuildApp {
             zc_event_rx,
             zc_event_tx,
             zc_started: false,
+            seed_prompt,
+            seed_prompt_sent: false,
         }
     }
 
@@ -1412,12 +1421,38 @@ impl BonyBuildApp {
             attachments: Vec::new(),
         });
     }
+
+    /// After bridge connects, inject `--seed-prompt-file` once (room coding windows).
+    fn try_flush_seed_prompt(&mut self, ctx: &egui::Context) {
+        if self.seed_prompt_sent {
+            return;
+        }
+        let Some(text) = self.seed_prompt.take().map(|s| s.trim().to_string()) else {
+            self.seed_prompt_sent = true;
+            return;
+        };
+        if text.is_empty() {
+            self.seed_prompt_sent = true;
+            return;
+        }
+        if self.model.busy || self.model.needs_login || !self.model.connected || self.cmd_tx.is_none()
+        {
+            // Put it back until the session is ready.
+            self.seed_prompt = Some(text);
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+            return;
+        }
+        self.seed_prompt_sent = true;
+        self.model.draft = text;
+        self.send_prompt(ctx);
+    }
 }
 
 impl eframe::App for BonyBuildApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_started(ctx);
         self.drain_events();
+        self.try_flush_seed_prompt(ctx);
         self.zeroclaw.ensure_started();
         if self.zeroclaw.poll() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));

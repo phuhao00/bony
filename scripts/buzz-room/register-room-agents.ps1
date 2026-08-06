@@ -44,6 +44,7 @@ $buzz = Find-Bin "buzz" @($BonyRoot, $BuzzRoot)
 $acp = Find-Bin "buzz-acp" @($BonyRoot, $BuzzRoot)
 $devMcp = Find-Bin "buzz-dev-mcp" @($BonyRoot, $BuzzRoot)
 $roomMcp = Find-Bin "bony-room-tools-mcp" @($BonyRoot, $BuzzRoot)
+$docsMcp = Find-Bin "bony-docs-tools-mcp" @($BonyRoot, $BuzzRoot)
 $zeroclaw = "$env:USERPROFILE\.bony-build\zeroclaw\target\release\zeroclaw.exe"
 $grok = Find-Grok
 if (-not $buzz) { throw "buzz CLI missing — cargo build -p buzz" }
@@ -67,6 +68,11 @@ $agents = @(
     Id = "openmontage"; DisplayName = "OpenMontage"; About = "OpenMontage specialist"; Keys = "openmontage.json"
     AgentCommand = if ($grok) { $grok } else { "grok.cmd" }
     AgentArgs = @("agent", "stdio"); Mcp = $roomMcp; RespondTo = "anyone"
+  },
+  @{
+    Id = "docsmith"; DisplayName = "DocSmith"; About = "Docs specialist (PDF/Word/Excel/PPT)"; Keys = "docsmith.json"
+    AgentCommand = if ($grok) { $grok } else { "grok.cmd" }
+    AgentArgs = @("agent", "stdio"); Mcp = $docsMcp; RespondTo = "anyone"
   }
 )
 
@@ -304,7 +310,7 @@ if (-not $SkipManagedAgents) {
             $pk = [string]$a.pubkey
             $nm = [string]$a.name
             if ([string]::IsNullOrWhiteSpace($nm)) { continue }
-            if ([string]::IsNullOrWhiteSpace($pk)) { continue }
+            if ([string]::IsNullOrWhiteSpace($pk) -or $pk.Length -ne 64) { continue }
             $nmL = $nm.ToLowerInvariant()
             $pkL = $pk.ToLowerInvariant()
             # Room seats always rewritten from keys — skip old copies.
@@ -315,6 +321,12 @@ if (-not $SkipManagedAgents) {
               $isBu = ($a.is_builtin -eq $true) -or ([string]$a.persona_id -match '^builtin:')
               if (-not $isBu) { continue }
             }
+            # Base64 data-URL avatars (~200KB) break Windows keyring (2560-byte
+            # CREDENTIAL blob) when Desktop flushes secrets — strip them.
+            try {
+              $av = [string]$a.avatar_url
+              if ($av.Length -gt 2000) { $a.avatar_url = $null }
+            } catch {}
             # Never let Desktop spawn room external seats (double process).
             try { $a.start_on_app_launch = $false } catch {}
             try { $a.auto_restart_on_config_change = $false } catch {}

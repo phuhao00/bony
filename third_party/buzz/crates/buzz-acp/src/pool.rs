@@ -4255,6 +4255,7 @@ enum ProgressCategory {
     Shell,
     Code,
     Message,
+    Docs,
     Generic,
 }
 
@@ -4272,6 +4273,24 @@ fn classify_progress_tool(kind: &str, title: &str) -> ProgressCategory {
         "climate",
     ]) {
         return ProgressCategory::Weather;
+    }
+    if has(&[
+        "pdf_inspect",
+        "pdf_create",
+        "docx_read",
+        "docx_create",
+        "xlsx_read",
+        "xlsx_create",
+        "pptx_create",
+        "pdf_",
+        "docx_",
+        "xlsx_",
+        "pptx_",
+        "spreadsheet",
+        "powerpoint",
+        "word document",
+    ]) {
+        return ProgressCategory::Docs;
     }
     if has(&[
         "web_search",
@@ -4373,6 +4392,7 @@ fn progress_heading(cat: ProgressCategory) -> (&'static str, &'static str) {
         ProgressCategory::Shell => ("💻", "执行命令"),
         ProgressCategory::Code => ("⚙️", "编码中"),
         ProgressCategory::Message => ("💬", "发送消息"),
+        ProgressCategory::Docs => ("📝", "处理文档"),
         ProgressCategory::Generic => ("⚙️", "处理中"),
     }
 }
@@ -4383,11 +4403,12 @@ fn format_progress_prefix(cat: ProgressCategory) -> String {
 }
 
 /// Pick a turn-level category from observed tool kinds (prefer specific over Generic).
-fn dominant_progress_category(counts: &[u32; 7]) -> ProgressCategory {
+fn dominant_progress_category(counts: &[u32; 8]) -> ProgressCategory {
     // Index order matches enum variants below.
     let order = [
         ProgressCategory::Weather,
         ProgressCategory::Research,
+        ProgressCategory::Docs,
         ProgressCategory::Code,
         ProgressCategory::Shell,
         ProgressCategory::Files,
@@ -4421,7 +4442,7 @@ async fn run_coding_progress_poster(
     let mut posts: u32 = 0;
     let mut failed: u32 = 0;
     let mut completed: u32 = 0;
-    let mut category_counts = [0u32; 7];
+    let mut category_counts = [0u32; 8];
     let mut last_cat = ProgressCategory::Generic;
 
     while let Some(ev) = rx.recv().await {
@@ -4531,6 +4552,11 @@ async fn run_coding_progress_poster(
             ProgressCategory::Files => {
                 format!(
                     "{prefix} · 本轮文件操作 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
+                )
+            }
+            ProgressCategory::Docs => {
+                format!(
+                    "{prefix} · 本轮文档工具 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
                 )
             }
             ProgressCategory::Message => {

@@ -11,7 +11,8 @@ param(
   [switch]$SkipGrok,
   [switch]$SkipZeroClaw,
   [switch]$SkipUnity,
-  [switch]$SkipOpenMontage
+  [switch]$SkipOpenMontage,
+  [switch]$SkipDocSmith
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_paths.ps1")
@@ -40,7 +41,7 @@ function Stop-Tree {
 
 function Stop-AllRoomAgentProcesses {
   Write-Host "==> Stop room agent processes (single-instance)"
-  foreach ($name in @("grok", "zeroclaw", "unity", "openmontage")) {
+  foreach ($name in @("grok", "zeroclaw", "unity", "openmontage", "docsmith")) {
     $pidFile = Join-Path $RuntimeDir "$name-agent.pid"
     if (Test-Path $pidFile) {
       $old = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
@@ -151,6 +152,7 @@ $agents = @(
   @{ Name = "zeroclaw";    Skip = $SkipZeroClaw;    Script = "start-zeroclaw-agent.ps1" }
   @{ Name = "unity";       Skip = $SkipUnity;       Script = "start-unity-agent.ps1" }
   @{ Name = "openmontage"; Skip = $SkipOpenMontage; Script = "start-openmontage-agent.ps1" }
+  @{ Name = "docsmith";    Skip = $SkipDocSmith;    Script = "start-docsmith-agent.ps1" }
   @{ Name = "grok";        Skip = $SkipGrok;        Script = "start-grok-agent.ps1" }
 )
 
@@ -184,6 +186,7 @@ if ($acpCount -gt $expected -and $expected -gt 0) {
       "zeroclaw" { "start-zeroclaw-agent.ps1" }
       "unity" { "start-unity-agent.ps1" }
       "openmontage" { "start-openmontage-agent.ps1" }
+      "docsmith" { "start-docsmith-agent.ps1" }
       "grok" { "start-grok-agent.ps1" }
     }
     $null = Start-RoomAgent -Name $name `
@@ -208,7 +211,7 @@ Write-Host "Done. buzz-acp processes (expect ~$($started.Count)):"
 Get-Process buzz-acp -ErrorAction SilentlyContinue | Format-Table Id, StartTime, CPU -AutoSize
 
 Write-Host "Seat readiness:"
-foreach ($n in @("grok", "zeroclaw", "unity", "openmontage")) {
+foreach ($n in @("grok", "zeroclaw", "unity", "openmontage", "docsmith")) {
   $log = Join-Path $RuntimeDir "$n-agent.log"
   $err = Join-Path $RuntimeDir "$n-agent.err"
   $ready = $false

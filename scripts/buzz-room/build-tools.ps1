@@ -19,6 +19,10 @@ Set-Location $BonyRoot
 cargo build -p bony-room-tools-mcp --release
 if ($LASTEXITCODE -ne 0) { throw "bony-room-tools-mcp build failed" }
 
+Write-Host "==> bony-docs-tools-mcp"
+cargo build -p bony-docs-tools-mcp --release
+if ($LASTEXITCODE -ne 0) { throw "bony-docs-tools-mcp build failed" }
+
 Write-Host "==> buzz-acp / buzz-cli / buzz-admin / buzz-dev-mcp / buzz-agent (Buzz tree)"
 if (-not (Test-Path $BuzzRoot)) {
   throw "Buzz root missing ($BuzzRoot) — run scripts/buzz-room/setup-buzz.ps1"
@@ -38,6 +42,7 @@ cargo build -p buzz-acp -p buzz-cli -p buzz-admin -p buzz-dev-mcp -p buzz-agent 
 if ($LASTEXITCODE -ne 0) { throw "buzz crate build failed" }
 
 Write-Host "Done."
-Write-Host "  bony MCP: $BonyRoot\target\release\bony-room-tools-mcp.exe"
+Write-Host "  room MCP: $BonyRoot\target\release\bony-room-tools-mcp.exe"
+Write-Host "  docs MCP: $BonyRoot\target\release\bony-docs-tools-mcp.exe"
 Write-Host "  buzz bins: $BuzzRoot\target\debug\ (buzz-acp, buzz-agent, buzz-dev-mcp, buzz-admin, buzz, buzz-relay)"
-Write-Host "Next: start-room-stack.ps1  (or start-infra + start-relay + start-grok-agent)"
+Write-Host "Next: start-room-stack.ps1  (or start-infra + start-relay + start-external-room-agents)"
