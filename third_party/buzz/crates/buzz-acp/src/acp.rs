@@ -215,6 +215,31 @@ pub struct AcpClient {
     /// Used by `BUZZ_ACP_AUTO_POST_REPLY` to publish a durable kind:9 when
     /// the agent streams an answer without calling `buzz messages send`.
     agent_message_buf: String,
+    /// Optional channel for live coding/tool progress events during a turn.
+    /// Installed by the pool when `BUZZ_ACP_PROGRESS_POST` is enabled so the
+    /// room timeline shows mid-turn work (tool starts/failures), not only the
+    /// final auto-post reply.
+    progress_tx: Option<tokio::sync::mpsc::UnboundedSender<CodingProgressEvent>>,
+}
+
+/// Mid-turn coding status emitted while a prompt is in flight.
+///
+/// The pool posts a throttled, durable kind:9 so channel UIs can show whether
+/// the agent is still working (and on what tool) instead of only 👀 + silence.
+#[derive(Debug, Clone)]
+pub enum CodingProgressEvent {
+    ToolStarted {
+        title: String,
+        kind: String,
+        #[allow(dead_code)]
+        tool_call_id: Option<String>,
+    },
+    ToolUpdated {
+        #[allow(dead_code)]
+        tool_call_id: String,
+        status: String,
+        title: Option<String>,
+    },
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -555,6 +580,7 @@ impl AcpClient {
             steer_rx: None,
             goose_usage: UsageTracker::default(),
             agent_message_buf: String::new(),
+            progress_tx: None,
         })
     }
 
@@ -566,6 +592,28 @@ impl AcpClient {
     /// Drain the buffered agent_message_chunk text for this turn.
     pub fn take_agent_message_buf(&mut self) -> String {
         std::mem::take(&mut self.agent_message_buf)
+    }
+
+    /// Install a progress event channel for the current turn.
+    ///
+    /// Replaces any previous sender. Dropping / [`clear_progress_tx`] closes
+    /// the receiver side so the pool's progress poster can exit.
+    pub fn install_progress_tx(
+        &mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<CodingProgressEvent>,
+    ) {
+        self.progress_tx = Some(tx);
+    }
+
+    /// Drop any installed progress sender (ends the progress poster once drained).
+    pub fn clear_progress_tx(&mut self) {
+        self.progress_tx = None;
+    }
+
+    fn emit_progress(&self, event: CodingProgressEvent) {
+        if let Some(tx) = &self.progress_tx {
+            let _ = tx.send(event);
+        }
     }
 
     /// Attach a local observer feed to this ACP client.
@@ -1768,7 +1816,16 @@ impl AcpClient {
                     .get("kind")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
+                let tool_call_id = update
+                    .get("toolCallId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 tracing::info!(target: "acp::tool", "tool_call: {title} ({kind})");
+                self.emit_progress(CodingProgressEvent::ToolStarted {
+                    title: title.to_string(),
+                    kind: kind.to_string(),
+                    tool_call_id,
+                });
                 true
             }
             "tool_call_update" => {
@@ -1777,7 +1834,24 @@ impl AcpClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?");
                 let status = update.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                let title = update
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 tracing::info!(target: "acp::tool", "tool_call_update: {tool_id} → {status}");
+                // Only surface terminal-ish updates (completed/failed/error/cancelled)
+                // so we don't spam "in_progress" for every partial tool stream chunk.
+                let status_l = status.to_ascii_lowercase();
+                if matches!(
+                    status_l.as_str(),
+                    "completed" | "failed" | "error" | "cancelled" | "canceled"
+                ) {
+                    self.emit_progress(CodingProgressEvent::ToolUpdated {
+                        tool_call_id: tool_id.to_string(),
+                        status: status.to_string(),
+                        title,
+                    });
+                }
                 false
             }
             "plan" => {
