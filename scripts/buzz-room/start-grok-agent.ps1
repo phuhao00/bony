@@ -88,6 +88,8 @@ Set-RoomAgentOwner -BonyRoot (Get-BonyRoot)
 # Grok is subscribe=all and must post visible kind:9 replies (stream alone is UI-invisible).
 # Specialists often don't call buzz messages send either — same auto-post safety net.
 $env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+# Mid-turn coding status posts (tool starts) — default on with AUTO_POST; can set 0 to disable.
+$env:BUZZ_ACP_PROGRESS_POST = "true"
 
 # Auto-post "@ZeroClaw …" must include p-tags or Mentions-mode specialists never fire.
 . (Join-Path $PSScriptRoot "_mention-map.ps1")

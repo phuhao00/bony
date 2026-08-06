@@ -31,8 +31,8 @@ use uuid::Uuid;
 
 use crate::acp::{
     extract_model_config_options, extract_model_state, model_in_catalog,
-    resolve_model_switch_method, AcpClient, AcpError, EnvVar, McpServer, ModelSwitchMethod,
-    StopReason, SystemPromptTransport,
+    resolve_model_switch_method, AcpClient, AcpError, CodingProgressEvent, EnvVar, McpServer,
+    ModelSwitchMethod, StopReason, SystemPromptTransport,
 };
 use crate::config::{compose_session_title, DedupMode, PermissionMode};
 use crate::observer;
@@ -1366,6 +1366,8 @@ fn send_prompt_result(
     batch: Option<FlushBatch>,
 ) {
     agent.acp.clear_steer_rx();
+    // Closes the mid-turn progress poster so it can exit after drain.
+    agent.acp.clear_progress_tx();
     let _ = result_tx.send(PromptResult {
         agent,
         source,
@@ -1473,7 +1475,8 @@ pub async fn run_prompt_task(
         .as_ref()
         .map(|b| b.events.iter().map(|be| be.event.id.to_hex()).collect())
         .unwrap_or_default();
-    let _reaction_guard = ReactionGuard::new(ctx.rest_client.clone(), reaction_ids.clone());
+    let (_reaction_guard, reaction_outcome) =
+        ReactionGuard::new(ctx.rest_client.clone(), reaction_ids.clone());
 
     //
     // Core memory is delivered inside the system prompt the harness already
@@ -1944,6 +1947,40 @@ pub async fn run_prompt_task(
         });
     }
 
+    // Mid-turn coding status: post throttled kind:9 lines into the thread so
+    // long tool loops are visible in the channel (not only 👀 + final reply).
+    if progress_post_enabled() {
+        if let Some(batch_ref) = batch.as_ref() {
+            let (tx, rx) = mpsc::unbounded_channel();
+            agent.acp.install_progress_tx(tx);
+            let rest = ctx.rest_client.clone();
+            let channel_id = batch_ref.channel_id;
+            let mut tags = batch_ref
+                .events
+                .last()
+                .map(|be| crate::queue::parse_thread_tags(&be.event))
+                .unwrap_or(ThreadTags {
+                    root_event_id: None,
+                    parent_event_id: None,
+                    mentioned_pubkeys: Vec::new(),
+                });
+            if tags.root_event_id.is_none() {
+                if let Some(last) = batch_ref.events.last() {
+                    let id = last.event.id.to_hex();
+                    tags.root_event_id = Some(id.clone());
+                    tags.parent_event_id = Some(id);
+                }
+            } else if tags.parent_event_id.is_none() {
+                if let Some(last) = batch_ref.events.last() {
+                    tags.parent_event_id = Some(last.event.id.to_hex());
+                }
+            }
+            tokio::spawn(async move {
+                run_coding_progress_poster(rest, channel_id, tags, rx).await;
+            });
+        }
+    }
+
     // Slash-command pass-through sends the bare command as the first text
     // block (so connector detection fires), then each prompt section as its
     // own block. Per-section blocks let the observer size trimmer elide a
@@ -2029,6 +2066,10 @@ pub async fn run_prompt_task(
                                     Some(buzz_core::agent_turn_metric::StopReason::Cancelled),
                                 )
                                 .await;
+                                reaction_outcome.store(
+                                    REACTION_OUTCOME_FAIL,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                                 send_prompt_result(
                                     &result_tx,
                                     &turn_id,
@@ -2065,6 +2106,10 @@ pub async fn run_prompt_task(
                                     Some(buzz_core::agent_turn_metric::StopReason::Error),
                                 )
                                 .await;
+                                reaction_outcome.store(
+                                    REACTION_OUTCOME_FAIL,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
                                 send_prompt_result(
                                     &result_tx,
                                     &turn_id,
@@ -2120,6 +2165,10 @@ pub async fn run_prompt_task(
                             Some(buzz_core::agent_turn_metric::StopReason::EndTurn),
                         )
                         .await;
+                        reaction_outcome.store(
+                            REACTION_OUTCOME_OK,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
                         maybe_auto_post_agent_reply(&mut agent, batch.as_ref(), &ctx.rest_client)
                             .await;
                         send_prompt_result(
@@ -2139,6 +2188,10 @@ pub async fn run_prompt_task(
 
     match prompt_result {
         Ok(stop_reason) => {
+            reaction_outcome.store(
+                REACTION_OUTCOME_OK,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             log_stop_reason(&source, &stop_reason);
 
             let should_rotate = matches!(
@@ -2198,6 +2251,10 @@ pub async fn run_prompt_task(
             );
         }
         Err(AcpError::AgentExited) => {
+            reaction_outcome.store(
+                REACTION_OUTCOME_FAIL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             tracing::error!(target: "pool::prompt", "agent {} exited during prompt", agent.index);
             agent.state.invalidate_all();
             let usage = agent.acp.take_turn_usage();
@@ -2220,6 +2277,10 @@ pub async fn run_prompt_task(
             );
         }
         Err(AcpError::IdleTimeout(_)) => {
+            reaction_outcome.store(
+                REACTION_OUTCOME_FAIL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             tracing::warn!(
                 target: "pool::prompt",
                 "idle timeout ({}s) — cancelling session {session_id}",
@@ -2307,6 +2368,10 @@ pub async fn run_prompt_task(
             }
         }
         Err(AcpError::HardTimeout { silence }) => {
+            reaction_outcome.store(
+                REACTION_OUTCOME_FAIL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             let recently_active = silence < RECENT_ACTIVITY_WINDOW;
             tracing::error!(
                 target: "pool::prompt",
@@ -2334,6 +2399,10 @@ pub async fn run_prompt_task(
             );
         }
         Err(e) => {
+            reaction_outcome.store(
+                REACTION_OUTCOME_FAIL,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             tracing::error!(target: "pool::prompt", "session_prompt error: {e}");
             // AgentError means the agent caught a problem before mutating
             // session state (e.g. bad LLM response). The session is healthy —
@@ -3437,7 +3506,8 @@ fn log_stop_reason(source: &PromptSource, stop_reason: &StopReason) {
 /// Drop guard that spawns reaction cleanup on any exit path.
 ///
 /// Created at the top of `run_prompt_task`. On drop — normal return, early
-/// return, or panic — spawns fire-and-forget removal of both 👀 and 💬.
+/// return, or panic — spawns fire-and-forget removal of both 👀 and 💬, then
+/// optionally leaves ✅ / ⚠️ as a durable completion indicator.
 ///
 /// ## Ordering
 ///
@@ -3452,14 +3522,20 @@ fn log_stop_reason(source: &PromptSource, stop_reason: &StopReason) {
 struct ReactionGuard {
     rest: Option<crate::relay::RestClient>,
     ids: Vec<String>,
+    outcome: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl ReactionGuard {
-    fn new(rest: crate::relay::RestClient, ids: Vec<String>) -> Self {
-        Self {
-            rest: if ids.is_empty() { None } else { Some(rest) },
-            ids,
-        }
+    fn new(rest: crate::relay::RestClient, ids: Vec<String>) -> (Self, Arc<std::sync::atomic::AtomicU8>) {
+        let outcome = Arc::new(std::sync::atomic::AtomicU8::new(REACTION_OUTCOME_NONE));
+        (
+            Self {
+                rest: if ids.is_empty() { None } else { Some(rest) },
+                ids,
+                outcome: Arc::clone(&outcome),
+            },
+            outcome,
+        )
     }
 }
 
@@ -3472,8 +3548,11 @@ impl Drop for ReactionGuard {
         // fallback for the rare cases it isn't.
         if let Some(rest) = self.rest.take() {
             let ids = std::mem::take(&mut self.ids);
+            let outcome = self
+                .outcome
+                .load(std::sync::atomic::Ordering::Relaxed);
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(clear_reactions(rest, ids));
+                handle.spawn(clear_reactions(rest, ids, outcome));
             }
             // If no runtime is available, reactions are left as-is — they are
             // cosmetic indicators and the stale state is harmless.
@@ -3814,6 +3893,16 @@ async fn publish_agent_turn_metric(
 
 const REACTION_SEEN: &str = "👀";
 const REACTION_WORKING: &str = "💬";
+/// Left on the trigger message after a successful turn so the timeline shows
+/// that coding finished (👀/💬 are cleared on completion).
+const REACTION_DONE: &str = "✅";
+/// Left after a failed / cancelled turn for a durable error signal.
+const REACTION_FAIL: &str = "⚠️";
+
+/// Reaction outcome stored by `ReactionGuard` (0=unset, 1=ok, 2=fail).
+const REACTION_OUTCOME_NONE: u8 = 0;
+const REACTION_OUTCOME_OK: u8 = 1;
+const REACTION_OUTCOME_FAIL: u8 = 2;
 
 /// Best-effort timeout for a single reaction REST call.
 const REACTION_TIMEOUT: Duration = Duration::from_millis(500);
@@ -4127,6 +4216,336 @@ fn auto_post_reply_enabled() -> bool {
     }
 }
 
+/// Whether to post mid-turn coding/tool progress as visible kind:9 messages.
+///
+/// Default ON when auto-post is enabled (room bots need timeline status).
+/// Override with `BUZZ_ACP_PROGRESS_POST=0|false|off` to disable.
+fn progress_post_enabled() -> bool {
+    match std::env::var("BUZZ_ACP_PROGRESS_POST") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            !(t.is_empty() || t == "0" || t == "false" || t == "no" || t == "off")
+        }
+        Err(_) => auto_post_reply_enabled(),
+    }
+}
+
+/// Truncate a one-line label for channel progress posts.
+fn progress_label(s: &str, max_chars: usize) -> String {
+    let one_line: String = s
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out: String = one_line.chars().take(max_chars).collect();
+    if one_line.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+/// High-level work type for mid-turn status lines (label must match the tool).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressCategory {
+    Weather,
+    Research,
+    Files,
+    Shell,
+    Code,
+    Message,
+    Generic,
+}
+
+/// Infer progress category from ACP tool `kind` + `title` (and optional args text).
+fn classify_progress_tool(kind: &str, title: &str) -> ProgressCategory {
+    let blob = format!("{kind} {title}").to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| blob.contains(n));
+
+    if has(&[
+        "weather",
+        "forecast",
+        "气温",
+        "天气",
+        "temperature",
+        "climate",
+    ]) {
+        return ProgressCategory::Weather;
+    }
+    if has(&[
+        "web_search",
+        "websearch",
+        "search",
+        "browse",
+        "fetch",
+        "http",
+        "url",
+        "crawl",
+        "research",
+        "wikipedia",
+    ]) {
+        return ProgressCategory::Research;
+    }
+    if has(&[
+        "read_file",
+        "write_file",
+        "edit_file",
+        "read",
+        "write",
+        "edit",
+        "str_replace",
+        "apply_patch",
+        "filesystem",
+        "glob",
+        "list_dir",
+        "ls ",
+    ]) {
+        return ProgressCategory::Files;
+    }
+    if has(&[
+        "run_terminal",
+        "terminal",
+        "shell",
+        "bash",
+        "powershell",
+        "cmd",
+        "execute",
+        "command",
+    ]) {
+        // Prefer Code when the command is clearly a build/test/git op.
+        if has(&[
+            "cargo",
+            "npm",
+            "pnpm",
+            "yarn",
+            "pytest",
+            "jest",
+            "compile",
+            "build",
+            "rustc",
+            "go build",
+            "mvn",
+            "gradle",
+            "git ",
+            "docker",
+            "make ",
+            "cmake",
+        ]) {
+            return ProgressCategory::Code;
+        }
+        return ProgressCategory::Shell;
+    }
+    if has(&[
+        "cargo",
+        "compile",
+        "build",
+        "test",
+        "lint",
+        "format",
+        "refactor",
+        "debugger",
+        "git",
+        "patch",
+    ]) {
+        return ProgressCategory::Code;
+    }
+    if has(&[
+        "message",
+        "messages send",
+        "buzz messages",
+        "post",
+        "notify",
+        "email",
+        "slack",
+    ]) {
+        return ProgressCategory::Message;
+    }
+    ProgressCategory::Generic
+}
+
+/// `(emoji, short label)` for status prefix, e.g. `🌤️ **查询天气**`.
+fn progress_heading(cat: ProgressCategory) -> (&'static str, &'static str) {
+    match cat {
+        ProgressCategory::Weather => ("🌤️", "查询天气"),
+        ProgressCategory::Research => ("🔍", "检索中"),
+        ProgressCategory::Files => ("📄", "读写文件"),
+        ProgressCategory::Shell => ("💻", "执行命令"),
+        ProgressCategory::Code => ("⚙️", "编码中"),
+        ProgressCategory::Message => ("💬", "发送消息"),
+        ProgressCategory::Generic => ("⚙️", "处理中"),
+    }
+}
+
+fn format_progress_prefix(cat: ProgressCategory) -> String {
+    let (emoji, label) = progress_heading(cat);
+    format!("{emoji} **{label}**")
+}
+
+/// Pick a turn-level category from observed tool kinds (prefer specific over Generic).
+fn dominant_progress_category(counts: &[u32; 7]) -> ProgressCategory {
+    // Index order matches enum variants below.
+    let order = [
+        ProgressCategory::Weather,
+        ProgressCategory::Research,
+        ProgressCategory::Code,
+        ProgressCategory::Shell,
+        ProgressCategory::Files,
+        ProgressCategory::Message,
+        ProgressCategory::Generic,
+    ];
+    let mut best = ProgressCategory::Generic;
+    let mut best_n = 0u32;
+    for cat in order {
+        let n = counts[cat as usize];
+        if n > best_n {
+            best_n = n;
+            best = cat;
+        }
+    }
+    best
+}
+
+/// Consume tool progress events and publish throttled, human-readable status
+/// lines into the channel thread while a turn is in flight.
+async fn run_coding_progress_poster(
+    rest: crate::relay::RestClient,
+    channel_id: Uuid,
+    tags: ThreadTags,
+    mut rx: mpsc::UnboundedReceiver<CodingProgressEvent>,
+) {
+    let min_interval = Duration::from_secs(8);
+    let max_posts: u32 = 32;
+    let mut last_post: Option<tokio::time::Instant> = None;
+    let mut tool_starts: u32 = 0;
+    let mut posts: u32 = 0;
+    let mut failed: u32 = 0;
+    let mut completed: u32 = 0;
+    let mut category_counts = [0u32; 7];
+    let mut last_cat = ProgressCategory::Generic;
+
+    while let Some(ev) = rx.recv().await {
+        if posts >= max_posts {
+            continue;
+        }
+        let now = tokio::time::Instant::now();
+        let interval_ok = last_post
+            .map(|t| now.duration_since(t) >= min_interval)
+            .unwrap_or(true);
+        let content = match ev {
+            CodingProgressEvent::ToolStarted {
+                title,
+                kind,
+                tool_call_id: _,
+            } => {
+                tool_starts = tool_starts.saturating_add(1);
+                let cat = classify_progress_tool(&kind, &title);
+                last_cat = cat;
+                category_counts[cat as usize] = category_counts[cat as usize].saturating_add(1);
+                let title = progress_label(&title, 100);
+                let kind_l = progress_label(&kind, 24);
+                if tool_starts > 1 && !interval_ok {
+                    continue;
+                }
+                let prefix = format_progress_prefix(cat);
+                // For a single, well-named tool (weather, etc.), prefer plain language.
+                match cat {
+                    ProgressCategory::Weather => {
+                        format!("{prefix} · 正在查询 · `{title}`")
+                    }
+                    ProgressCategory::Research => {
+                        format!("{prefix} · 第 {tool_starts} 步 · `{title}`")
+                    }
+                    ProgressCategory::Message => {
+                        format!("{prefix} · `{title}`")
+                    }
+                    _ => {
+                        format!("{prefix} · 第 {tool_starts} 步 · `{kind_l}` · {title}")
+                    }
+                }
+            }
+            CodingProgressEvent::ToolUpdated {
+                tool_call_id: _,
+                status,
+                title,
+            } => {
+                let status_l = status.to_ascii_lowercase();
+                let failed_like = matches!(
+                    status_l.as_str(),
+                    "failed" | "error" | "cancelled" | "canceled"
+                );
+                if failed_like {
+                    failed = failed.saturating_add(1);
+                } else if status_l == "completed" {
+                    completed = completed.saturating_add(1);
+                    // Heartbeat only on longer multi-tool turns.
+                    if completed % 5 != 0 || !interval_ok {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                let title_raw = title.as_deref().unwrap_or("");
+                let cat = if title_raw.is_empty() {
+                    last_cat
+                } else {
+                    classify_progress_tool("", title_raw)
+                };
+                let title_s = if title_raw.is_empty() {
+                    "tool".into()
+                } else {
+                    progress_label(title_raw, 80)
+                };
+                if failed_like {
+                    let prefix = format_progress_prefix(cat);
+                    format!("⚠️ {prefix} · 失败 · `{title_s}` · {status}")
+                } else {
+                    let prefix = format_progress_prefix(last_cat);
+                    format!("{prefix} · 已完成 {completed} 步 · 仍在运行 · 最近 `{title_s}`")
+                }
+            }
+        };
+        post_channel_message(&rest, channel_id, &tags, &content, "turn progress").await;
+        last_post = Some(tokio::time::Instant::now());
+        posts = posts.saturating_add(1);
+    }
+
+    // Closing pulse when we actually did tool work this turn.
+    if tool_starts > 0 && posts < max_posts {
+        let cat = dominant_progress_category(&category_counts);
+        let prefix = format_progress_prefix(cat);
+        let content = match cat {
+            ProgressCategory::Weather => {
+                format!("{prefix} · 查询完成 · 等待最终回复")
+            }
+            ProgressCategory::Research => {
+                format!(
+                    "{prefix} · 检索 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
+                )
+            }
+            ProgressCategory::Code | ProgressCategory::Shell => {
+                format!(
+                    "{prefix} · 本轮命令/编码启动 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
+                )
+            }
+            ProgressCategory::Files => {
+                format!(
+                    "{prefix} · 本轮文件操作 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
+                )
+            }
+            ProgressCategory::Message => {
+                format!("{prefix} · 已调度发送 · 等待最终回复")
+            }
+            ProgressCategory::Generic => {
+                format!(
+                    "{prefix} · 本轮工具 {tool_starts} 次 · 完成 {completed} · 失败 {failed} · 等待最终回复"
+                )
+            }
+        };
+        post_channel_message(&rest, channel_id, &tags, &content, "turn progress").await;
+    }
+}
+
 /// If `BUZZ_ACP_AUTO_POST_REPLY` is set, publish buffered agent_message_chunk
 /// text as a kind:9 so channel timelines show the answer even when the agent
 /// never called `buzz messages send` (common for tool-only specialists).
@@ -4315,10 +4734,15 @@ async fn react_working(rest: &crate::relay::RestClient, event_ids: &[String]) {
     }
 }
 
-/// Fire-and-forget: remove both 👀 and 💬 from all events. Spawned on turn complete.
+/// Fire-and-forget: remove both 👀 and 💬 from all events, then leave a
+/// durable ✅ / ⚠️ when the turn outcome is known. Spawned on turn complete.
 /// Capped at `REACTION_CONCURRENCY` concurrent requests per chunk to avoid
 /// unbounded HTTP fan-out on large batches.
-async fn clear_reactions(rest: crate::relay::RestClient, event_ids: Vec<String>) {
+async fn clear_reactions(
+    rest: crate::relay::RestClient,
+    event_ids: Vec<String>,
+    outcome: u8,
+) {
     // Each event needs two removals (👀 and 💬); pair them and chunk by
     // REACTION_CONCURRENCY pairs so the total concurrent requests stay bounded.
     for chunk in event_ids.chunks(REACTION_CONCURRENCY) {
@@ -4329,6 +4753,19 @@ async fn clear_reactions(rest: crate::relay::RestClient, event_ids: Vec<String>)
             ]
         }))
         .await;
+    }
+    let finish = match outcome {
+        REACTION_OUTCOME_OK => Some(REACTION_DONE),
+        REACTION_OUTCOME_FAIL => Some(REACTION_FAIL),
+        _ => None,
+    };
+    if let Some(emoji) = finish {
+        for chunk in event_ids.chunks(REACTION_CONCURRENCY) {
+            futures_util::future::join_all(
+                chunk.iter().map(|eid| reaction_add(&rest, eid, emoji)),
+            )
+            .await;
+        }
     }
 }
 

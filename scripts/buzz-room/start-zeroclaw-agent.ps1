@@ -53,6 +53,7 @@ Set-RoomAgentOwner -BonyRoot $BonyRoot
 # calling `buzz messages send`. With auto-post, buzz-acp publishes the stream
 # buffer as a durable kind:9 so Desktop channel timelines show the reply.
 $env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+$env:BUZZ_ACP_PROGRESS_POST = "true"
 . (Join-Path $PSScriptRoot "_mention-map.ps1")
 Set-RoomAgentMentionMap
 
