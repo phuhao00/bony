@@ -105,43 +105,90 @@ foreach ($r in $roster) {
 
 $channelId = $null
 if (-not $SkipChannel) {
-  Write-Host "==> Channel '$ChannelName'"
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  Write-Host "==> Channel '$ChannelName' (single instance; retire extras)"
   $grok = $roster | Where-Object Id -eq "grok" | Select-Object -First 1
   $env:BUZZ_PRIVATE_KEY = $grok.Secret
-  # Prefer create; if name already exists relay may error — fall back to listing briefly.
-  $createdRaw = & $buzz channels create --name $ChannelName --type stream --visibility open --description "Local room stack agents" 2>&1 | Out-String
-  try {
-    $created = $createdRaw | ConvertFrom-Json
-    $channelId = $created.channel_id
-  } catch { $channelId = $null }
-  if (-not $channelId) {
-    $listRaw = & $buzz --format compact channels list 2>&1 | Out-String
+
+  function Invoke-BuzzQuiet {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$BuzzArgs)
     try {
-      $listed = $listRaw | ConvertFrom-Json
-      if ($listed -is [System.Array]) {
-        $hit = $listed | Where-Object { $_.name -eq $ChannelName } | Select-Object -First 1
-        if ($hit) { $channelId = $hit.channel_id }
-      } elseif ($listed.name -eq $ChannelName) {
-        $channelId = $listed.channel_id
-      }
+      & $script:buzz @BuzzArgs 1>$null 2>$null
     } catch {}
   }
+
+  function Get-ChannelList {
+    try {
+      $listRaw = & $script:buzz --format compact channels list 2>$null | Out-String
+      $listed = $listRaw | ConvertFrom-Json
+      if ($null -eq $listed) { return @() }
+      if ($listed -isnot [System.Array]) { return @($listed) }
+      return @($listed)
+    } catch {
+      return @()
+    }
+  }
+
+  $all = Get-ChannelList
+  $sameName = @($all | Where-Object { [string]$_.name -eq $ChannelName })
+  if ($sameName.Count -gt 0) {
+    $keep = $null
+    if ($env:BUZZ_ROOM_CHANNEL_ID) {
+      $keep = $sameName | Where-Object { [string]$_.channel_id -eq $env:BUZZ_ROOM_CHANNEL_ID } | Select-Object -First 1
+    }
+    if (-not $keep) {
+      $keep = $sameName | Sort-Object { [string]$_.channel_id } | Select-Object -First 1
+    }
+    $channelId = [string]$keep.channel_id
+    Write-Host "  reusing $channelId (matched $($sameName.Count) named '$ChannelName')"
+    $extras = @($sameName | Where-Object { [string]$_.channel_id -ne $channelId })
+    foreach ($ex in $extras) {
+      $eid = [string]$ex.channel_id
+      $short = if ($eid.Length -gt 8) { $eid.Substring(0, 8) } else { $eid }
+      Write-Host "  retire duplicate Local Room $short"
+      $env:BUZZ_PRIVATE_KEY = $grok.Secret
+      # Archived twins reject leave/update — unarchive first.
+      Invoke-BuzzQuiet channels unarchive --channel $eid
+      $retiredName = "Local Room retired $short"
+      Invoke-BuzzQuiet channels update --channel $eid --name $retiredName
+      # Specialists drop membership; Grok remains last owner so channel can stay archived.
+      foreach ($r in $roster) {
+        if ($r.Id -eq "grok") { continue }
+        $env:BUZZ_PRIVATE_KEY = $r.Secret
+        Invoke-BuzzQuiet channels leave --channel $eid
+      }
+      $env:BUZZ_PRIVATE_KEY = $grok.Secret
+      Invoke-BuzzQuiet channels archive --channel $eid
+    }
+  } else {
+    Write-Host "  creating new '$ChannelName' (none found)"
+    $createdRaw = ""
+    try {
+      $createdRaw = & $buzz channels create --name $ChannelName --type stream --visibility open --description "Local room stack agents" 2>$null | Out-String
+      $created = $createdRaw | ConvertFrom-Json
+      $channelId = $created.channel_id
+    } catch { $channelId = $null }
+    if (-not $channelId) {
+      throw "could not create channel '$ChannelName': $createdRaw"
+    }
+  }
   if (-not $channelId) {
-    throw "could not create or find channel '$ChannelName': $createdRaw"
+    throw "could not resolve channel '$ChannelName'"
   }
   Write-Host "  channel $channelId"
 
+  $env:BUZZ_PRIVATE_KEY = $grok.Secret
   foreach ($r in $roster) {
     if ($r.Id -eq "grok") { continue }
-    $env:BUZZ_PRIVATE_KEY = $grok.Secret
-    & $buzz channels add-member --channel $channelId --pubkey $r.Pubkey --role bot 2>&1 | Out-Host
+    Invoke-BuzzQuiet channels add-member --channel $channelId --pubkey $r.Pubkey --role bot
   }
-  # Ensure each agent is a member even if add-member failed (re-join)
   foreach ($r in $roster) {
     $env:BUZZ_PRIVATE_KEY = $r.Secret
-    & $buzz channels join --channel $channelId 2>&1 | Out-Null
+    Invoke-BuzzQuiet channels join --channel $channelId
   }
   Write-Host "  members ready in channel $channelId"
+  $ErrorActionPreference = $prevEap
 }
 
 if (-not $SkipManagedAgents) {
@@ -150,6 +197,12 @@ if (-not $SkipManagedAgents) {
     (Join-Path $env:APPDATA "xyz.block.buzz.app\agents\managed-agents.json"),
     (Join-Path $env:APPDATA "xyz.block.buzz.app.dev\agents\managed-agents.json")
   )
+  # Bony Desktop instance (start-desktop sets BUZZ_DESKTOP_INSTANCE_ID=bony-local)
+  $inst = [Environment]::GetEnvironmentVariable("BUZZ_DESKTOP_INSTANCE_ID", "Process")
+  if ([string]::IsNullOrWhiteSpace($inst)) { $inst = "bony-local" }
+  $storePaths += (Join-Path $env:APPDATA "xyz.block.buzz.app.$inst\agents\managed-agents.json")
+  $storePaths = @($storePaths | Select-Object -Unique)
+
   $acpCmd = if ($acp) { $acp } else { "buzz-acp" }
   $now = (Get-Date).ToUniversalTime().ToString("o")
   $roomRecords = @()
@@ -187,37 +240,107 @@ if (-not $SkipManagedAgents) {
       auth_tag                       = $null
       avatar_url                     = $null
       team_id                        = $null
+      persona_id                     = $null
     }
     Write-Host ("  managed-agents += {0} ({1}…)" -f $r.DisplayName, $r.Pubkey.Substring(0, [Math]::Min(12, $r.Pubkey.Length)))
   }
-  $roomNames = @($roomRecords | ForEach-Object { $_.name })
+  $roomNames = @($roomRecords | ForEach-Object { $_.name.ToLowerInvariant() })
   $roomPks = @($roomRecords | ForEach-Object { ([string]$_.pubkey).ToLowerInvariant() })
+
+  function Score-ManagedAgent($a) {
+    $s = 0
+    $pk = [string]$a.pubkey
+    if ($pk.Length -eq 64) { $s += 8 }
+    if ($a.private_key_nsec) { $s += 4 }
+    if ($a.persona_id) { $s += 2 }
+    if ($a.is_builtin) { $s += 1 }
+    if ($a.is_active) { $s += 1 }
+    return $s
+  }
+
+  function Dedupe-ManagedAgents([object[]]$items) {
+    $best = @{}
+    foreach ($a in $items) {
+      if ($null -eq $a) { continue }
+      $nm = [string]$a.name
+      $pk = [string]$a.pubkey
+      if ([string]::IsNullOrWhiteSpace($nm)) { continue }
+      # Ghost stubs with empty pubkey break @mentions / start agent.
+      if ([string]::IsNullOrWhiteSpace($pk)) { continue }
+      $key = $nm.ToLowerInvariant()
+      if (-not $best.ContainsKey($key)) {
+        $best[$key] = $a
+        continue
+      }
+      if ((Score-ManagedAgent $a) -ge (Score-ManagedAgent $best[$key])) {
+        $best[$key] = $a
+      }
+    }
+    # Secondary: same pubkey under two names → keep higher score name only
+    $byPk = @{}
+    foreach ($kv in $best.GetEnumerator()) {
+      $a = $kv.Value
+      $pk = ([string]$a.pubkey).ToLowerInvariant()
+      if (-not $byPk.ContainsKey($pk)) {
+        $byPk[$pk] = $a
+        continue
+      }
+      if ((Score-ManagedAgent $a) -ge (Score-ManagedAgent $byPk[$pk])) {
+        $byPk[$pk] = $a
+      }
+    }
+    return @($byPk.Values)
+  }
 
   foreach ($storePath in $storePaths) {
     $dir = Split-Path $storePath -Parent
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $kept = @()
-    if ((Test-Path $storePath) -and -not $ReplaceStore) {
+    if (Test-Path $storePath) {
       try {
         $raw = Get-Content $storePath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($raw -is [System.Array]) {
           foreach ($a in $raw) {
             $pk = [string]$a.pubkey
             $nm = [string]$a.name
-            if (-not $pk.Trim() -or -not $nm.Trim()) { continue }
-            if ($roomPks -contains $pk.ToLowerInvariant()) { continue }
-            if ($roomNames -contains $nm) { continue }
+            if ([string]::IsNullOrWhiteSpace($nm)) { continue }
+            if ([string]::IsNullOrWhiteSpace($pk)) { continue }
+            $nmL = $nm.ToLowerInvariant()
+            $pkL = $pk.ToLowerInvariant()
+            # Room seats always rewritten from keys — skip old copies.
+            if ($roomPks -contains $pkL) { continue }
+            if ($roomNames -contains $nmL) { continue }
+            if ($ReplaceStore) {
+              # Keep only real builtins (not orphan room clones).
+              $isBu = ($a.is_builtin -eq $true) -or ([string]$a.persona_id -match '^builtin:')
+              if (-not $isBu) { continue }
+            }
+            # Never let Desktop spawn room external seats (double process).
+            try { $a.start_on_app_launch = $false } catch {}
+            try { $a.auto_restart_on_config_change = $false } catch {}
+            try { $a.runtime_pid = $null } catch {}
             $kept += $a
           }
         }
-      } catch {}
-    } elseif (Test-Path $storePath) {
-      Write-Host "  replace mode: dropping previous $storePath"
+      } catch {
+        Write-Warning "  could not parse $storePath — rewriting: $_"
+      }
     }
-    $final = @($kept) + @($roomRecords)
+    $final = Dedupe-ManagedAgents (@($kept) + @($roomRecords))
+    # Force room seats never auto-spawn from Desktop.
+    $final = @($final | ForEach-Object {
+      $nmL = ([string]$_.name).ToLowerInvariant()
+      $pkL = ([string]$_.pubkey).ToLowerInvariant()
+      if (($roomNames -contains $nmL) -or ($roomPks -contains $pkL)) {
+        try { $_.start_on_app_launch = $false } catch {}
+        try { $_.auto_restart_on_config_change = $false } catch {}
+        try { $_.runtime_pid = $null } catch {}
+      }
+      $_
+    })
     $json = $final | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($storePath, $json, [System.Text.UTF8Encoding]::new($false))
-    Write-Host "==> wrote $storePath ($($final.Count) agents)"
+    Write-Host "==> wrote $storePath ($($final.Count) unique agents)"
   }
   Write-Host "    Restart Buzz Desktop (or re-open Agents) to refresh the list."
 }

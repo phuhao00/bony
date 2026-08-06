@@ -64,6 +64,10 @@ $env:OPENMONTAGE_ROOT = $OpenMontageRoot
 Set-RoomAgentOwner -BonyRoot $BonyRoot
 
 $env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+$env:BUZZ_ACP_PROGRESS_POST = "true"
+
+. (Join-Path $PSScriptRoot "_mention-map.ps1")
+Set-RoomAgentMentionMap
 
 if ($env:BUZZ_AGENT_PROVIDER -and $agent) {
   $env:BUZZ_ACP_AGENT_COMMAND = $agent
