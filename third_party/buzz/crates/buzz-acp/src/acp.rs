@@ -211,6 +211,10 @@ pub struct AcpClient {
     /// deltas. Both goose and buzz-agent emit this notification; goose gates
     /// on client capability advertisement, buzz-agent emits unconditionally.
     goose_usage: UsageTracker,
+    /// Concatenated `agent_message_chunk` text for the in-flight turn.
+    /// Used by `BUZZ_ACP_AUTO_POST_REPLY` to publish a durable kind:9 when
+    /// the agent streams an answer without calling `buzz messages send`.
+    agent_message_buf: String,
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -550,7 +554,18 @@ impl AcpClient {
             steering_supported: false,
             steer_rx: None,
             goose_usage: UsageTracker::default(),
+            agent_message_buf: String::new(),
         })
+    }
+
+    /// Clear the per-turn agent message buffer before `session/prompt`.
+    pub fn clear_agent_message_buf(&mut self) {
+        self.agent_message_buf.clear();
+    }
+
+    /// Drain the buffered agent_message_chunk text for this turn.
+    pub fn take_agent_message_buf(&mut self) -> String {
+        std::mem::take(&mut self.agent_message_buf)
     }
 
     /// Attach a local observer feed to this ACP client.
@@ -768,6 +783,8 @@ impl AcpClient {
         idle_timeout: std::time::Duration,
         max_duration: std::time::Duration,
     ) -> Result<StopReason, AcpError> {
+        // Fresh reply buffer for this turn (used by BUZZ_ACP_AUTO_POST_REPLY).
+        self.clear_agent_message_buf();
         let params = build_prompt_params(session_id, prompt_blocks);
         let hard_deadline = tokio::time::Instant::now() + max_duration;
         self.current_hard_deadline = Some(hard_deadline);
@@ -1732,6 +1749,13 @@ impl AcpClient {
             "agent_message_chunk" => {
                 if let Some(text) = update["content"]["text"].as_str() {
                     tracing::info!(target: "acp::stream", "{text}");
+                    // Cap buffer so a runaway stream cannot OOM the harness.
+                    const MAX_AUTO_POST_CHARS: usize = 32_000;
+                    if self.agent_message_buf.len() < MAX_AUTO_POST_CHARS {
+                        let room = MAX_AUTO_POST_CHARS - self.agent_message_buf.len();
+                        let take = text.chars().take(room).collect::<String>();
+                        self.agent_message_buf.push_str(&take);
+                    }
                 }
                 false
             }

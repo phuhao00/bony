@@ -58,6 +58,11 @@ $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
 $env:BUZZ_ACP_DISPLAY_NAME = "Unity Agent"
 
+. (Join-Path $PSScriptRoot "_agent-owner.ps1")
+Set-RoomAgentOwner -BonyRoot $BonyRoot
+
+$env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+
 if ($env:BUZZ_AGENT_PROVIDER -and $agent) {
   $env:BUZZ_ACP_AGENT_COMMAND = $agent
   $env:BUZZ_ACP_AGENT_ARGS = ""

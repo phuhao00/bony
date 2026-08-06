@@ -43,7 +43,44 @@ $env:BUZZ_ACP_PERMISSION_MODE = "accept-edits"
 $env:BUZZ_ACP_SYSTEM_PROMPT_FILE = $SystemPromptFile
 $env:BUZZ_ACP_DISPLAY_NAME = "ZeroClaw"
 
+. (Join-Path $PSScriptRoot "_agent-owner.ps1")
+Set-RoomAgentOwner -BonyRoot $BonyRoot
+
+# Specialists (ZeroClaw / weather tools) often stream a full answer without
+# calling `buzz messages send`. With auto-post, buzz-acp publishes the stream
+# buffer as a durable kind:9 so Desktop channel timelines show the reply.
+$env:BUZZ_ACP_AUTO_POST_REPLY = "true"
+
+# Load MaaS secrets if present (from .local-runtime/maas-llm.env)
+$maasEnv = Join-Path (Get-BonyRoot) ".local-runtime\maas-llm.env"
+if (Test-Path $maasEnv) {
+  Get-Content $maasEnv | ForEach-Object {
+    if ($_ -match '^\s*#' -or $_ -match '^\s*$') { return }
+    if ($_ -match '^\s*([^=]+)=(.*)$') {
+      $n = $Matches[1].Trim(); $v = $Matches[2].Trim().Trim('"')
+      if ($n -and $v) { Set-Item -Path "Env:$n" -Value $v }
+    }
+  }
+}
+
+# DashScope / MaaS OpenAI-compatible — ensure key is visible to Hidden launches.
+foreach ($k in @("DASHSCOPE_API_KEY", "QWEN_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL")) {
+  if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($k, "Process"))) { continue }
+  $u = [Environment]::GetEnvironmentVariable($k, "User")
+  if ([string]::IsNullOrEmpty($u)) { $u = [Environment]::GetEnvironmentVariable($k, "Machine") }
+  if (-not [string]::IsNullOrEmpty($u)) { Set-Item -Path "Env:$k" -Value $u }
+}
+if ([string]::IsNullOrEmpty($env:OPENAI_API_KEY) -and -not [string]::IsNullOrEmpty($env:DASHSCOPE_API_KEY)) {
+  $env:OPENAI_API_KEY = $env:DASHSCOPE_API_KEY
+}
+
 Write-Host "ZeroClaw specialist → $ZeroclawBin"
 Write-Host "  acp: $acp"
 Write-Host "  buzz: $BuzzRoot"
+if ($env:DASHSCOPE_API_KEY) {
+  Write-Host "  llm key: set (len=$($env:DASHSCOPE_API_KEY.Length))"
+  if ($env:OPENAI_BASE_URL) { Write-Host "  base: $($env:OPENAI_BASE_URL)" }
+} else {
+  Write-Warning "  llm key: MISSING — model calls will 401"
+}
 & $acp

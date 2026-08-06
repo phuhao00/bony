@@ -2,15 +2,20 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import type { ReactNode } from "react";
 
+import { getDefaultRelayUrl } from "@/shared/api/tauri";
+import { getIdentity } from "@/shared/api/tauriIdentity";
 import type { Community } from "./types";
 import {
   clearCommunityStorage,
+  ensureLocalCommunityActive,
+  isLocalRelayUrl,
   loadActiveCommunityId,
   loadCommunities,
   saveActiveCommunityId,
@@ -163,6 +168,50 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
   const [reinitKey, setReinitKey] = useState(0);
   const communitiesRef = useRef(communities);
   communitiesRef.current = communities;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+
+  // Monorepo/local-relay launch: pin active community to loopback so the normal
+  // create-channel + create-agent path hits the open local stack, not a leftover
+  // production community still sitting in localStorage.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const defaultRelayUrl = await getDefaultRelayUrl();
+        if (cancelled || !isLocalRelayUrl(defaultRelayUrl)) {
+          return;
+        }
+        const identity = await getIdentity();
+        if (cancelled) {
+          return;
+        }
+        const result = ensureLocalCommunityActive({
+          defaultRelayUrl,
+          identityPubkey: identity.pubkey,
+          communities: communitiesRef.current,
+          activeId: activeIdRef.current,
+        });
+        if (!result.changed) {
+          return;
+        }
+        saveCommunities(result.communities);
+        setCommunitiesState(result.communities);
+        if (result.activeId) {
+          saveActiveCommunityId(result.activeId);
+          setActiveId(result.activeId);
+        }
+      } catch (error) {
+        console.error(
+          "[communities] failed to pin local monorepo community:",
+          error,
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const activeCommunity = useMemo(
     () => communities.find((w) => w.id === activeId) ?? communities[0] ?? null,

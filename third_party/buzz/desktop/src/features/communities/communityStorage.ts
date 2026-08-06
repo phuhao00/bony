@@ -118,13 +118,108 @@ function isLocalRelayHost(hostname: string): boolean {
 export function shouldAutoConnectDefaultRelay(relayUrl: string): boolean {
   try {
     const parsed = new URL(relayUrl);
-    return (
-      (parsed.protocol === "ws:" || parsed.protocol === "wss:") &&
-      !isLocalRelayHost(parsed.hostname)
-    );
+    // Local monorepo stacks (ws://localhost:3000) must auto-connect: excluding
+    // loopback left create-channel orphaned against a missing first community
+    // or a stale production community still in localStorage.
+    return parsed.protocol === "ws:" || parsed.protocol === "wss:";
   } catch {
     return false;
   }
+}
+
+/** True when the relay host is a loopback address used by the local room stack. */
+export function isLocalRelayUrl(relayUrl: string): boolean {
+  try {
+    const normalized = normalizeRelayUrl(relayUrl);
+    const parsed = new URL(
+      normalized.replace("ws://", "http://").replace("wss://", "https://"),
+    );
+    return isLocalRelayHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function relayUrlKey(relayUrl: string): string {
+  return normalizeRelayUrl(relayUrl).replace(/\/$/, "").toLowerCase();
+}
+
+/**
+ * When Desktop is launched against a loopback default relay, ensure a Local Dev
+ * community exists and is active so normal create-channel / add-agent lands on
+ * the same open relay the room agents listen to.
+ */
+export function ensureLocalCommunityActive(args: {
+  defaultRelayUrl: string;
+  identityPubkey: string;
+  communities: Community[];
+  activeId: string | null;
+}): { communities: Community[]; activeId: string | null; changed: boolean } {
+  if (!isLocalRelayUrl(args.defaultRelayUrl)) {
+    return {
+      communities: args.communities,
+      activeId: args.activeId,
+      changed: false,
+    };
+  }
+
+  const preferred = normalizeRelayUrl(args.defaultRelayUrl);
+  // Always use `localhost` for loopback monorepo communities. 127.0.0.1 is a
+  // different Host for buzz-relay multi-tenant and yields WebSocket 404, so
+  // managed agents never hear @mentions even when the UI works.
+  const preferredCanonical = preferred
+    .replace("://127.0.0.1", "://localhost")
+    .replace("://[::1]", "://localhost")
+    .replace("://0.0.0.0", "://localhost");
+  const preferredKey = relayUrlKey(preferredCanonical);
+  let communities = args.communities.slice();
+  let changed = false;
+
+  // Rewrite any 127.0.0.1 / ::1 entries onto the canonical preferred host.
+  communities = communities.map((c) => {
+    if (!isLocalRelayUrl(c.relayUrl)) {
+      return c;
+    }
+    const next = normalizeRelayUrl(c.relayUrl)
+      .replace("://127.0.0.1", "://localhost")
+      .replace("://[::1]", "://localhost")
+      .replace("://0.0.0.0", "://localhost");
+    if (next === c.relayUrl) {
+      return c;
+    }
+    changed = true;
+    return { ...c, relayUrl: next };
+  });
+
+  let local =
+    communities.find((c) => relayUrlKey(c.relayUrl) === preferredKey) ??
+    communities.find((c) => isLocalRelayUrl(c.relayUrl));
+
+  if (!local) {
+    local = {
+      id: crypto.randomUUID(),
+      name: deriveCommunityName(preferredCanonical),
+      relayUrl: preferredCanonical,
+      pubkey: args.identityPubkey,
+      addedAt: new Date().toISOString(),
+    };
+    communities = [...communities, local];
+    changed = true;
+  } else if (relayUrlKey(local.relayUrl) !== preferredKey) {
+    // Prefer the env default host when several locals exist.
+    local = { ...local, relayUrl: preferredCanonical };
+    communities = communities.map((c) =>
+      c.id === local!.id ? local! : c,
+    );
+    changed = true;
+  }
+
+  const active = communities.find((c) => c.id === args.activeId);
+  if (!active || !isLocalRelayUrl(active.relayUrl)) {
+    return { communities, activeId: local.id, changed: true };
+  }
+
+  return { communities, activeId: args.activeId, changed };
 }
 
 export function deriveCommunityName(relayUrl: string): string {

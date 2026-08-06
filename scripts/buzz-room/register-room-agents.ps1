@@ -8,7 +8,10 @@ param(
   [string]$KeysDir = (Join-Path $PSScriptRoot "keys"),
   [string]$ChannelName = "Local Room",
   [switch]$SkipManagedAgents,
-  [switch]$SkipChannel
+  [switch]$SkipChannel,
+  # Replace managed-agents.json with only the four room agents (drops ghosts /
+  # blank pubkey stubs that break Start agent). Default: on for local stack.
+  [switch]$ReplaceStore = $true
 )
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_paths.ps1")
@@ -142,86 +145,81 @@ if (-not $SkipChannel) {
 }
 
 if (-not $SkipManagedAgents) {
-  $storeDir = Join-Path $env:APPDATA "xyz.block.buzz.app\agents"
-  $storePath = Join-Path $storeDir "managed-agents.json"
-  New-Item -ItemType Directory -Force -Path $storeDir | Out-Null
-  $payload = @{
-    storePath   = $storePath
-    bonesRoot   = $BonyRoot
-    acp         = $(if ($acp) { $acp } else { "buzz-acp" })
-    relayWs     = $RelayWs
-    agents      = @($roster | ForEach-Object {
-      @{
-        name           = $_.DisplayName
-        about          = $_.About
-        pubkey         = $_.Pubkey
-        secret         = $_.Secret
-        agent_command  = $_.AgentCommand
-        agent_args     = @($_.AgentArgs)
-        mcp_command    = $_.Mcp
-      }
-    })
+  # Desktop identifier may be xyz.block.buzz.app (fast path) or .dev (tauri override).
+  $storePaths = @(
+    (Join-Path $env:APPDATA "xyz.block.buzz.app\agents\managed-agents.json"),
+    (Join-Path $env:APPDATA "xyz.block.buzz.app.dev\agents\managed-agents.json")
+  )
+  $acpCmd = if ($acp) { $acp } else { "buzz-acp" }
+  $now = (Get-Date).ToUniversalTime().ToString("o")
+  $roomRecords = @()
+  foreach ($r in $roster) {
+    $roomRecords += [ordered]@{
+      pubkey                         = $r.Pubkey
+      name                           = $r.DisplayName
+      private_key_nsec               = $r.Secret
+      relay_url                      = $RelayWs
+      acp_command                    = $acpCmd
+      agent_command                  = $r.AgentCommand
+      agent_args                     = @($r.AgentArgs)
+      mcp_command                    = $(if ($r.Mcp) { [string]$r.Mcp } else { "" })
+      system_prompt                  = ("Local room agent: {0}. {1}" -f $r.DisplayName, $r.About).Trim()
+      respond_to                     = "anyone"
+      respond_to_allowlist           = @()
+      backend                        = @{ type = "local" }
+      is_active                      = $true
+      is_builtin                     = $false
+      # Must stay definition-less. Setting persona_id without a matching
+      # definitions[] row makes Desktop resolve OrphanedInstance and refuse
+      # mentions with "This agent's configuration is missing".
+      # External room harness runs agents via start-external-room-agents.ps1.
+      # Desktop auto-spawn would only open setup-listener / dual identity noise.
+      start_on_app_launch            = $false
+      auto_restart_on_config_change  = $false
+      parallelism                    = 1
+      turn_timeout_seconds           = 320
+      created_at                     = $now
+      updated_at                     = $now
+      last_error                     = $null
+      last_error_code                = $null
+      last_exit_code                 = $null
+      runtime_pid                    = $null
+      auth_tag                       = $null
+      avatar_url                     = $null
+      team_id                        = $null
+    }
+    Write-Host ("  managed-agents += {0} ({1}…)" -f $r.DisplayName, $r.Pubkey.Substring(0, [Math]::Min(12, $r.Pubkey.Length)))
   }
-  $payloadJson = $payload | ConvertTo-Json -Depth 6 -Compress
-  $py = @'
-import json, sys
-from datetime import datetime, timezone
-from pathlib import Path
+  $roomNames = @($roomRecords | ForEach-Object { $_.name })
+  $roomPks = @($roomRecords | ForEach-Object { ([string]$_.pubkey).ToLowerInvariant() })
 
-data = json.loads(sys.stdin.read())
-store = Path(data["storePath"])
-store.parent.mkdir(parents=True, exist_ok=True)
-existing = []
-if store.exists():
-    try:
-        raw = json.loads(store.read_text(encoding="utf-8-sig"))
-        if isinstance(raw, list):
-            existing = [a for a in raw if isinstance(a, dict) and a.get("name") and a.get("pubkey")]
-    except Exception:
-        existing = []
-names = {a["name"] for a in data["agents"]}
-pks = {(a["pubkey"] or "").lower() for a in data["agents"]}
-kept = [a for a in existing if (a.get("pubkey") or "").lower() not in pks and a.get("name") not in names]
-now = datetime.now(timezone.utc).isoformat()
-acp = data["acp"]
-for a in data["agents"]:
-    kept.append({
-        "pubkey": a["pubkey"],
-        "name": a["name"],
-        "private_key_nsec": a["secret"],
-        "relay_url": data["relayWs"],
-        "acp_command": acp,
-        "agent_command": a["agent_command"],
-        "agent_args": a["agent_args"],
-        "mcp_command": a.get("mcp_command") or "",
-        "system_prompt": f"Local room agent: {a['name']}. {a.get('about') or ''}".strip(),
-        "respond_to": "anyone",
-        "respond_to_allowlist": [],
-        "backend": {"type": "local"},
-        "is_active": True,
-        "is_builtin": False,
-        "start_on_app_launch": False,
-        "auto_restart_on_config_change": False,
-        "parallelism": 1,
-        "turn_timeout_seconds": 320,
-        "created_at": now,
-        "updated_at": now,
-        "last_error": None,
-        "last_error_code": None,
-        "last_exit_code": None,
-        "runtime_pid": None,
-        "auth_tag": None,
-        "avatar_url": None,
-        "persona_id": None,
-        "team_id": None,
-    })
-    print(f"  managed-agents += {a['name']}")
-store.write_text(json.dumps(kept, indent=2), encoding="utf-8")
-print(f"==> wrote {store} ({len(kept)} agents total)")
-print("    Restart Buzz Desktop (or re-open Agents) to refresh the list.")
-'@
-  $payloadJson | python -c $py
-  if ($LASTEXITCODE -ne 0) { throw "managed-agents upsert failed" }
+  foreach ($storePath in $storePaths) {
+    $dir = Split-Path $storePath -Parent
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $kept = @()
+    if ((Test-Path $storePath) -and -not $ReplaceStore) {
+      try {
+        $raw = Get-Content $storePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($raw -is [System.Array]) {
+          foreach ($a in $raw) {
+            $pk = [string]$a.pubkey
+            $nm = [string]$a.name
+            if (-not $pk.Trim() -or -not $nm.Trim()) { continue }
+            if ($roomPks -contains $pk.ToLowerInvariant()) { continue }
+            if ($roomNames -contains $nm) { continue }
+            $kept += $a
+          }
+        }
+      } catch {}
+    } elseif (Test-Path $storePath) {
+      Write-Host "  replace mode: dropping previous $storePath"
+    }
+    $final = @($kept) + @($roomRecords)
+    $json = $final | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText($storePath, $json, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "==> wrote $storePath ($($final.Count) agents)"
+  }
+  Write-Host "    Restart Buzz Desktop (or re-open Agents) to refresh the list."
 }
 
 Write-Host ""
@@ -230,3 +228,8 @@ Write-Host "  Relay:   $RelayHttp / $RelayWs"
 if ($channelId) { Write-Host "  Channel: $ChannelName ($channelId)" }
 Write-Host "  Next: join community ws://localhost:3000 and open '$ChannelName'."
 Write-Host "  @Grok works with subscribe=all; specialists respond on @mention."
+# Do not leak the last agent secret into parent shells / Desktop ProcessStartInfo.
+Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
+Remove-Item Env:NOSTR_PRIVATE_KEY -ErrorAction SilentlyContinue
+$env:BUZZ_ACP_DISPLAY_NAME = $null
+$env:BUZZ_ACP_RESPOND_TO = $null
