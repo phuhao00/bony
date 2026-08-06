@@ -16,7 +16,7 @@ if (-not (Test-Path $admin)) {
   throw "buzz-admin not found. Run scripts/buzz-room/build-tools.ps1 first."
 }
 
-$agents = @("grok", "zeroclaw", "unity", "openmontage")
+  $agents = @("grok", "zeroclaw", "unity", "openmontage", "docsmith")
 foreach ($name in $agents) {
   $out = Join-Path $KeysDir "$name.json"
   if (Test-Path $out) {

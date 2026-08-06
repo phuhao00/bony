@@ -26,7 +26,7 @@ $buzz = Find-Bin "buzz" @($BonyRoot, $BuzzRoot)
 if (-not $buzz) { throw "buzz CLI missing" }
 
 $roster = @()
-foreach ($id in @("grok", "zeroclaw", "unity", "openmontage")) {
+foreach ($id in @("grok", "zeroclaw", "unity", "openmontage", "docsmith")) {
   $kf = Join-Path $KeysDir "$id.json"
   if (-not (Test-Path $kf)) { continue }
   $k = Get-Content $kf -Raw | ConvertFrom-Json

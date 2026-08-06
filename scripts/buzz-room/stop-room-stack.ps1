@@ -18,7 +18,8 @@ foreach ($name in @(
     "grok-agent.pid",
     "zeroclaw-agent.pid",
     "unity-agent.pid",
-    "openmontage-agent.pid"
+    "openmontage-agent.pid",
+    "docsmith-agent.pid"
   )) {
   $f = Join-Path $RuntimeDir $name
   if (Test-Path $f) {

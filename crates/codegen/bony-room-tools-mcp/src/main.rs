@@ -5,9 +5,8 @@
 //! - `openmontage_status` — check managed OpenMontage install readiness
 //! - `openmontage_preflight` — run provider menu summary against the venv
 //! - `openmontage_run` — run a Python helper under the OpenMontage root
-//!
-//! Designed to be launched as `BUZZ_ACP_MCP_COMMAND` for a `buzz-agent`
-//! persona (Unity specialist or OpenMontage specialist).
+//! - `coding_task_status` — check whether bony-build desktop binary is ready
+//! - `open_coding_task` — launch a detached Bony Build window for heavy coding
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -174,6 +173,45 @@ fn tool_defs() -> Vec<Value> {
                 "required": ["script"]
             }
         }),
+        json!({
+            "name": "coding_task_status",
+            "description": "Check whether the Bony Build desktop binary (and preferred grok CLI) are available to open a detached coding window.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "bony_root": {
+                        "type": "string",
+                        "description": "Monorepo root (default: BONY_ROOT env or cwd walk)"
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "open_coding_task",
+            "description": "Launch a NEW Bony Build desktop window for a heavy multi-file coding task. Detached (does not wait). Prefer this over in-chat multi-file coding. Args: repo_path, prompt (task description), optional title.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Repository / project root for --cwd"
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Initial user task message seeded into the new window"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional task title for the sidebar"
+                    },
+                    "bony_root": {
+                        "type": "string",
+                        "description": "Monorepo root used to locate bony-build.exe / open-coding-task.ps1"
+                    }
+                },
+                "required": ["prompt"]
+            }
+        }),
     ]
 }
 
@@ -183,6 +221,8 @@ fn call_tool(name: &str, args: &Value) -> Value {
         "openmontage_status" => tool_openmontage_status(args),
         "openmontage_preflight" => tool_openmontage_preflight(args),
         "openmontage_run" => tool_openmontage_run(args),
+        "coding_task_status" => tool_coding_task_status(args),
+        "open_coding_task" => tool_open_coding_task(args),
         other => Err(format!("unknown tool: {other}")),
     };
     match result {
@@ -284,6 +324,179 @@ fn tool_openmontage_run(args: &Value) -> std::result::Result<String, String> {
     tokens.extend(extra);
     let timeout = timeout_from(args, 300, 1800);
     run_capture(&py, &tokens, Some(&root), timeout)
+}
+
+fn bony_root_from(args: &Value) -> PathBuf {
+    if let Some(p) = args.get("bony_root").and_then(|v| v.as_str()) {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(p) = std::env::var("BONY_ROOT") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    // Walk up from current_exe / cwd looking for workspace Cargo.toml with bony-build member.
+    if let Ok(mut dir) = std::env::current_dir() {
+        for _ in 0..8 {
+            let marker = dir.join("crates").join("codegen").join("bony-build");
+            if marker.is_dir() {
+                return dir;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn find_bony_build_exe(root: &Path) -> Option<PathBuf> {
+    for prof in ["release", "debug"] {
+        let p = root.join("target").join(prof).join("bony-build.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+        let p2 = root.join("target").join(prof).join("bony-build");
+        if p2.is_file() {
+            return Some(p2);
+        }
+    }
+    which("bony-build")
+}
+
+fn tool_coding_task_status(args: &Value) -> std::result::Result<String, String> {
+    let root = bony_root_from(args);
+    let exe = find_bony_build_exe(&root);
+    let script = root
+        .join("scripts")
+        .join("buzz-room")
+        .join("open-coding-task.ps1");
+    let grok = which("grok.cmd")
+        .or_else(|| which("grok"))
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(not found on PATH)".into());
+    Ok(format!(
+        "bony_root={}\nbony_build_exe={}\nopen_coding_task_script={}\ngrok={}\nready={}",
+        root.display(),
+        exe.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(missing — cargo build -p bony-build --release)".into()),
+        if script.is_file() {
+            script.display().to_string()
+        } else {
+            "(missing)".into()
+        },
+        grok,
+        exe.is_some()
+    ))
+}
+
+fn tool_open_coding_task(args: &Value) -> std::result::Result<String, String> {
+    let prompt = args
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "prompt is required".to_string())?;
+    let root = bony_root_from(args);
+    let repo = args
+        .get("repo_path")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.clone());
+    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
+
+    let script = root
+        .join("scripts")
+        .join("buzz-room")
+        .join("open-coding-task.ps1");
+    if script.is_file() {
+        let mut cmd = Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.to_string_lossy(),
+            "-RepoPath",
+            &repo.to_string_lossy(),
+            "-Prompt",
+            prompt,
+            "-BonyRoot",
+            &root.to_string_lossy(),
+        ]);
+        if !title.is_empty() {
+            cmd.args(["-Title", title]);
+        }
+        configure_no_window(&mut cmd);
+        let out = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| format!("spawn open-coding-task.ps1: {e}"))?;
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        let err = String::from_utf8_lossy(&out.stderr);
+        if !err.trim().is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&err);
+        }
+        if !out.status.success() {
+            return Err(if text.is_empty() {
+                format!("open-coding-task failed: {}", out.status)
+            } else {
+                text
+            });
+        }
+        return Ok(text);
+    }
+
+    // Fallback: spawn bony-build.exe directly without the PowerShell wrapper.
+    let exe = find_bony_build_exe(&root).ok_or_else(|| {
+        format!(
+            "bony-build.exe not found under {}/target/{{release,debug}} — run: cargo build -p bony-build --release",
+            root.display()
+        )
+    })?;
+    let tmp = std::env::temp_dir().join(format!(
+        "bony-seed-{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    std::fs::write(&tmp, prompt).map_err(|e| format!("write seed prompt: {e}"))?;
+    let mut cmd = Command::new(&exe);
+    cmd.arg("--cwd")
+        .arg(&repo)
+        .arg("--seed-prompt-file")
+        .arg(&tmp);
+    if !title.is_empty() {
+        cmd.arg("--task-title").arg(title);
+    }
+    cmd.current_dir(&repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", exe.display()))?;
+    Ok(format!(
+        "started bony-build pid={} cwd={} seed={}",
+        child.id(),
+        repo.display(),
+        tmp.display()
+    ))
 }
 
 fn openmontage_root(args: &Value) -> PathBuf {
