@@ -9,6 +9,7 @@
 [Prebuilt binaries](#prebuilt-binaries) ·
 [Quick start](#quick-start) ·
 [Features](#features) ·
+[Buzz local collab room](#buzz-local-collab-room) ·
 [Details & VCS](#details--vcs) ·
 [Plugins & Unity](#plugins--unity) ·
 [Web monitor](#web-monitor) ·
@@ -76,6 +77,16 @@ Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-des
 | Web monitor | Architecture layers, “how it works”, feature-impact matrix, commit impact timeline |
 
 Primary sidebar nav today: **New chat** · **Chat** · **Plugins**. Sites / PRs / schedules remain placeholders.
+
+---
+
+## Buzz local collab room
+
+This monorepo also ships a [Block/Buzz](third_party/buzz) local room stack: Grok as coordinator with ZeroClaw / Unity / OpenMontage specialists in a shared channel (`@` handoffs, mid-turn tool status).
+
+![Buzz room: Grok hands Shenzhen weather to ZeroClaw](docs/buzz-room-welcome-handoff.png)
+
+Scripts and policy: [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md), [`scripts/buzz-room`](scripts/buzz-room).
 
 ---
 
@@ -300,7 +311,9 @@ Rollback tag (if still present locally): `backup/pre-upstream-sync`.
 | `scripts/run-monitor.ps1` | Start Web monitor (default :8787) |
 | `scripts/run-dev.ps1` | TUI dev launch |
 | `.github/workflows/release-desktop.yml` | Multi-platform desktop zip release |
-| `docs/` | Screenshots and architecture diagrams |
+| `docs/` | Screenshots and architecture diagrams (incl. Buzz room) |
+| `scripts/buzz-room/` | Local Buzz room: relay / Desktop / external agents |
+| `third_party/buzz` | Buzz sources (in-tree workspace members) |
 | `SOURCE_REV` | Upstream monorepo sync revision |
 
 Full upstream docs remain in each crate and the [user guide](crates/codegen/xai-grok-pager/docs/user-guide/).
