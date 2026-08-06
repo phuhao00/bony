@@ -24,6 +24,10 @@ pub struct BridgeConfig {
     /// Live switch — UI can flip Full Control without reconnecting.
     pub always_approve: Arc<AtomicBool>,
     pub resume_session_id: Option<String>,
+    /// One-shot user prompt to auto-send after the agent session connects.
+    pub seed_prompt: Option<String>,
+    /// Optional title applied to the initial task.
+    pub task_title: Option<String>,
 }
 
 struct PendingPermission {

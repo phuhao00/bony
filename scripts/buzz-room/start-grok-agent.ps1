@@ -26,6 +26,7 @@ function Find-Bin([string]$name, [string[]]$roots) {
 $BonyRoot = Get-BonyRoot
 $acp = Find-Bin "buzz-acp" @($BonyRoot, $BuzzRoot)
 $devMcp = Find-Bin "buzz-dev-mcp" @($BonyRoot, $BuzzRoot)
+$roomMcp = Find-Bin "bony-room-tools-mcp" @($BonyRoot, $BuzzRoot)
 # Prefer Windows npm shims (.cmd) — Get-Command often returns grok.ps1 which
 # CreateProcess cannot launch as the agent binary.
 $grok = $null
@@ -50,7 +51,9 @@ if (-not $grok) {
 }
 if (-not $acp) { throw "buzz-acp not built. Run scripts/buzz-room/build-tools.ps1" }
 if (-not $grok) { throw "grok CLI not found (expected grok.cmd on PATH or under %APPDATA%\npm)" }
-if (-not $devMcp) { Write-Warning "buzz-dev-mcp missing — Grok will not get shell/buzz tools via MCP" }
+# Prefer room MCP for open_coding_task / coding_task_status; fall back to buzz-dev-mcp.
+$mcp = if ($roomMcp) { $roomMcp } elseif ($devMcp) { $devMcp } else { $null }
+if (-not $mcp) { Write-Warning "no MCP binary — Grok will not get open_coding_task via MCP (use shell script)" }
 
 $nsec = $env:BUZZ_PRIVATE_KEY
 if (-not $nsec -and (Test-Path $KeysFile)) {
@@ -67,7 +70,8 @@ $env:BUZZ_RELAY_URL = $RelayUrl
 $env:BUZZ_PRIVATE_KEY = $nsec
 $env:BUZZ_ACP_AGENT_COMMAND = $grok
 $env:BUZZ_ACP_AGENT_ARGS = "agent,stdio"
-if ($devMcp) { $env:BUZZ_ACP_MCP_COMMAND = $devMcp }
+if ($mcp) { $env:BUZZ_ACP_MCP_COMMAND = $mcp }
+$env:BONY_ROOT = (Get-BonyRoot)
 $env:BUZZ_ACP_SUBSCRIBE = "all"
 # Critical: bare subscribe=all with empty kinds = wildcard → reactions, presence,
 # control noise all become turns → multi "Understood…" spam. Restrict to stream
@@ -101,7 +105,7 @@ Write-Host "  relay:   $RelayUrl"
 Write-Host "  cwd:     $Cwd"
 Write-Host "  grok:    $grok"
 Write-Host "  acp:     $acp"
-Write-Host "  mcp:     $devMcp"
+Write-Host "  mcp:     $mcp"
 Write-Host "  prompt:  $SystemPromptFile"
 Write-Host "  subscribe=all  respond-to=anyone  permission=accept-edits"
 

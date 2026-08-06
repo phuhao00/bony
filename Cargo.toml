@@ -13,6 +13,7 @@ members = [
     "crates/codegen/bony-build",
     "crates/codegen/bony-monitor",
     "crates/codegen/bony-room-tools-mcp",
+    "crates/codegen/bony-docs-tools-mcp",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
     "crates/codegen/xai-acp-lib",
@@ -135,6 +136,7 @@ members = [
     "third_party/buzz/examples/countdown-bot",
     "third_party/buzz/desktop/src-tauri",
     "third_party/buzz/desktop/src-tauri/crates/buzz-terminal",
+    "crates/games/snake-game",
 ]
 
 [workspace.package]
@@ -244,6 +246,10 @@ opentelemetry_sdk = { version = "0.32.1", features = ["trace", "rt-tokio", "spec
 parking_lot = "0.12.4"
 pbjson-build = "0.9"
 pdf_oxide = { version = "0.3.43", features = ["rendering"] }
+calamine = "0.26"
+rust_xlsxwriter = "0.79"
+docx-rs = "0.4"
+printpdf = "0.7"
 petgraph = { version = "0.6.5", default-features = false, features = ["serde-1", "stable_graph"] }
 portable-pty = "0.9"
 pprof = "0.15"

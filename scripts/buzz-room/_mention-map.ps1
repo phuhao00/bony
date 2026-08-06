@@ -6,6 +6,7 @@ function Set-RoomAgentMentionMap {
   $parts = @()
   $aliases = @{
     openmontage = @('OpenMontage','OpenMontage Agent','openmontage','Open Montage')
+    docsmith    = @('DocSmith','Doc Smith','docsmith','文档','文档助手')
     unity       = @('Unity','Unity Agent','unity')
     zeroclaw    = @('ZeroClaw','zeroclaw','Zero Claw')
     grok        = @('Grok','grok')
