@@ -5,10 +5,10 @@ function Set-RoomAgentMentionMap {
   if (-not (Test-Path $KeysDir)) { return }
   $parts = @()
   $aliases = @{
-    grok        = @('Grok','grok')
-    zeroclaw    = @('ZeroClaw','zeroclaw','Zero Claw')
+    openmontage = @('OpenMontage','OpenMontage Agent','openmontage','Open Montage')
     unity       = @('Unity','Unity Agent','unity')
-    openmontage = @('OpenMontage','openmontage','Open Montage')
+    zeroclaw    = @('ZeroClaw','zeroclaw','Zero Claw')
+    grok        = @('Grok','grok')
   }
   Get-ChildItem -Path $KeysDir -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {
     try {

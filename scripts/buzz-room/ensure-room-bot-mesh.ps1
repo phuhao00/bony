@@ -1,9 +1,11 @@
-# Mesh room bot membership: wherever one room agent is already a member,
-# ensure Grok + specialists are also bot members so Grok can auto-route
-# un-@ human messages (specialists stay mentions-only for reply).
+# Mesh room bot membership carefully:
+# - Do NOT re-join every historical "Local Room" clone
+# - Keep a single canonical Local Room (lexicographically first id, or BUZZ_ROOM_CHANNEL_ID)
+# - Mesh other distinct human channels normally
 param(
   [string]$RelayHttp = "http://localhost:3000",
-  [string]$KeysDir = (Join-Path $PSScriptRoot "keys")
+  [string]$KeysDir = (Join-Path $PSScriptRoot "keys"),
+  [string]$CanonicalLocalRoomName = "Local Room"
 )
 $ErrorActionPreference = "Continue"
 . (Join-Path $PSScriptRoot "_paths.ps1")
@@ -36,31 +38,51 @@ foreach ($id in @("grok", "zeroclaw", "unity", "openmontage")) {
 if ($roster.Count -eq 0) { throw "no room agent keys in $KeysDir" }
 
 $env:BUZZ_RELAY_URL = $RelayHttp
-$targetPks = @($roster | ForEach-Object { $_.Pubkey })
 $channelIds = New-Object 'System.Collections.Generic.HashSet[string]'
+$localRoomIds = New-Object 'System.Collections.Generic.List[string]'
 
 foreach ($r in $roster) {
   $env:BUZZ_PRIVATE_KEY = $r.Secret
   try {
-    $raw = & $buzz --format compact channels list 2>&1 | Out-String
+    $raw = & $buzz --format compact channels list --member 2>$null | Out-String
     $listed = $raw | ConvertFrom-Json
     if ($null -eq $listed) { continue }
     if ($listed -isnot [System.Array]) { $listed = @($listed) }
     foreach ($c in $listed) {
-      if ($c.channel_id) { [void]$channelIds.Add([string]$c.channel_id) }
+      $cid = [string]$c.channel_id
+      $nm = [string]$c.name
+      if (-not $cid) { continue }
+      if ($nm -eq $CanonicalLocalRoomName) {
+        if (-not $localRoomIds.Contains($cid)) { [void]$localRoomIds.Add($cid) }
+      } elseif ($nm -like 'Local Room retired*') {
+        continue
+      } else {
+        [void]$channelIds.Add($cid)
+      }
     }
   } catch {}
+}
+
+# Exactly one Local Room for mesh
+$canonicalLocal = $null
+if ($env:BUZZ_ROOM_CHANNEL_ID -and $localRoomIds.Contains($env:BUZZ_ROOM_CHANNEL_ID)) {
+  $canonicalLocal = $env:BUZZ_ROOM_CHANNEL_ID
+} elseif ($localRoomIds.Count -gt 0) {
+  $canonicalLocal = ($localRoomIds | Sort-Object | Select-Object -First 1)
+}
+if ($canonicalLocal) {
+  [void]$channelIds.Add($canonicalLocal)
+  Write-Host ("  canonical Local Room: {0} (of {1} seen)" -f $canonicalLocal, $localRoomIds.Count)
 }
 
 Write-Host "==> Bot mesh: $($channelIds.Count) channels x $($roster.Count) agents"
 $added = 0
 foreach ($ch in $channelIds) {
-  # Prefer an inviter already in the channel (any roster member who can list members).
   $inviter = $null
   foreach ($r in $roster) {
     $env:BUZZ_PRIVATE_KEY = $r.Secret
     try {
-      $mraw = & $buzz --format compact channels members --channel $ch 2>&1 | Out-String
+      $mraw = & $buzz --format compact channels members --channel $ch 2>$null | Out-String
       $members = $mraw | ConvertFrom-Json
       if ($null -eq $members) { continue }
       if ($members -isnot [System.Array]) { $members = @($members) }
@@ -71,7 +93,7 @@ foreach ($ch in $channelIds) {
   $env:BUZZ_PRIVATE_KEY = $inviter.Secret
   $memberPks = @()
   try {
-    $mraw = & $buzz --format compact channels members --channel $ch 2>&1 | Out-String
+    $mraw = & $buzz --format compact channels members --channel $ch 2>$null | Out-String
     $members = $mraw | ConvertFrom-Json
     if ($members -isnot [System.Array]) { $members = @($members) }
     $memberPks = @($members | ForEach-Object { ([string]$_.pubkey).ToLowerInvariant() })
@@ -79,13 +101,25 @@ foreach ($ch in $channelIds) {
 
   foreach ($r in $roster) {
     if ($memberPks -contains $r.Pubkey) { continue }
-    $ok = $false
-    if ($out -match 'accepted.:true') { $ok = $true }
-    if ($out -match '"accepted":\s*true') { $ok = $true }
+    $env:BUZZ_PRIVATE_KEY = $inviter.Secret
+    $out = ""
+    try {
+      $out = & $buzz channels add-member --channel $ch --pubkey $r.Pubkey --role bot 2>&1 | Out-String
+    } catch {
+      $out = "$_"
+    }
+    $ok = ($out -match 'accepted.:true') -or ($out -match '"accepted"\s*:\s*true')
+    if (-not $ok) {
+      # Try join as self
+      $env:BUZZ_PRIVATE_KEY = $r.Secret
+      try {
+        $out2 = & $buzz channels join --channel $ch 2>&1 | Out-String
+        if ($out2 -match 'accepted' -or $LASTEXITCODE -eq 0) { $ok = $true }
+      } catch {}
+    }
     if ($ok) {
       $added++
-      $short = $ch
-      if ($ch.Length -gt 8) { $short = $ch.Substring(0, 8) }
+      $short = if ($ch.Length -gt 8) { $ch.Substring(0, 8) } else { $ch }
       Write-Host ("  + {0} -> {1}..." -f $r.Id, $short)
     }
   }

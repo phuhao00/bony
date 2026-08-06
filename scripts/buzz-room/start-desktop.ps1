@@ -115,9 +115,8 @@ if (-not $Standalone) {
   Remove-Item Env:NOSTR_PRIVATE_KEY -ErrorAction SilentlyContinue
   Remove-Item Env:BUZZ_SHARE_IDENTITY -ErrorAction SilentlyContinue
 
-  # External ACP for Grok / ZeroClaw / Unity / OpenMontage on localhost
-  # (Desktop managed spawn dies on setup-mode or ws://127.0.0.1 Host 404).
-  Write-Host "==> External room agents (Grok/ZeroClaw/Unity/OpenMontage)"
+  # External ACP: every keyed room seat, single instance (no orphan duplicates).
+  Write-Host "==> External room agents (all seats, EnsureSingle)"
   try {
     & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
   } catch {
