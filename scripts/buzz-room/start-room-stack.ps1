@@ -198,7 +198,7 @@ if (-not $SkipGrok) {
     Write-Host "==> mint keys"
     & (Join-Path $PSScriptRoot "mint-agent-keys.ps1") -BuzzRoot $BuzzRoot
   }
-  Write-Host "==> External room agents (Grok/ZeroClaw/Unity/OpenMontage)"
+  Write-Host "==> External room agents (all keyed seats, single instance)"
   try {
     & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
   } catch {
