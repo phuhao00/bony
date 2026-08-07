@@ -595,22 +595,20 @@ fn resolve_identity_with_store(
             } else if migration_marker_path(data_dir).exists() {
                 // Marker present, keyring empty, no file — the key was previously
                 // durably stored in the keyring but is now gone (keyring cleared,
-                // new login session, or the entry was externally deleted). There
-                // is no plaintext fallback to recover from.
-                //
-                // Generate an ephemeral in-memory key so the app can boot, but
-                // surface a "lost" flag so the frontend prompts re-import rather
-                // than silently starting a fresh identity.
-                let ephemeral = Keys::generate();
+                // new login session, or the entry was externally deleted). Single
+                // -machine / single-operator build: there is no re-import UI to
+                // wait for, so silently generate a fresh identity and persist it
+                // (keyring first, file fallback) rather than booting into a
+                // blocked ephemeral-key recovery state.
                 eprintln!(
-                    "buzz-desktop: identity lost — keyring was empty despite migration marker; \
-                     using ephemeral key {}, awaiting user re-import",
-                    ephemeral.public_key().to_hex()
+                    "buzz-desktop: identity marker present but keyring empty; \
+                     generating a fresh identity and persisting it (silent fallback)"
                 );
+                let (keys, storage) = generate_and_persist(store, legacy_path, data_dir)?;
                 return Ok(ResolvedIdentity {
-                    keys: ephemeral,
-                    recovery: RecoveryState::Lost,
-                    storage: IdentityStorage::Ephemeral,
+                    keys,
+                    recovery: RecoveryState::None,
+                    storage,
                 });
             }
         }
@@ -621,27 +619,19 @@ fn resolve_identity_with_store(
             // that are otherwise byte-identical (Unreachable + no file):
             //   - marker present → the key was migrated into the keyring and the
             //     file deleted. The real key is unreachable this boot but still
-            //     exists in the keyring. Boot keyring-locked recovery (ephemeral
-            //     key, all signing disabled) so the app can at least open; the
-            //     frontend shows a "unlock the keyring and relaunch" screen.
-            //     Fail-closed semantics are preserved: nothing is ever persisted
-            //     under the ephemeral key, so no silent identity rotation occurs.
+            //     exists in the keyring. Single-machine build: there is no
+            //     recovery UI to wait for a relaunch, so silently fall back to
+            //     the `0o600` file for THIS boot only — the next boot with the
+            //     keyring reachable again re-adopts the keyring copy via the
+            //     mismatched-file adoption path above (same pubkey → no-op;
+            //     different pubkey → adopts the newer file, which cannot happen
+            //     here since nothing wrote to the file in the meantime).
             //   - no marker → genuine first-ever launch with nothing to protect.
             //     Generate to the `0o600` file (legitimate first-run).
-            if !legacy_path.exists() && migration_marker_path(data_dir).exists() {
-                let ephemeral = Keys::generate();
-                eprintln!(
-                    "buzz-desktop: keyring unreachable but migration marker present; \
-                     booting keyring-locked recovery with ephemeral key {} — \
-                     unlock the keyring and relaunch",
-                    ephemeral.public_key().to_hex()
-                );
-                return Ok(ResolvedIdentity {
-                    keys: ephemeral,
-                    recovery: RecoveryState::KeyringLocked,
-                    storage: IdentityStorage::Ephemeral,
-                });
-            }
+            // Either way the shared fallback below is correct: load the file if
+            // it exists, else generate-and-save. Fail-closed semantics are
+            // preserved: nothing is ever silently written back to the keyring
+            // from this boot, only to the local file.
             let keys = load_file_or_generate(legacy_path, data_dir)?;
             return Ok(ResolvedIdentity {
                 keys,
@@ -685,24 +675,12 @@ fn recover_from_keyring(
             });
         }
     }
-    // No valid file to recover from. If the migration marker exists, a prior
-    // identity was stored in the keyring and is now corrupt AND gone — the key
-    // is unrecoverable. Enter Lost recovery instead of silently rotating.
-    if migration_marker_path(data_dir).exists() {
-        let ephemeral = Keys::generate();
-        eprintln!(
-            "buzz-desktop: identity lost — keyring had corrupt data and no valid identity.key \
-             backup; prior identity (migration marker present) is unrecoverable; \
-             using ephemeral key {}, awaiting user re-import",
-            ephemeral.public_key().to_hex()
-        );
-        return Ok(ResolvedIdentity {
-            keys: ephemeral,
-            recovery: RecoveryState::Lost,
-            storage: IdentityStorage::Ephemeral,
-        });
-    }
-    // No marker: genuine first launch with a corrupt keyring. Generate fresh.
+    // No valid file to recover from. A prior identity may have existed (marker
+    // present) and is now corrupt AND gone, or this is a genuine first launch
+    // with a corrupt keyring — either way, single-machine build: there is no
+    // re-import UI to wait for, so silently generate a fresh identity and
+    // persist it (keyring first, file fallback) rather than blocking on an
+    // ephemeral, unpersisted key.
     let (keys, storage) = generate_and_persist(store, legacy_path, data_dir)?;
     Ok(ResolvedIdentity {
         keys,

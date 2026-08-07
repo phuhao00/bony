@@ -4070,6 +4070,82 @@ fn resolve_mention_pubkeys_from_content(content: &str) -> Vec<String> {
     found
 }
 
+/// Drop identity / process essays that burn channel space and confuse handoffs.
+/// Opt out: `BUZZ_ACP_SUPPRESS_META_REPLIES=0|false|no`.
+fn should_suppress_meta_channel_post(content: &str) -> bool {
+    match std::env::var("BUZZ_ACP_SUPPRESS_META_REPLIES") {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            if matches!(v.as_str(), "0" | "false" | "no" | "off") {
+                return false;
+            }
+        }
+        Err(_) => {}
+    }
+
+    let l = content.to_ascii_lowercase();
+    // Wrong identity from workspace/cwd leakage (repo often "bony-build").
+    if l.contains("bonybuild")
+        || l.contains("bony-build")
+        || l.contains("i'm bony")
+        || l.contains("i am bony")
+        || l.contains("since i'm bony")
+    {
+        return true;
+    }
+    // Role liturgy instead of work.
+    let identity_hits = [
+        "document specialist for buzz",
+        "i'm the document specialist",
+        "i am the document specialist",
+        "my role is",
+        "as the engineering lead",
+        "according to my rules",
+        "according to the routing",
+        "according to its rules",
+        "i should remain silent",
+        "i will stay silent",
+        "remain silent until",
+        "stay silent and wait",
+        "waiting for zeroclaw",
+        "won't interfere with that handoff",
+        "will not interfere with that handoff",
+        "shall i go ahead",
+        "silent witness",
+        "observer, clarifier",
+        "pipeline working",
+        "pipeline active",
+        "silence maintained",
+        "no tool needed",
+        "just staying out of the way",
+    ];
+    if identity_hits.iter().any(|p| l.contains(p)) {
+        // Allow if it's a real delivery (path / tool result / handoff with body).
+        let looks_like_work = content.contains("pdf_create")
+            || content.contains(".pdf")
+            || content.contains("http://")
+            || content.contains("https://")
+            || content.contains("docs/")
+            || l.contains("wrote ")
+            || content.lines().count() > 12;
+        if !looks_like_work {
+            return true;
+        }
+    }
+    // Chinese meta (wait / identity) without delivery.
+    let zh_meta = ["我是文档", "等待 ZeroClaw", "保持沉默", "我的角色", "根据规则", "要不要我"];
+    if zh_meta.iter().any(|p| content.contains(p)) {
+        let looks_like_work = content.contains(".pdf")
+            || content.contains("http")
+            || content.contains("pdf_create")
+            || content.lines().count() > 12;
+        if !looks_like_work {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) async fn post_channel_message(
     rest: &crate::relay::RestClient,
     channel_id: Uuid,
@@ -4079,6 +4155,14 @@ pub(crate) async fn post_channel_message(
 ) {
     let content = content.trim();
     if content.is_empty() {
+        return;
+    }
+    if should_suppress_meta_channel_post(content) {
+        tracing::info!(
+            channel = %channel_id,
+            "{log_label}: suppressed meta/identity-only auto-post ({} chars)",
+            content.len()
+        );
         return;
     }
     let thread_ref = thread_tags.root_event_id.as_deref().and_then(|root| {

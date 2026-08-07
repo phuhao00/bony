@@ -52,58 +52,17 @@ services:
       com.buzz.env: "dev"
     restart: unless-stopped
 
-  adminer:
-    image: adminer:latest
-    container_name: buzz-adminer
-    ports:
-      - "8082:8080"
-    networks:
-      - buzz-net
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      ADMINER_DEFAULT_SERVER: postgres
-    deploy:
-      resources:
-        limits:
-          memory: 64m
-    labels:
-      com.buzz.service: "adminer"
-      com.buzz.env: "dev"
-    restart: unless-stopped
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.0
-    container_name: buzz-keycloak
-    command: start-dev --http-port=8080
-    environment:
-      KC_DB: dev-mem
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-    ports:
-      - "8180:8080"
-    networks:
-      - buzz-net
-    healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/8080 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 30s
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-    labels:
-      com.buzz.service: "keycloak"
-      com.buzz.env: "dev"
-    restart: unless-stopped
-
+  # Optional convenience S3-compatible store for local dev. Not started by a
+  # plain `docker compose up` — it's gated behind the `minio` profile so the
+  # stack doesn't force a MinIO container just to boot. Start it explicitly
+  # with `docker compose --profile minio up -d` (or `docker compose up -d
+  # minio minio-init`, or `COMPOSE_PROFILES=minio` in .env) when you want it,
+  # or point BUZZ_S3_ENDPOINT at any other S3-compatible endpoint instead.
   minio:
     image: minio/minio:latest
     container_name: buzz-minio
     command: server /data --console-address ":9001"
+    profiles: ["minio"]
     environment:
       MINIO_ROOT_USER: buzz_dev
       MINIO_ROOT_PASSWORD: buzz_dev_secret
@@ -132,6 +91,7 @@ services:
   minio-init:
     image: minio/mc:latest
     container_name: buzz-minio-init
+    profiles: ["minio"]
     depends_on:
       minio:
         condition: service_healthy
@@ -148,27 +108,6 @@ services:
       com.buzz.env: "dev"
     restart: "no"
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: buzz-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    networks:
-      - buzz-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    deploy:
-      resources:
-        limits:
-          memory: 128m
-    labels:
-      com.buzz.service: "prometheus"
-      com.buzz.env: "dev"
-    restart: unless-stopped
-
 volumes:
   postgres-data:
     name: buzz-postgres-data
@@ -178,10 +117,6 @@ volumes:
     name: buzz-minio-data
     labels:
       com.buzz.volume: "minio"
-  prometheus-data:
-    name: buzz-prometheus-data
-    labels:
-      com.buzz.volume: "prometheus"
 
 networks:
   buzz-net:

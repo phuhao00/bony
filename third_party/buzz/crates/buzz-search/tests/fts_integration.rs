@@ -1,10 +1,10 @@
-//! Integration tests for community-scoped Postgres FTS.
+//! Integration tests for community-scoped SQLite FTS5 search.
 //!
-//! Run with a local PG: `BUZZ_TEST_DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz cargo test -p buzz-search --tests -- --include-ignored`
-//!
-//! Each test creates a uniquely-named schema, applies every FTS-affecting
-//! migration in order, exercises a scenario, and drops it. Tests are
-//! parallel-safe.
+//! Each test opens a fresh in-memory SQLite database (`sqlite::memory:`),
+//! applies the full `buzz-db` schema (including the `events_fts` virtual
+//! table and its sync triggers), exercises a scenario, and lets the pool
+//! drop. No external server is required and tests are parallel-safe: every
+//! `sqlite::memory:` connection is its own private database.
 
 use buzz_core::{
     kind::{
@@ -14,98 +14,26 @@ use buzz_core::{
     CommunityId,
 };
 use buzz_search::{ChannelScope, SearchQuery, SearchService};
-use sqlx::{postgres::PgPoolOptions, Executor, PgPool};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
-const MIGRATION_0001_SQL: &str = include_str!("../../../migrations/0001_initial_schema.sql");
-const MIGRATION_0002_SQL: &str = include_str!("../../../migrations/0002_git_repo_names.sql");
-const MIGRATION_0003_SQL: &str = include_str!("../../../migrations/0003_community_icon.sql");
-const MIGRATION_0004_SQL: &str = include_str!("../../../migrations/0004_events_tags_gin.sql");
-const MIGRATION_0005_SQL: &str = include_str!("../../../migrations/0005_agent_turn_metric_fts.sql");
-const MIGRATION_0006_SQL: &str = include_str!("../../../migrations/0006_moderation.sql");
-const MIGRATION_0007_SQL: &str = include_str!("../../../migrations/0007_nip_rs_retention.sql");
-const MIGRATION_0008_SQL: &str =
-    include_str!("../../../migrations/0008_fresh_install_search_allowlist.sql");
-const MIGRATION_0014_SQL: &str = include_str!("../../../migrations/0014_push_lease_fts.sql");
-
-async fn setup() -> (PgPool, String) {
-    let url = std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string());
-    let schema = format!("fts_test_{}", Uuid::new_v4().simple());
-    // Connect to the default schema first to create the test schema.
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&url)
+/// Opens a fresh in-memory SQLite pool with the full `buzz-db` schema
+/// applied (including the `events_fts` FTS5 table and sync triggers).
+async fn setup() -> SqlitePool {
+    let pool = SqlitePool::connect("sqlite::memory:")
         .await
-        .expect("connect");
-    let create_sql = format!("CREATE SCHEMA \"{schema}\"");
-    sqlx::query(sqlx::AssertSqlSafe(create_sql))
-        .execute(&admin_pool)
+        .expect("open in-memory sqlite pool");
+    buzz_db::migration::run_migrations(&pool)
         .await
-        .expect("create schema");
-    admin_pool.close().await;
-
-    // Connect with search_path set so the migration's CREATE TABLE lands here.
-    let url_with_search_path = format!("{url}?options=-c%20search_path%3D{schema}");
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&url_with_search_path)
-        .await
-        .expect("connect with search_path");
-    // Apply the full migration chain in order so the test schema exactly matches
-    // production. Future FTS-affecting migrations must be added here.
-    pool.execute(MIGRATION_0001_SQL)
-        .await
-        .expect("apply 0001 migration");
-    pool.execute(MIGRATION_0002_SQL)
-        .await
-        .expect("apply 0002 migration");
-    pool.execute(MIGRATION_0003_SQL)
-        .await
-        .expect("apply 0003 migration");
-    pool.execute(MIGRATION_0004_SQL)
-        .await
-        .expect("apply 0004 migration");
-    pool.execute(MIGRATION_0005_SQL)
-        .await
-        .expect("apply 0005 migration");
-    pool.execute(MIGRATION_0006_SQL)
-        .await
-        .expect("apply 0006 migration");
-    pool.execute(MIGRATION_0007_SQL)
-        .await
-        .expect("apply 0007 migration");
-    pool.execute(MIGRATION_0008_SQL)
-        .await
-        .expect("apply 0008 migration");
-    pool.execute(MIGRATION_0014_SQL)
-        .await
-        .expect("apply 0014 migration");
-    (pool, schema)
-}
-
-async fn teardown(pool: PgPool, schema: &str) {
-    pool.close().await;
-    let admin_pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(
-            &std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string()),
-        )
-        .await
-        .expect("reconnect for drop");
-    let drop_sql = format!("DROP SCHEMA \"{schema}\" CASCADE");
-    sqlx::query(sqlx::AssertSqlSafe(drop_sql))
-        .execute(&admin_pool)
-        .await
-        .expect("drop schema");
-    admin_pool.close().await;
+        .expect("run buzz-db migrations");
+    pool
 }
 
 /// Insert a community row, return its id.
-async fn mk_community(pool: &PgPool, host: &str) -> CommunityId {
+async fn mk_community(pool: &SqlitePool, host: &str) -> CommunityId {
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO communities (id, host, signing_key) VALUES ($1, $2, $3)")
-        .bind(id)
+    sqlx::query("INSERT INTO communities (id, host, signing_key) VALUES (?, ?, ?)")
+        .bind(id.to_string())
         .bind(host)
         .bind(b"signingkey".as_slice())
         .execute(pool)
@@ -117,7 +45,7 @@ async fn mk_community(pool: &PgPool, host: &str) -> CommunityId {
 /// Insert a minimal event. `created_at_secs` is unix seconds.
 #[allow(clippy::too_many_arguments)]
 async fn insert_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     id: [u8; 32],
     pubkey: [u8; 32],
@@ -126,21 +54,39 @@ async fn insert_event(
     channel_id: Option<Uuid>,
     created_at_secs: i64,
 ) {
+    let created_at = chrono::DateTime::from_timestamp(created_at_secs, 0).expect("valid unix ts");
     sqlx::query(
         "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
-         VALUES ($1, $2, $3, to_timestamp($4), $5, '[]'::jsonb, $6, $7, $8)",
+         VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
     )
-    .bind(community.as_uuid())
+    .bind(community.as_uuid().to_string())
     .bind(&id[..])
     .bind(&pubkey[..])
-    .bind(created_at_secs)
+    .bind(created_at)
     .bind(kind)
     .bind(content)
-    .bind(b"signature".as_slice())
-    .bind(channel_id)
+    .bind(b"signature".repeat(8))
+    .bind(channel_id.map(|c| c.to_string()))
     .execute(pool)
     .await
     .expect("insert event");
+}
+
+/// Insert two channels (`ch-a`, `ch-b`) for `community`, return their ids.
+async fn mk_two_channels(pool: &SqlitePool, community: CommunityId) -> (Uuid, Uuid) {
+    let ch_a = Uuid::new_v4();
+    let ch_b = Uuid::new_v4();
+    for (id, name) in [(ch_a, "ch-a"), (ch_b, "ch-b")] {
+        sqlx::query("INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, ?, ?)")
+            .bind(community.as_uuid().to_string())
+            .bind(id.to_string())
+            .bind(name)
+            .bind(b"\x01".repeat(32))
+            .execute(pool)
+            .await
+            .expect("insert channel");
+    }
+    (ch_a, ch_b)
 }
 
 fn rand_bytes32() -> [u8; 32] {
@@ -153,9 +99,8 @@ fn rand_bytes32() -> [u8; 32] {
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn search_finds_event_in_same_community() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c_a = mk_community(&pool, "a.example").await;
     let evt_id = rand_bytes32();
@@ -194,16 +139,13 @@ async fn search_finds_event_in_same_community() {
     assert_eq!(result.hits[0].kind, 9);
     assert_eq!(result.hits[0].created_at, 1700000000);
     assert!(result.hits[0].rank > 0.0);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn search_does_not_return_other_community_events() {
     // The load-bearing test: event indexed under community A, query bound to
     // community B → zero hits.
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c_a = mk_community(&pool, "a.example").await;
     let c_b = mk_community(&pool, "b.example").await;
@@ -254,17 +196,13 @@ async fn search_does_not_return_other_community_events() {
         .await
         .unwrap();
     assert_eq!(result_b.hits.len(), 0, "B must not see A's event");
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn kind0_search_by_display_name_works_without_flattening() {
-    // The case I worried might regress without the kind:0 content-flattening
-    // hack. Postgres FTS over raw JSON content tokenizes through the
-    // punctuation and finds display_name/nip05 values.
-    let (pool, schema) = setup().await;
+    // FTS5 over raw JSON content tokenizes through the punctuation and finds
+    // display_name/nip05 values, same as the old Postgres `to_tsvector`.
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
     let pk = rand_bytes32();
@@ -299,14 +237,11 @@ async fn kind0_search_by_display_name_works_without_flattening() {
             .unwrap();
         assert_eq!(r.hits.len(), 1, "kind:0 query {q:?} should find Alice");
     }
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn prefix_mode_matches_final_token_prefix_without_changing_full_text() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "prefix.example").await;
     let project_plan = rand_bytes32();
@@ -432,16 +367,13 @@ async fn prefix_mode_matches_final_token_prefix_without_changing_full_text() {
     assert!(completed_ids.contains(&project_plan));
     assert!(
         !completed_ids.contains(&projectile_plan),
-        "completed tokens must stay exact; only the trailing token gets :*"
+        "completed tokens must stay exact; only the trailing token gets a prefix match"
     );
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
-async fn prefix_mode_handles_tsquery_boundary_punctuation() {
-    let (pool, schema) = setup().await;
+async fn prefix_mode_handles_boundary_punctuation() {
+    let pool = setup().await;
 
     let c = mk_community(&pool, "prefix-punctuation.example").await;
     let hit_id = rand_bytes32();
@@ -476,14 +408,11 @@ async fn prefix_mode_handles_tsquery_boundary_punctuation() {
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].event_id, hit_id);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn prefix_mode_preserves_storage_level_privacy_exclusions() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "prefix-privacy.example").await;
     let token = "prefixprivacy_unique_marker";
@@ -534,29 +463,14 @@ async fn prefix_mode_preserves_storage_level_privacy_exclusions() {
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].event_id, control_id);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn channel_scope_restricts_results() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
-    // Channels need community_id since channels PK is (community_id, id).
-    let ch_a = Uuid::new_v4();
-    let ch_b = Uuid::new_v4();
-    sqlx::query("INSERT INTO channels (community_id, id, name, channel_type, created_by) VALUES ($1, $2, $3, 'stream'::channel_type, $4), ($1, $5, $6, 'stream'::channel_type, $4)")
-        .bind(c.as_uuid())
-        .bind(ch_a)
-        .bind("ch-a")
-        .bind(b"\x01".repeat(32))
-        .bind(ch_b)
-        .bind("ch-b")
-        .execute(&pool)
-        .await
-        .expect("insert channels");
+    let (ch_a, ch_b) = mk_two_channels(&pool, c).await;
 
     let pk = rand_bytes32();
     insert_event(
@@ -667,14 +581,11 @@ async fn channel_scope_restricts_results() {
         .await
         .unwrap();
     assert_eq!(r.hits.len(), 0);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn deleted_events_are_excluded() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
     let evt_id = rand_bytes32();
@@ -682,8 +593,9 @@ async fn deleted_events_are_excluded() {
     insert_event(&pool, c, evt_id, pk, 9, "deleted-token-q", None, 1700000000).await;
 
     // Soft-delete
-    sqlx::query("UPDATE events SET deleted_at = NOW() WHERE community_id = $1 AND id = $2")
-        .bind(c.as_uuid())
+    sqlx::query("UPDATE events SET deleted_at = ? WHERE community_id = ? AND id = ?")
+        .bind(chrono::Utc::now())
+        .bind(c.as_uuid().to_string())
         .bind(&evt_id[..])
         .execute(&pool)
         .await
@@ -709,14 +621,11 @@ async fn deleted_events_are_excluded() {
         r.hits.is_empty(),
         "soft-deleted events must not appear in FTS"
     );
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn empty_query_returns_empty_result_no_roundtrip() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
     let c = mk_community(&pool, "a.example").await;
     let svc = SearchService::new(pool.clone());
 
@@ -741,14 +650,11 @@ async fn empty_query_returns_empty_result_no_roundtrip() {
             "empty/whitespace query must return no hits"
         );
     }
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn since_until_filters() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
     let pk = rand_bytes32();
@@ -805,14 +711,11 @@ async fn since_until_filters() {
         .unwrap();
     assert_eq!(r.hits.len(), 1);
     assert_eq!(r.hits[0].created_at, 1_700_010_000);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn pagination_works() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
     let pk = rand_bytes32();
@@ -869,12 +772,9 @@ async fn pagination_works() {
         1,
         "page 3 of 7 with per_page=3 should have 1 hit"
     );
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn channel_less_only_excludes_per_channel_events() {
     // Closes the row-3 fence hole: in the legacy 2x2 shape, both
     // `Some(vec![]) + true` and `None + true` silently broadened to all
@@ -883,26 +783,15 @@ async fn channel_less_only_excludes_per_channel_events() {
     // could not express.
     //
     // Adversarial check: mutate this test's expectation to `>= 2` and the
-    // assertion goes red against the new SQL `AND channel_id IS NULL`,
-    // proving the predicate bites. Mutate `query.rs` `ChannelLessOnly` arm
-    // to a no-op (the `Any` semantic the old code emitted) and this test
-    // also goes red — three hits instead of one — proving the fix is the
+    // assertion goes red against the SQL `AND channel_id IS NULL`, proving
+    // the predicate bites. Mutate `query.rs` `ChannelLessOnly` arm to a
+    // no-op (the `Any` semantic the old code emitted) and this test also
+    // goes red — three hits instead of one — proving the fix is the
     // emitted predicate, not the variant name.
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "a.example").await;
-    let ch_a = Uuid::new_v4();
-    let ch_b = Uuid::new_v4();
-    sqlx::query("INSERT INTO channels (community_id, id, name, channel_type, created_by) VALUES ($1, $2, $3, 'stream'::channel_type, $4), ($1, $5, $6, 'stream'::channel_type, $4)")
-        .bind(c.as_uuid())
-        .bind(ch_a)
-        .bind("ch-a")
-        .bind(b"\x01".repeat(32))
-        .bind(ch_b)
-        .bind("ch-b")
-        .execute(&pool)
-        .await
-        .expect("insert channels");
+    let (ch_a, ch_b) = mk_two_channels(&pool, c).await;
 
     let pk = rand_bytes32();
     insert_event(
@@ -962,17 +851,14 @@ async fn channel_less_only_excludes_per_channel_events() {
         "ChannelLessOnly must return only the channel_id IS NULL row"
     );
     assert_eq!(r.hits[0].channel_id, None);
-
-    teardown(pool, &schema).await;
 }
 
-/// Search-input hardening: NUL bytes are not valid Postgres text-search input.
-/// Sanitize before calling `websearch_to_tsquery` so the bridge does not turn
-/// adversarial search text into HTTP 500s.
+/// Search-input hardening: NUL bytes are stripped by `normalized_search_text`
+/// before the FTS5 tokenizer ever sees them (SQLite TEXT bind values are not
+/// NUL-safe either).
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn nul_bytes_in_query_are_sanitized() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "nul.example").await;
     let evt_id = rand_bytes32();
@@ -1003,18 +889,15 @@ async fn nul_bytes_in_query_are_sanitized() {
             mode: buzz_search::SearchMode::FullText,
         })
         .await
-        .expect("NUL-containing search query should not bubble a Postgres error");
+        .expect("NUL-containing search query should not error");
 
     assert_eq!(result.hits.len(), 1);
     assert_eq!(result.hits[0].event_id, evt_id);
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn enormous_page_number_is_clamped() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "page-clamp.example").await;
     for i in 0..5 {
@@ -1050,14 +933,11 @@ async fn enormous_page_number_is_clamped() {
 
     assert_eq!(result.page, 1000);
     assert!(result.hits.is_empty());
-
-    teardown(pool, &schema).await;
 }
 
 #[tokio::test]
-#[ignore = "requires Postgres"]
-async fn very_long_query_is_bounded_before_pg_parse() {
-    let (pool, schema) = setup().await;
+async fn very_long_query_is_bounded_before_fts5_parse() {
+    let pool = setup().await;
 
     let c = mk_community(&pool, "long-query.example").await;
     let svc = SearchService::new(pool.clone());
@@ -1075,16 +955,16 @@ async fn very_long_query_is_bounded_before_pg_parse() {
             mode: buzz_search::SearchMode::FullText,
         })
         .await
-        .expect("long search query should be capped before Postgres parses it");
+        .expect("long search query should be capped before FTS5 parses it");
 
     assert!(result.hits.is_empty());
-
-    teardown(pool, &schema).await;
 }
 
 /// Privacy regression gate: the storage layer MUST NOT make these kinds
-/// searchable. The migration's `search_tsv` generated column emits NULL
-/// for excluded kinds, so a `search_tsv @@ query` probe never matches.
+/// searchable. The `events_fts_insert`/`events_fts_update` triggers skip
+/// rows whose `kind` is in the privacy skip-set, so a MATCH probe never
+/// sees them — mirroring the old Postgres `search_tsv` generated column's
+/// `CASE WHEN kind IN (...) THEN NULL` behavior.
 ///
 /// Set kept in sync with the pre-rewrite skip in `handlers/event.rs:287-290`
 /// on `main`:
@@ -1099,13 +979,12 @@ async fn very_long_query_is_bounded_before_pg_parse() {
 /// so a single search query exercises every kind in one round-trip. Only
 /// the kind:9 control must surface — the excluded kinds must not.
 ///
-/// Mutate-bite: drop the `CASE WHEN kind IN (…)` from the generated column
-/// (revert to `to_tsvector('simple', content)`) → excluded events surface →
-/// restore.
+/// Mutate-bite: drop the `AND NEW.kind NOT IN (...)` clause from the
+/// `events_fts_insert`/`events_fts_update` triggers → excluded events surface
+/// → restore.
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn excluded_kinds_are_storage_level_unsearchable() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "privacy.example").await;
     let token = "privacykinds_unique_marker_xyzzy";
@@ -1238,7 +1117,7 @@ async fn excluded_kinds_are_storage_level_unsearchable() {
         assert!(
             !kinds.contains(&forbidden),
             "kind:{forbidden} MUST NOT be searchable — \
-             privacy regression in `search_tsv` generated column. kinds={kinds:?}",
+             privacy regression in the `events_fts` sync triggers' skip-set. kinds={kinds:?}",
         );
     }
 
@@ -1250,23 +1129,20 @@ async fn excluded_kinds_are_storage_level_unsearchable() {
         "expected exactly 1 hit (the kind:9 control), got {} (kinds={kinds:?})",
         result.hits.len(),
     );
-
-    teardown(pool, &schema).await;
 }
 
 /// Tripwire: every Rust-side author-only kind MUST be excluded from
-/// `search_tsv` at the storage layer.
+/// `events_fts` at the storage layer.
 ///
-/// The schema generated column hard-codes the privacy skip-set, while
+/// The migration's trigger skip-set hard-codes the privacy list, while
 /// `AUTHOR_ONLY_KINDS` is a Rust const. If a future author-only kind is added
 /// without the matching schema migration, search would still spend FTS budget on
 /// those private hits before the relay post-filter rejects them. Catch that
 /// drift here by inserting one row per author-only kind and proving only the
 /// public kind:9 control is searchable.
 #[tokio::test]
-#[ignore = "requires Postgres"]
 async fn author_only_kinds_are_storage_level_unsearchable() {
-    let (pool, schema) = setup().await;
+    let pool = setup().await;
 
     let c = mk_community(&pool, "author-only-tripwire.example").await;
     let token = "authoronly_tripwire_marker_qwerty";
@@ -1335,34 +1211,31 @@ async fn author_only_kinds_are_storage_level_unsearchable() {
         "expected exactly 1 hit (the kind:9 control), got {} (kinds={kinds:?})",
         result.hits.len(),
     );
-
-    teardown(pool, &schema).await;
 }
 
 /// Tripwire: every Rust-side `P_GATED_KINDS` entry that is *persistent* (not
-/// in the ephemeral 20000–29999 range) MUST be excluded from `search_tsv` at
+/// in the ephemeral 20000–29999 range) MUST be excluded from `events_fts` at
 /// the storage layer.
 ///
 /// L2 (the filter-level `#p` gate in `p_gated_filters_authorized`) prevents
 /// reachable leaks today, but it is Rust logic — a future bug or new exempt
 /// search entry point could surface tokenized content from these kinds. The
-/// L1 NULL tsvector is the unbreakable backstop: `@@` mathematically cannot
-/// match NULL. This test catches the drift where someone adds a persistent
-/// kind to `P_GATED_KINDS` without the matching `schema/schema.sql` +
-/// `migrations/0001_initial_schema.sql` skip-set update.
+/// L1 skip-set is the unbreakable backstop: a row that was never inserted
+/// into `events_fts` mathematically cannot match a `MATCH` probe. This test
+/// catches the drift where someone adds a persistent kind to `P_GATED_KINDS`
+/// without the matching `migrations/0001_initial_schema.sql` trigger update.
 ///
 /// Ephemeral kinds (20000–29999) are skipped: they are never stored, so the
-/// storage-layer defense does not apply to them regardless of the schema
-/// CASE. `p_gated_filters_authorized` remains their sole defense by design.
+/// storage-layer defense does not apply to them regardless of the trigger
+/// skip-set. `p_gated_filters_authorized` remains their sole defense by design.
 ///
 /// Companion to `author_only_kinds_are_storage_level_unsearchable`: that test
 /// covers `AUTHOR_ONLY_KINDS` drift; this one covers `P_GATED_KINDS`
 /// persistent-subset drift. Together they tripwire both Rust-side privacy
 /// constants against the schema literal.
 #[tokio::test]
-#[ignore = "requires Postgres"]
-async fn p_gated_persistent_kinds_have_storage_null_tsvector() {
-    let (pool, schema) = setup().await;
+async fn p_gated_persistent_kinds_have_storage_level_exclusion() {
+    let pool = setup().await;
 
     let c = mk_community(&pool, "p-gated-tripwire.example").await;
     let token = "pgated_tripwire_marker_qwerty";
@@ -1431,7 +1304,7 @@ async fn p_gated_persistent_kinds_have_storage_null_tsvector() {
         assert!(
             !kinds.contains(&(kind as i32)),
             "P_GATED persistent kind:{kind} MUST NOT be searchable — \
-             schema NULL tsvector skip-set is missing this kind. Defense \
+             storage-level skip-set is missing this kind. Defense \
              reduces to L2 (filter-level `#p` gate) alone. \
              P_GATED_KINDS={P_GATED_KINDS:?}, hits={kinds:?}",
         );
@@ -1443,6 +1316,4 @@ async fn p_gated_persistent_kinds_have_storage_null_tsvector() {
         "expected exactly 1 hit (the kind:9 control), got {} (kinds={kinds:?})",
         result.hits.len(),
     );
-
-    teardown(pool, &schema).await;
 }

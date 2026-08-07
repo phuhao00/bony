@@ -51,36 +51,22 @@ pub struct JoinPolicyConfig {
 pub struct Config {
     /// Address the relay HTTP/WebSocket server binds to.
     pub bind_addr: SocketAddr,
-    /// Postgres database connection URL.
+    /// SQLite database connection URL (or file path).
     pub database_url: String,
-    /// Optional read-replica connection URL (e.g. an Aurora `cluster-ro-`
-    /// endpoint). Unset means all reads stay on the writer.
-    pub read_database_url: Option<String>,
-    /// Replica read budget `B` in milliseconds (`BUZZ_REPLICA_READ_MAX_AGE_MS`).
-    /// `0` (the default) disables bounded-staleness replica routing; see
-    /// [`buzz_db::DbConfig::replica_read_max_age_ms`].
-    pub replica_read_max_age_ms: u64,
-    /// Redis connection URL used by the pub/sub manager.
+    /// Redis connection URL, used only by the opt-in inter-relay mesh
+    /// (`BUZZ_MESH=on`) for its cross-runtime session directory. Pub/sub,
+    /// presence, rate limiting, and NIP-98 replay are in-process
+    /// (`buzz-pubsub`) and do not use this. Unused when the mesh is off
+    /// (the single-instance default) — never dialed.
     pub redis_url: String,
-    /// Maximum connections in the shared Redis pool. Defaults to 16.
-    ///
-    /// deadpool's own default is `CPU_COUNT * 2`, which on a 2-vCPU relay
-    /// pod is only 4 — small enough that rate-limit checks, presence, and
-    /// pub/sub publishes queue behind each other under load.
+    /// Maximum connections in the mesh's Redis pool. Defaults to 16. Unused
+    /// when `BUZZ_MESH` is off.
     pub redis_pool_size: usize,
-    /// Maximum connections in the Postgres writer/reader pools. Defaults to 50.
+    /// Maximum connections in the SQLite pool. Defaults to 50.
     ///
-    /// The `buzz-db` default of 20 was sized for a handful of pods against
-    /// `max_connections=100`. Against Aurora (~5,000 connections) that cap
-    /// is the binding constraint: a burst of concurrent handlers exhausts
-    /// the per-pod pool and requests fail on acquire timeout while the
-    /// database sits idle.
+    /// Single-instance SQLite serializes writers regardless of pool size;
+    /// this mainly bounds concurrent readers.
     pub db_pool_size: u32,
-    /// Maximum connections in the Postgres read-replica pool
-    /// (`BUZZ_DB_READ_POOL_SIZE`). Defaults to `db_pool_size`. Sized
-    /// independently so reader capacity can be tuned against the replica's
-    /// headroom without touching the writer pool.
-    pub db_read_pool_size: Option<u32>,
     /// Public WebSocket URL of this relay, advertised in NIP-11.
     pub relay_url: String,
     /// Public WebSocket URL of the dedicated device-pairing relay, when configured.
@@ -113,8 +99,6 @@ pub struct Config {
     /// TCP port for the health-only router (`/_liveness`, `/_readiness`, `/_status`).
     /// Separate from the app router so K8s probes bypass Istio and auth middleware.
     pub health_port: u16,
-    /// TCP port for the Prometheus metrics exporter (`GET /metrics`).
-    pub metrics_port: u16,
 
     /// When true, NIP-42 pubkey-only authentication (no API token) is
     /// restricted to pubkeys in the `pubkey_allowlist` table. Users with valid
@@ -424,34 +408,8 @@ impl Config {
             std::env::var("BUZZ_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
         let bind_addr = parse_bind_addr(&bind_addr_raw)?;
 
-        let database_url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".to_string()); // sadscan:disable np.postgres.1
-
-        let read_database_url = std::env::var("READ_DATABASE_URL")
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty());
-
-        // The old seconds-denominated name is a hard startup error, not an
-        // alias: silently honouring it would mean 1000x the intended budget.
-        if std::env::var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS").is_ok() {
-            return Err(ConfigError::InvalidValue(
-                "BUZZ_REPLICA_HEAD_MAX_AGE_SECS was renamed to BUZZ_REPLICA_READ_MAX_AGE_MS \
-                 (note: milliseconds, not seconds); refusing to start"
-                    .to_string(),
-            ));
-        }
-
-        // Replica read budget: 0 = off (the rollout default), so this is a
-        // non-negative parse, unlike `positive_u64_from_env`.
-        let replica_read_max_age_ms = match std::env::var("BUZZ_REPLICA_READ_MAX_AGE_MS") {
-            Ok(raw) => raw.trim().parse::<u64>().map_err(|_| {
-                ConfigError::InvalidValue(
-                    "BUZZ_REPLICA_READ_MAX_AGE_MS must be a non-negative integer".to_string(),
-                )
-            })?,
-            Err(_) => 0,
-        };
+        let database_url =
+            std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://buzz.db".to_string());
 
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
@@ -467,11 +425,6 @@ impl Config {
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(50);
-
-        let db_read_pool_size = std::env::var("BUZZ_DB_READ_POOL_SIZE")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|&v| v > 0);
 
         let relay_url =
             std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3000".to_string());
@@ -659,11 +612,6 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8080);
-
-        let metrics_port = std::env::var("BUZZ_METRICS_PORT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(9102);
 
         let s3_addressing_style = match std::env::var("BUZZ_S3_ADDRESSING_STYLE") {
             Ok(value) => value.parse().map_err(ConfigError::InvalidValue)?,
@@ -932,12 +880,9 @@ impl Config {
         Ok(Self {
             bind_addr,
             database_url,
-            read_database_url,
-            replica_read_max_age_ms,
             redis_url,
             redis_pool_size,
             db_pool_size,
-            db_read_pool_size,
             relay_url,
             pairing_relay_url,
             max_connections,
@@ -951,7 +896,6 @@ impl Config {
             relay_private_key,
             uds_path,
             health_port,
-            metrics_port,
             pubkey_allowlist_enabled,
             require_relay_membership,
             huddle_audio_available,
@@ -1156,115 +1100,6 @@ mod tests {
         assert_eq!(overridden, 80);
         assert_eq!(zero, 50, "zero must fall back to the default");
         assert_eq!(junk, 50, "unparsable value must fall back to the default");
-    }
-
-    #[test]
-    fn db_read_pool_size_env_override_and_invalid_fallback() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let previous = std::env::var_os("BUZZ_DB_READ_POOL_SIZE");
-
-        std::env::remove_var("BUZZ_DB_READ_POOL_SIZE");
-        let unset = Config::from_env().expect("config").db_read_pool_size;
-
-        std::env::set_var("BUZZ_DB_READ_POOL_SIZE", "40");
-        let overridden = Config::from_env().expect("config").db_read_pool_size;
-
-        std::env::set_var("BUZZ_DB_READ_POOL_SIZE", "0");
-        let zero = Config::from_env().expect("config").db_read_pool_size;
-
-        std::env::set_var("BUZZ_DB_READ_POOL_SIZE", "not-a-number");
-        let junk = Config::from_env().expect("config").db_read_pool_size;
-
-        if let Some(value) = previous {
-            std::env::set_var("BUZZ_DB_READ_POOL_SIZE", value);
-        } else {
-            std::env::remove_var("BUZZ_DB_READ_POOL_SIZE");
-        }
-
-        assert_eq!(unset, None, "unset must inherit the writer pool sizing");
-        assert_eq!(overridden, Some(40));
-        assert_eq!(zero, None, "zero must fall back to inheriting");
-        assert_eq!(junk, None, "unparsable value must fall back to inheriting");
-    }
-
-    #[test]
-    fn read_database_url_unset_or_blank_is_none() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let previous = std::env::var_os("READ_DATABASE_URL");
-
-        std::env::remove_var("READ_DATABASE_URL");
-        let unset = Config::from_env().expect("config").read_database_url;
-
-        std::env::set_var("READ_DATABASE_URL", "   ");
-        let blank = Config::from_env().expect("config").read_database_url;
-
-        std::env::set_var("READ_DATABASE_URL", "postgres://buzz:pw@replica:5432/buzz"); // sadscan:disable np.postgres.1
-        let set = Config::from_env().expect("config").read_database_url;
-
-        if let Some(value) = previous {
-            std::env::set_var("READ_DATABASE_URL", value);
-        } else {
-            std::env::remove_var("READ_DATABASE_URL");
-        }
-
-        assert_eq!(unset, None, "unset READ_DATABASE_URL must disable routing");
-        assert_eq!(blank, None, "blank READ_DATABASE_URL must disable routing");
-        assert_eq!(
-            set.as_deref(),
-            Some("postgres://buzz:pw@replica:5432/buzz") // sadscan:disable np.postgres.1
-        );
-    }
-
-    #[test]
-    fn replica_read_max_age_defaults_off_and_rejects_junk() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let previous = std::env::var_os("BUZZ_REPLICA_READ_MAX_AGE_MS");
-        let previous_old = std::env::var_os("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
-        std::env::remove_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
-
-        std::env::remove_var("BUZZ_REPLICA_READ_MAX_AGE_MS");
-        let unset = Config::from_env().expect("config").replica_read_max_age_ms;
-
-        std::env::set_var("BUZZ_REPLICA_READ_MAX_AGE_MS", "1000");
-        let set = Config::from_env().expect("config").replica_read_max_age_ms;
-
-        std::env::set_var("BUZZ_REPLICA_READ_MAX_AGE_MS", "0");
-        let zero = Config::from_env().expect("config").replica_read_max_age_ms;
-
-        std::env::set_var("BUZZ_REPLICA_READ_MAX_AGE_MS", "soon");
-        let junk = Config::from_env();
-
-        // The retired seconds-denominated name must be a hard startup
-        // error even alongside a valid new-name value: silently ignoring
-        // it (or honouring it) would mean 1000x the intended budget.
-        std::env::set_var("BUZZ_REPLICA_READ_MAX_AGE_MS", "1000");
-        std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", "5");
-        let old_name = Config::from_env();
-
-        std::env::remove_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS");
-        if let Some(value) = previous {
-            std::env::set_var("BUZZ_REPLICA_READ_MAX_AGE_MS", value);
-        } else {
-            std::env::remove_var("BUZZ_REPLICA_READ_MAX_AGE_MS");
-        }
-        if let Some(value) = previous_old {
-            std::env::set_var("BUZZ_REPLICA_HEAD_MAX_AGE_SECS", value);
-        }
-
-        assert_eq!(unset, 0, "replica read routing must default off");
-        assert_eq!(set, 1000);
-        assert_eq!(zero, 0, "explicit 0 is off");
-        assert!(
-            junk.is_err(),
-            "an unparsable budget must fail loudly, not silently disable"
-        );
-        match old_name {
-            Err(ConfigError::InvalidValue(message)) => assert!(
-                message.contains("BUZZ_REPLICA_READ_MAX_AGE_MS"),
-                "the error must name the replacement env var, got: {message}"
-            ),
-            other => panic!("old env name must hard-fail startup, got {other:?}"),
-        }
     }
 
     #[test]

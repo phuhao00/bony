@@ -147,12 +147,12 @@ pub struct CreateManagedAgentRequest {
     pub harness_override: bool,
     #[serde(default)]
     pub agent_args: Vec<String>,
-    /// Accepted for wire compatibility; not applied to the record. The
-    /// effective MCP command is always derived from the runtime catalog at
-    /// spawn time — a per-record override is never read.
-    ///
-    /// @deprecated — sending this field has no effect.
-    #[allow(dead_code)]
+    /// Optional explicit MCP command for this agent (e.g. a custom persona
+    /// that pairs with its own MCP server). When present and non-empty it is
+    /// stored on the record and wins over the runtime catalog default at
+    /// spawn time (see `resolve_effective_mcp_command`). Absent/empty falls
+    /// back to the catalog-derived default for the resolved harness, exactly
+    /// as before.
     pub mcp_command: Option<String>,
     /// Accepted for wire compatibility; not applied to the record.
     /// `BUZZ_ACP_TURN_TIMEOUT` is deprecated and ignored by the harness.

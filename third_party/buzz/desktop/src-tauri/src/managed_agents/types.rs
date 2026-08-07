@@ -255,10 +255,11 @@ pub struct ManagedAgentRecord {
     #[serde(default)]
     pub agent_command_override: Option<String>,
     pub agent_args: Vec<String>,
-    /// Create-time snapshot of the catalog MCP command. Never read at spawn —
-    /// the effective MCP command is always re-derived from the runtime catalog
-    /// (`known_acp_runtime`) — and no longer written by updates. Kept for
-    /// serde compatibility with existing stores.
+    /// Explicit per-agent MCP command, or `""` to inherit the runtime
+    /// catalog's default for the effective harness. Set at create time from
+    /// `CreateManagedAgentRequest.mcp_command`; read at spawn time via
+    /// `resolve_effective_mcp_command`, which prefers this value when
+    /// non-empty and otherwise falls back to `known_acp_runtime`.
     pub mcp_command: String,
     /// Deprecated: `BUZZ_ACP_TURN_TIMEOUT` is ignored by the harness and the
     /// desktop no longer emits or edits it. Kept for serde compatibility with
@@ -509,8 +510,9 @@ pub struct ManagedAgentSummary {
     /// concrete pin (`agent_command` above is the resolved/effective command).
     pub agent_command_override: Option<String>,
     pub agent_args: Vec<String>,
-    /// Catalog-derived from the effective harness (not the record's stored
-    /// field), so the UI always shows what a spawn would actually use.
+    /// Resolved via `resolve_effective_mcp_command` (explicit record value if
+    /// set, else catalog-derived from the effective harness), so the UI
+    /// always shows what a spawn would actually use.
     pub mcp_command: String,
     /// Deprecated passthrough of the stored record value; the harness ignores
     /// it. Kept for wire compatibility.

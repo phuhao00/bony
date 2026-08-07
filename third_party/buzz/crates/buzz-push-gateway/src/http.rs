@@ -724,17 +724,11 @@ async fn ready(State(s): State<AppState>) -> Response {
     }
     Json(serde_json::json!({"status":"ready"})).into_response()
 }
+/// Build the public and private routers. Metrics are recorded through the
+/// `metrics` facade (see `crate::metrics`) but no scrape endpoint is exposed —
+/// this deployment target runs single-instance without external monitoring
+/// infrastructure.
 pub fn router(state: AppState) -> (Router, Router) {
-    router_with_metrics(state, None)
-}
-
-/// Build the public and private routers. When `metrics_handle` is provided, the
-/// private health router additionally serves `GET /metrics` in Prometheus text
-/// format. Metrics live only on the private router, never on the public port.
-pub fn router_with_metrics(
-    state: AppState,
-    metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
-) -> (Router, Router) {
     let public = Router::new()
         .route("/v1/installations/challenges", post(challenge))
         .route("/v1/installations", post(enroll))
@@ -750,27 +744,9 @@ pub fn router_with_metrics(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(20),
         ));
-    let mut health = Router::new()
+    let health = Router::new()
         .route("/_liveness", get(live))
         .route("/_readiness", get(ready))
         .with_state(state);
-    if let Some(handle) = metrics_handle {
-        health = health.route(
-            "/metrics",
-            get(move || {
-                let handle = handle.clone();
-                async move {
-                    handle.run_upkeep();
-                    (
-                        [(
-                            axum::http::header::CONTENT_TYPE,
-                            "text/plain; version=0.0.4",
-                        )],
-                        handle.render(),
-                    )
-                }
-            }),
-        );
-    }
     (public, health)
 }

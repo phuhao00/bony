@@ -1,4 +1,4 @@
-//! Relay-level membership persistence (NIP-43).
+﻿//! Relay-level membership persistence (NIP-43).
 //!
 //! The `relay_members` table is community-scoped: its primary key is
 //! `(community_id, pubkey)`. Every read, write, and list is bound to a single
@@ -7,7 +7,7 @@
 //! lowercase hex strings.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 
 use crate::error::Result;
 use crate::CommunityId;
@@ -28,7 +28,7 @@ pub struct RelayMember {
 }
 
 /// Returns `true` if `pubkey` (64-char hex) is a member of `community`.
-pub async fn is_relay_member(pool: &PgPool, community: CommunityId, pubkey: &str) -> Result<bool> {
+pub async fn is_relay_member(pool: &SqlitePool, community: CommunityId, pubkey: &str) -> Result<bool> {
     let mut conn = pool.acquire().await?;
     is_relay_member_on(&mut conn, community, pubkey).await
 }
@@ -37,7 +37,7 @@ pub async fn is_relay_member(pool: &PgPool, community: CommunityId, pubkey: &str
 /// the lookup on the exact reader connection whose heartbeat observation
 /// proved fence coverage.
 pub(crate) async fn is_relay_member_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community: CommunityId,
     pubkey: &str,
 ) -> Result<bool> {
@@ -53,7 +53,7 @@ pub(crate) async fn is_relay_member_on(
 /// role. Open relays don't *enforce* the roster, but startup
 /// (`bootstrap_owner`) and operator provisioning still populate it — this is
 /// how the workspace-profile gate detects whether a steward exists.
-pub async fn has_admin_or_owner(pool: &PgPool, community: CommunityId) -> Result<bool> {
+pub async fn has_admin_or_owner(pool: &SqlitePool, community: CommunityId) -> Result<bool> {
     let row = sqlx::query(
         "SELECT 1 FROM relay_members \
          WHERE community_id = $1 AND role IN ('admin', 'owner') LIMIT 1",
@@ -66,7 +66,7 @@ pub async fn has_admin_or_owner(pool: &PgPool, community: CommunityId) -> Result
 
 /// Returns the relay member record for `pubkey` in `community`, or `None`.
 pub async fn get_relay_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
 ) -> Result<Option<RelayMember>> {
@@ -93,7 +93,7 @@ pub async fn get_relay_member(
 }
 
 /// Returns all relay members of `community` ordered by `created_at` ascending.
-pub async fn list_relay_members(pool: &PgPool, community: CommunityId) -> Result<Vec<RelayMember>> {
+pub async fn list_relay_members(pool: &SqlitePool, community: CommunityId) -> Result<Vec<RelayMember>> {
     let rows = sqlx::query(
         "SELECT pubkey, role, added_by, created_at, updated_at \
          FROM relay_members WHERE community_id = $1 ORDER BY created_at ASC",
@@ -122,7 +122,7 @@ pub async fn list_relay_members(pool: &PgPool, community: CommunityId) -> Result
 /// already existed in this community (idempotent — `ON CONFLICT DO NOTHING` on
 /// the `(community_id, pubkey)` primary key).
 pub async fn add_relay_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
     role: &str,
@@ -147,7 +147,7 @@ pub async fn add_relay_member(
 /// already a member. A configured `policy_version` is recorded in the same
 /// transaction, so membership cannot be granted without its acceptance record.
 pub async fn claim_relay_membership(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
     role: &str,
@@ -185,7 +185,7 @@ pub async fn claim_relay_membership(
 
 /// Returns whether a member has persisted acceptance evidence for a policy version.
 pub async fn has_join_policy_acceptance(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
     policy_version: &str,
@@ -217,11 +217,11 @@ pub enum RemoveResult {
 
 /// Removes a relay member atomically, refusing to delete the owner.
 ///
-/// Uses a single conditional `DELETE … WHERE role <> 'owner'` so the
+/// Uses a single conditional `DELETE → WHERE role <> 'owner'` so the
 /// owner-protection check and the deletion are one atomic operation —
 /// no TOCTOU race between a separate read and delete.
 pub async fn remove_relay_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
 ) -> Result<RemoveResult> {
@@ -256,7 +256,7 @@ pub async fn remove_relay_member(
 /// Removes a relay member only if their current role matches `expected_role`.
 ///
 /// The delete and the role check are collapsed into a single
-/// `DELETE … WHERE pubkey = $1 AND role = $2`, making the operation atomic —
+/// `DELETE → WHERE pubkey = $1 AND role = $2`, making the operation atomic —
 /// no TOCTOU race between a prior read and this delete.
 ///
 /// Returns:
@@ -267,7 +267,7 @@ pub async fn remove_relay_member(
 ///   `expected_role` (e.g., they were promoted between the caller's read and
 ///   this delete).
 pub async fn remove_relay_member_if_role(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
     expected_role: &str,
@@ -312,13 +312,13 @@ pub async fn remove_relay_member_if_role(
 /// Updates the role of an existing relay member in `community`. Returns `true`
 /// if updated.
 pub async fn update_relay_member_role(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &str,
     new_role: &str,
 ) -> Result<bool> {
     let result = sqlx::query(
-        "UPDATE relay_members SET role = $1, updated_at = now() \
+        "UPDATE relay_members SET role = $1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $2 AND pubkey = $3 AND role <> 'owner'",
     )
     .bind(new_role)
@@ -345,7 +345,7 @@ pub async fn update_relay_member_role(
 /// end-user invariant enforced by `create_community_with_owner` and
 /// `transfer_ownership`; deployment-root operations may exceed it by design.
 pub async fn bootstrap_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     owner_pubkey: &str,
 ) -> Result<()> {
@@ -356,7 +356,7 @@ pub async fn bootstrap_owner(
     sqlx::query(
         "INSERT INTO relay_members (community_id, pubkey, role, added_by) \
          VALUES ($1, $2, 'owner', NULL) \
-         ON CONFLICT (community_id, pubkey) DO UPDATE SET role = 'owner', updated_at = now()",
+         ON CONFLICT (community_id, pubkey) DO UPDATE SET role = 'owner', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
     )
     .bind(community.as_uuid())
     .bind(&pubkey)
@@ -365,7 +365,7 @@ pub async fn bootstrap_owner(
 
     // 2. Demote any other owners in this community to admin.
     sqlx::query(
-        "UPDATE relay_members SET role = 'admin', updated_at = now() \
+        "UPDATE relay_members SET role = 'admin', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $1 AND role = 'owner' AND pubkey <> $2",
     )
     .bind(community.as_uuid())
@@ -431,18 +431,6 @@ fn effective_owner_limit(raw: Option<&str>) -> i64 {
         .unwrap_or(MAX_COMMUNITIES_PER_OWNER)
 }
 
-/// Stable advisory-lock key for serializing ownership-granting operations
-/// (transfer + create) per recipient pubkey. Uses FNV-1a over the hex pubkey
-/// so the same recipient always maps to the same lock across processes.
-pub fn owner_count_advisory_lock_key(pubkey_hex: &str) -> i64 {
-    let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for b in pubkey_hex.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x100000001b3); // FNV prime
-    }
-    h as i64
-}
-
 /// Atomically transfers ownership of `community` to `new_owner_pubkey`.
 ///
 /// Runs in a single transaction:
@@ -462,7 +450,7 @@ pub fn owner_count_advisory_lock_key(pubkey_hex: &str) -> i64 {
 ///
 /// Scoped to one community — an ownership transfer in A never touches B.
 pub async fn transfer_ownership(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     new_owner_pubkey: &str,
     expected_owner_pubkey: &str,
@@ -472,20 +460,18 @@ pub async fn transfer_ownership(
     let mut tx = pool.begin().await?;
 
     // 1. Serialize on the transferee so concurrent transfers to the same
-    //    recipient cannot both pass the ownership count check.
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(owner_count_advisory_lock_key(&pubkey))
-        .execute(&mut *tx)
-        .await?;
+    //    recipient cannot both pass the ownership count check. On Postgres
+    //    this held a per-recipient advisory lock; SQLite's single-connection
+    //    pool already serializes every transaction at connection-checkout
+    //    time (see `crate::DbConfig`), so a concurrent call blocks at
+    //    `pool.begin()` until this transaction commits or rolls back.
 
-    // 2. Lock the current owner row FOR UPDATE and verify the expected owner.
-    //    FOR UPDATE prevents the stale-owner race: a concurrent transfer that
-    //    already changed the owner will block on this lock until our txn
-    //    completes (or vice versa), and the expected_owner check will fail.
+    // 2. Read the current owner row and verify the expected owner. On
+    //    Postgres this held `FOR UPDATE` to block a concurrent transfer;
+    //    SQLite's single-writer transaction already gives the same ordering.
     let existing_owners: Vec<String> = sqlx::query_scalar(
         "SELECT pubkey FROM relay_members \
-         WHERE community_id = $1 AND role = 'owner' \
-         FOR UPDATE",
+         WHERE community_id = $1 AND role = 'owner'",
     )
     .bind(community.as_uuid())
     .fetch_all(&mut *tx)
@@ -534,7 +520,7 @@ pub async fn transfer_ownership(
     sqlx::query(
         "INSERT INTO relay_members (community_id, pubkey, role, added_by) \
          VALUES ($1, $2, 'owner', NULL) \
-         ON CONFLICT (community_id, pubkey) DO UPDATE SET role = 'owner', updated_at = now()",
+         ON CONFLICT (community_id, pubkey) DO UPDATE SET role = 'owner', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
     )
     .bind(community.as_uuid())
     .bind(&pubkey)
@@ -543,7 +529,7 @@ pub async fn transfer_ownership(
 
     // 5. Demote all other owners to member (not admin).
     sqlx::query(
-        "UPDATE relay_members SET role = 'member', updated_at = now() \
+        "UPDATE relay_members SET role = 'member', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $1 AND role = 'owner' AND pubkey <> $2",
     )
     .bind(community.as_uuid())
@@ -566,7 +552,7 @@ pub async fn transfer_ownership(
 ///
 /// The empty-table guard prevents re-adding members that were intentionally
 /// removed by an admin after the initial backfill.
-pub async fn backfill_from_allowlist(pool: &PgPool, community: CommunityId) -> Result<u64> {
+pub async fn backfill_from_allowlist(pool: &SqlitePool, community: CommunityId) -> Result<u64> {
     // Check if pubkey_allowlist table exists.
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
@@ -637,18 +623,24 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_test_community(pool: &PgPool) -> CommunityId {
+    async fn make_test_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         let host = format!("relay-members-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -664,7 +656,7 @@ mod tests {
         format!("{:064x}", Uuid::new_v4().as_u128())
     }
 
-    async fn assert_role(pool: &PgPool, community: CommunityId, pubkey: &str, role: &str) {
+    async fn assert_role(pool: &SqlitePool, community: CommunityId, pubkey: &str, role: &str) {
         assert_eq!(
             get_relay_member(pool, community, pubkey)
                 .await
@@ -675,7 +667,7 @@ mod tests {
         );
     }
 
-    async fn owned_community(pool: &PgPool) -> (CommunityId, String) {
+    async fn owned_community(pool: &SqlitePool) -> (CommunityId, String) {
         let community = make_test_community(pool).await;
         let owner = test_pubkey();
         bootstrap_owner(pool, community, &owner)
@@ -685,7 +677,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn invite_claim_persists_policy_version_and_legacy_claim_does_not() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -723,7 +714,6 @@ mod tests {
     /// every read path (`is_relay_member`, `get_relay_member`, `list_relay_members`)
     /// confines it to A.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn membership_is_confined_to_its_community() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -788,7 +778,6 @@ mod tests {
     /// make that pubkey an owner (or member) of B. Guards against a global
     /// `INSERT ... (pubkey, role)` bootstrap leaking the owner across tenants.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn owner_bootstrap_is_confined_to_its_community() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -816,7 +805,6 @@ mod tests {
     /// Transfer ownership: upserts new owner, demotes previous owner to
     /// `member` (not `admin`), and returns the previous owner's pubkey.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_demotes_old_owner_to_member() {
         let pool = setup_pool().await;
         let (community, old_owner) = owned_community(&pool).await;
@@ -839,7 +827,6 @@ mod tests {
 
     /// Transferring to the current sole owner is a no-op (`AlreadyOwner`).
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_already_owner_is_noop() {
         let pool = setup_pool().await;
         let (community, owner) = owned_community(&pool).await;
@@ -855,7 +842,6 @@ mod tests {
 
     /// Transferring a community with no owner row returns `NoOwner`.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_no_owner_returns_no_owner() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -874,7 +860,6 @@ mod tests {
     /// Transfer ownership is community-scoped: transferring in A does not
     /// affect ownership in B.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_is_community_scoped() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -908,7 +893,6 @@ mod tests {
     /// Transfer ownership to someone who is already a member promotes them to
     /// owner and demotes the old owner to member.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_promotes_existing_member() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -950,7 +934,6 @@ mod tests {
     /// match the current owner — simulates a stale/delayed request after a
     /// concurrent transfer has already changed ownership.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_returns_owner_conflict_when_expected_mismatches() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -992,14 +975,13 @@ mod tests {
     /// maximum number of communities. The limit is enforced inside the
     /// transfer transaction at the relay layer.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn transfer_ownership_returns_limit_reached_for_maxed_transferee() {
         let pool = setup_pool().await;
         let owner = test_pubkey();
         let transferee = test_pubkey();
 
-        // Give the transferee 3 communities (the max).
-        for _ in 0..3 {
+        // Give the transferee `MAX_COMMUNITIES_PER_OWNER` communities (the max).
+        for _ in 0..MAX_COMMUNITIES_PER_OWNER {
             let c = make_test_community(&pool).await;
             bootstrap_owner(&pool, c, &transferee)
                 .await

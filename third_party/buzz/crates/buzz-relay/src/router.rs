@@ -363,7 +363,9 @@ async fn liveness_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-/// Readiness probe — checks shutdown flag, Postgres, and Redis connectivity.
+/// Readiness probe — checks shutdown flag and Postgres connectivity. Pub/sub,
+/// presence, rate limiting, and NIP-98 replay are all in-process now, so
+/// there is no external dependency to probe for them.
 async fn readiness_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     use std::time::Duration;
 
@@ -375,23 +377,16 @@ async fn readiness_handler(State(state): State<Arc<AppState>>) -> impl IntoRespo
             .into_response();
     }
 
-    let check = async {
-        let (pg_ok, redis_ok) = tokio::join!(state.db.ping(), async {
-            state.redis_pool.get().await.is_ok()
-        },);
-        (pg_ok, redis_ok)
-    };
-
-    let (pg_ok, redis_ok) = tokio::time::timeout(Duration::from_secs(2), check)
+    let pg_ok = tokio::time::timeout(Duration::from_secs(2), state.db.ping())
         .await
-        .unwrap_or((false, false));
+        .unwrap_or(false);
 
-    if pg_ok && redis_ok {
+    if pg_ok {
         (StatusCode::OK, Json(json!({"status": "ready"}))).into_response()
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status": "not_ready", "postgres": pg_ok, "redis": redis_ok})),
+            Json(json!({"status": "not_ready", "postgres": pg_ok})),
         )
             .into_response()
     }

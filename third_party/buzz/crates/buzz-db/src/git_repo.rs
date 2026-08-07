@@ -4,19 +4,19 @@
 //! writes hydrate an ephemeral bare repo from object storage per request, and
 //! writer serialization is the object-store pointer CAS (see
 //! `docs/git-on-object-storage.md`, `Inv_NoFork`). Repo-*name* uniqueness is
-//! the one remaining shared-state need, and it lives here — in Postgres, not on
+//! the one remaining shared-state need, and it lives here — in Sqlite, not on
 //! local disk — so the relay is stateless and can run multiple replicas without
 //! a ReadWriteMany volume.
 //!
 //! Names are unique **within a community**: the primary key is
 //! `(community_id, repo_id)`, matching the multi-tenant invariant that every
 //! tenant-scoped key leads with `community_id`. The PK enforces uniqueness
-//! atomically via `INSERT … ON CONFLICT DO NOTHING`, which replaces the old
+//! atomically via `INSERT → ON CONFLICT DO NOTHING`, which replaces the old
 //! filesystem `create_dir` race guard. `owner_pubkey` distinguishes an
 //! idempotent re-announce (same owner) from a collision (different owner), and
 //! backs the per-pubkey quota via `COUNT`.
 
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 
 use crate::error::Result;
 use crate::CommunityId;
@@ -45,7 +45,7 @@ pub enum ReserveOutcome {
 /// re-announce vs cross-owner collision) and to gate the quota check before a
 /// fresh claim.
 pub async fn repo_name_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     repo_id: &str,
 ) -> Result<Option<String>> {
@@ -79,7 +79,7 @@ pub async fn repo_name_owner(
 /// [`count_repos_for_owner`]. (Kept as a separate call so the handler owns the
 /// error message and the ordering, matching the old code.)
 pub async fn reserve_repo_name(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     repo_id: &str,
     owner_pubkey: &str,
@@ -140,7 +140,7 @@ pub async fn reserve_repo_name(
 /// not-yet-owned name, so the handler can reject over-quota announces with its
 /// own error message.
 pub async fn count_repos_for_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     owner_pubkey: &str,
 ) -> Result<i64> {
@@ -162,7 +162,7 @@ pub async fn count_repos_for_owner(
 /// `owner_pubkey` so a rollback can never delete a name a *different* owner
 /// concurrently holds. Returns the number of rows removed (0 or 1).
 pub async fn release_repo_name(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     repo_id: &str,
     owner_pubkey: &str,
@@ -184,18 +184,24 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_test_community(pool: &PgPool) -> CommunityId {
+    async fn make_test_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         let host = format!("git-repo-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -215,7 +221,6 @@ mod tests {
     /// `AlreadyOwned` (idempotent) and never grows the owner's count; a
     /// *different* owner is `TakenByOther`.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn reserve_classifies_fresh_idempotent_and_collision() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -263,7 +268,6 @@ mod tests {
     /// `repo_name_owner` returns the holder for a reserved name and `None` for a
     /// free one, so the handler can classify before claiming.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn repo_name_owner_reflects_reservation() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -293,7 +297,6 @@ mod tests {
     /// freeing the name for a subsequent claim; a release by a *non*-holder is a
     /// no-op that leaves the reservation intact.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn release_is_owner_scoped_and_frees_the_name() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -342,7 +345,6 @@ mod tests {
     /// may be independently reserved by different owners in different
     /// communities without collision.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn names_are_scoped_per_community() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;

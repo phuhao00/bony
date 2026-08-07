@@ -1,102 +1,75 @@
-//! Redis-backed rate limiter using atomic Lua script (INCR + EXPIRE).
+//! In-process fixed-window rate limiter.
 //!
-//! Implements the [`RateLimiter`] trait from `buzz-auth`.
-//! Uses a single Lua script to atomically INCR and conditionally EXPIRE,
-//! eliminating the crash window where a key could exist without a TTL.
+//! Implements the [`RateLimiter`] trait from `buzz-auth`. Backed by a
+//! `DashMap<String, (count, window_ends_at)>` — single-instance equivalent of
+//! the previous Redis `INCR` + `EXPIRE` script: a window resets lazily the
+//! first time it is observed to have expired.
 //!
 //! ⚠️ Fixed windows allow up to 2× burst at boundaries. Upgrade to sliding
 //! window or token bucket for strict limiting.
 
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 use buzz_auth::{
     error::AuthError,
     rate_limit::{LimitType, RateLimitResult, RateLimiter},
 };
 use buzz_core::TenantContext;
+use dashmap::DashMap;
 use nostr::PublicKey;
-use redis::Script;
 
-/// Atomically INCR the key, set EXPIRE on first call, and return (count, ttl).
-///
-/// Using a Lua script ensures INCR and EXPIRE are executed atomically —
-/// a crash between them can no longer leave a key without a TTL.
-const RATE_LIMIT_SCRIPT: &str = r#"
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
-end
-local ttl = redis.call('TTL', KEYS[1])
-return {count, ttl}
-"#;
+struct Window {
+    count: u64,
+    ends_at: Instant,
+}
 
-/// Run the atomic rate-limit Lua script against `key` and return a
-/// [`RateLimitResult`].
-///
-/// If the TTL comes back negative (key exists without expiry — broken state
-/// from a prior crash), the key is repaired with a fresh EXPIRE and a warning
-/// is logged.
-async fn run_rate_limit(
-    pool: &deadpool_redis::Pool,
-    key: &str,
-    window_secs: u64,
-    limit: u64,
-) -> Result<RateLimitResult, AuthError> {
-    let mut conn = pool
-        .get()
-        .await
-        .map_err(|e| AuthError::Internal(format!("Redis pool: {e}")))?;
+fn hit(windows: &DashMap<String, Window>, key: &str, window_secs: u64, limit: u64) -> RateLimitResult {
+    let now = Instant::now();
 
-    let script = Script::new(RATE_LIMIT_SCRIPT);
-    let (count, ttl): (u64, i64) = script
-        .key(key)
-        .arg(window_secs as i64)
-        .invoke_async(&mut *conn)
-        .await
-        .map_err(|e| AuthError::Internal(format!("Redis rate limit script: {e}")))?;
+    let mut entry = windows
+        .entry(key.to_string())
+        .or_insert_with(|| Window {
+            count: 0,
+            // Starts already-expired so the first hit below always opens a
+            // fresh window, even for `window_secs == 0`.
+            ends_at: now,
+        });
 
-    // ttl == -1 means the key exists but has no expiry — broken state from a
-    // prior crash between INCR and EXPIRE. Repair it now.
-    let reset_in_secs = if ttl < 0 {
-        tracing::warn!(key = %key, "rate limit key has no TTL — repairing");
-        let _: () = redis::cmd("EXPIRE")
-            .arg(key)
-            .arg(window_secs as i64)
-            .query_async(&mut *conn)
-            .await
-            .map_err(|e| AuthError::Internal(format!("Redis EXPIRE repair: {e}")))?;
-        // After repair, the window resets to the full duration.
-        window_secs
-    } else {
-        ttl.max(0) as u64
-    };
+    if now >= entry.ends_at {
+        entry.count = 0;
+        entry.ends_at = now + Duration::from_secs(window_secs);
+    }
+
+    entry.count += 1;
+    let count = entry.count;
+    let reset_in_secs = entry.ends_at.saturating_duration_since(now).as_secs();
 
     if count <= limit {
-        Ok(RateLimitResult::allowed(count, limit, reset_in_secs))
+        RateLimitResult::allowed(count, limit, reset_in_secs)
     } else {
-        Ok(RateLimitResult::denied(count, limit, reset_in_secs))
+        RateLimitResult::denied(count, limit, reset_in_secs)
     }
 }
 
-/// Redis-backed rate limiter using fixed-window counters.
+/// In-process rate limiter using fixed-window counters.
 ///
-/// Pubkey keys are community-scoped via `&TenantContext`:
-/// `buzz:{community}:ratelimit:{pubkey_hex}:{suffix}`. IP keys remain
-/// operator-global: `buzz:ratelimit:ip:{ip}:conn`. The counter and its TTL are
-/// managed atomically via a Lua script to prevent keys from persisting without
-/// expiry.
-pub struct RedisRateLimiter {
-    pool: deadpool_redis::Pool,
+/// Pubkey keys are community-scoped via `&TenantContext`. IP keys remain
+/// operator-global. Equivalent isolation to the prior Redis-backed limiter,
+/// minus cross-process sharing — irrelevant for a single-instance relay.
+#[derive(Default)]
+pub struct InMemoryRateLimiter {
+    windows: DashMap<String, Window>,
 }
 
-impl RedisRateLimiter {
-    /// Create a new `RedisRateLimiter` backed by the given connection pool.
-    pub fn new(pool: deadpool_redis::Pool) -> Self {
-        Self { pool }
+impl InMemoryRateLimiter {
+    /// Creates a new, empty in-process rate limiter.
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
-impl RateLimiter for RedisRateLimiter {
+impl RateLimiter for InMemoryRateLimiter {
     async fn check_and_increment(
         &self,
         ctx: &TenantContext,
@@ -106,7 +79,7 @@ impl RateLimiter for RedisRateLimiter {
         limit: u64,
     ) -> Result<RateLimitResult, AuthError> {
         let key = buzz_auth::rate_limit::rate_limit_key(ctx, pubkey, &limit_type);
-        run_rate_limit(&self.pool, &key, window_secs, limit).await
+        Ok(hit(&self.windows, &key, window_secs, limit))
     }
 
     async fn check_ip_connection(
@@ -116,6 +89,79 @@ impl RateLimiter for RedisRateLimiter {
         limit: u64,
     ) -> Result<RateLimitResult, AuthError> {
         let key = buzz_auth::rate_limit::ip_rate_limit_key(ip);
-        run_rate_limit(&self.pool, &key, window_secs, limit).await
+        Ok(hit(&self.windows, &key, window_secs, limit))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buzz_core::CommunityId;
+    use nostr::Keys;
+    use uuid::Uuid;
+
+    fn ctx(id: u128, host: &str) -> TenantContext {
+        TenantContext::resolved(CommunityId::from_uuid(Uuid::from_u128(id)), host)
+    }
+
+    #[tokio::test]
+    async fn allows_up_to_limit_then_denies() {
+        let limiter = InMemoryRateLimiter::new();
+        let ctx = ctx(0xaaaa, "a.example");
+        let pubkey = Keys::generate().public_key();
+
+        for _ in 0..3 {
+            let result = limiter
+                .check_and_increment(&ctx, &pubkey, LimitType::Messages, 60, 3)
+                .await
+                .unwrap();
+            assert!(result.allowed);
+        }
+
+        let denied = limiter
+            .check_and_increment(&ctx, &pubkey, LimitType::Messages, 60, 3)
+            .await
+            .unwrap();
+        assert!(!denied.allowed);
+    }
+
+    #[tokio::test]
+    async fn window_resets_after_expiry() {
+        let limiter = InMemoryRateLimiter::new();
+        let ctx = ctx(0xaaaa, "a.example");
+        let pubkey = Keys::generate().public_key();
+
+        let first = limiter
+            .check_and_increment(&ctx, &pubkey, LimitType::Messages, 0, 1)
+            .await
+            .unwrap();
+        assert!(first.allowed);
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let second = limiter
+            .check_and_increment(&ctx, &pubkey, LimitType::Messages, 0, 1)
+            .await
+            .unwrap();
+        assert!(second.allowed, "window should have reset after expiry");
+    }
+
+    #[tokio::test]
+    async fn communities_are_isolated() {
+        let limiter = InMemoryRateLimiter::new();
+        let ctx_a = ctx(0xaaaa, "a.example");
+        let ctx_b = ctx(0xbbbb, "b.example");
+        let pubkey = Keys::generate().public_key();
+
+        let a = limiter
+            .check_and_increment(&ctx_a, &pubkey, LimitType::Messages, 60, 1)
+            .await
+            .unwrap();
+        let b = limiter
+            .check_and_increment(&ctx_b, &pubkey, LimitType::Messages, 60, 1)
+            .await
+            .unwrap();
+        assert!(a.allowed);
+        assert!(b.allowed);
     }
 }

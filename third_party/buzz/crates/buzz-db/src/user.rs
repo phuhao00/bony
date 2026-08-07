@@ -1,8 +1,8 @@
-//! User CRUD operations.
+﻿//! User CRUD operations.
 
 use crate::error::Result;
 use buzz_core::CommunityId;
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use sqlx::Row;
 
 /// A user's profile fields.
@@ -39,7 +39,7 @@ pub struct UserSearchProfile {
 /// Returns `true` if a new row was inserted, `false` if the user already existed.
 /// The `true` case is the reliable signal for "user was just registered" — used
 /// by callers to increment `buzz_users_created_total`.
-pub async fn ensure_user(pool: &PgPool, community_id: CommunityId, pubkey: &[u8]) -> Result<bool> {
+pub async fn ensure_user(pool: &SqlitePool, community_id: CommunityId, pubkey: &[u8]) -> Result<bool> {
     let result = sqlx::query(
         r#"
         INSERT INTO users (community_id, pubkey)
@@ -56,7 +56,7 @@ pub async fn ensure_user(pool: &PgPool, community_id: CommunityId, pubkey: &[u8]
 
 /// Get a single user record by pubkey.
 pub async fn get_user(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
 ) -> Result<Option<UserProfile>> {
@@ -101,7 +101,7 @@ pub async fn get_user(
 /// `nip05_handle` column which has a UNIQUE constraint (multiple NULLs are allowed,
 /// but multiple empty strings would violate uniqueness).
 pub async fn update_user_profile(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
     display_name: Option<&str>,
@@ -167,7 +167,7 @@ pub async fn update_user_profile(
 /// Look up a user by their full NIP-05 handle (exact match, case-insensitive).
 /// Both `local_part` and `domain` must already be lowercased by the caller.
 pub async fn get_user_by_nip05(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     local_part: &str,
     domain: &str,
@@ -222,7 +222,7 @@ fn escape_like(input: &str) -> String {
 ///
 /// Empty queries return an empty vec and do not hit the database.
 pub async fn search_users(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     query: &str,
     limit: u32,
@@ -289,7 +289,7 @@ pub async fn search_users(
 /// (caller should check whether the existing owner matches). Returns Err if the
 /// agent pubkey doesn't exist in the users table.
 pub async fn set_agent_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     agent_pubkey: &[u8],
     owner_pubkey: &[u8],
@@ -328,12 +328,12 @@ pub async fn set_agent_owner(
 /// Returns None if the pubkey is not in the users table.
 /// Returns Some((policy_str, owner_bytes_or_none)) if found.
 pub async fn get_agent_channel_policy(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
 ) -> Result<Option<(String, Option<Vec<u8>>)>> {
     let row = sqlx::query(
-        r#"SELECT channel_add_policy::text AS channel_add_policy, agent_owner_pubkey FROM users WHERE community_id = $1 AND pubkey = $2"#,
+        r#"SELECT channel_add_policy AS channel_add_policy, agent_owner_pubkey FROM users WHERE community_id = $1 AND pubkey = $2"#,
     )
     .bind(community_id.as_uuid())
     .bind(pubkey)
@@ -352,7 +352,7 @@ pub async fn get_agent_channel_policy(
 /// Queries `agent_owner_pubkey` directly rather than going through
 /// `get_agent_channel_policy`, which would fetch unrelated fields.
 pub async fn is_agent_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     target_pubkey: &[u8],
     actor_pubkey: &[u8],
@@ -372,7 +372,7 @@ pub async fn is_agent_owner(
 /// Returns an error if the pubkey is not found (rows_affected == 0).
 /// Returns an error if `policy` is not one of the valid ENUM values.
 pub async fn set_channel_add_policy(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
     policy: &str,
@@ -383,7 +383,7 @@ pub async fn set_channel_add_policy(
         )));
     }
     let result = sqlx::query(
-        r#"UPDATE users SET channel_add_policy = $1::channel_add_policy WHERE community_id = $2 AND pubkey = $3"#,
+        r#"UPDATE users SET channel_add_policy = $1 WHERE community_id = $2 AND pubkey = $3"#,
     )
     .bind(policy)
     .bind(community_id.as_uuid())
@@ -404,12 +404,17 @@ mod tests {
     use crate::Db;
     use nostr::Keys;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
     async fn setup_db() -> Db {
-        let pool = PgPool::connect(TEST_DB_URL)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(TEST_DB_URL)
             .await
             .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
         Db::from_pool(pool)
     }
 
@@ -417,7 +422,7 @@ mod tests {
         Keys::generate().public_key().to_bytes().to_vec()
     }
 
-    async fn make_community(pool: &PgPool) -> CommunityId {
+    async fn make_community(pool: &SqlitePool) -> CommunityId {
         let id = uuid::Uuid::new_v4();
         let host = format!("user-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -432,7 +437,6 @@ mod tests {
     /// Setting an agent owner then reading back the policy should return
     /// the default "anyone" policy and the owner pubkey.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_agent_owner_and_get_policy() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -466,7 +470,6 @@ mod tests {
 
     /// set_channel_add_policy should persist each of the three valid policies.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_channel_add_policy() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -512,7 +515,6 @@ mod tests {
     /// get_agent_channel_policy should return None for a pubkey that has
     /// never been inserted into the users table.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_get_policy_unknown_pubkey() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -528,7 +530,6 @@ mod tests {
     /// set_agent_owner should return Err when the agent pubkey does not exist
     /// in the users table.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_agent_owner_nonexistent_agent() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -549,7 +550,6 @@ mod tests {
 
     /// set_agent_owner should return Ok(false) when the agent already has an owner.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_agent_owner_already_owned() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -588,7 +588,6 @@ mod tests {
     /// set_channel_add_policy should return Err when the pubkey does not exist
     /// in the users table (0 rows affected -> NotFound).
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_channel_add_policy_nonexistent_user() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -602,7 +601,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_set_channel_add_policy_rejects_invalid() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;
@@ -649,7 +647,6 @@ mod tests {
     /// A user with "owner_only" policy but no agent_owner_pubkey set should
     /// return Some(("owner_only", None)).
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_owner_only_with_no_owner() {
         let db = setup_db().await;
         let community = make_community(&db.pool).await;

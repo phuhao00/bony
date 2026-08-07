@@ -1,0 +1,37 @@
+---
+description: 语言政策 — 新增实现用 Rust，禁止其他语言与胶水层
+alwaysApply: true
+---
+
+# 语言：只用 Rust
+
+## 强制
+
+- **新代码、新工具、新 sidecar、新 MCP、新业务逻辑 → 只写 Rust**（workspace crate）。
+- 构建与日常操作：根目录 **`cargo build|test|run|clippy -p <crate>`**。
+- 单一 workspace：仓库根 `Cargo.toml`；单一 `target/`（仓库根）。
+- 热路径：`async`/零拷贝友好设计；避免无谓 `String` 堆分配与进程外壳。
+
+## 禁止
+
+| 禁止 | 改做 |
+|------|------|
+| 新 Python / Go / Node / bash 业务程序 | 新 `crates/...` 或 `third_party/buzz/crates/...` Rust crate |
+| 用解释器做「快捷自动化」补丁 | 扩现有 Rust 命令/库 API |
+| 平行新建非 Cargo 工程 | 加入根 workspace 成员 |
+| 为省编译时间默认关功能（如 STT） | 修链接/feature；local-stt 默认 shared DLL |
+
+## 存量边界（不扩大）
+
+- **Bony Build UI**：`crates/codegen/bony-build`（egui，Rust）— 主产品壳。
+- **Buzz Desktop 前端**：既有 Tauri + TS 仅维护；**禁止**在 TS 新增业务中枢/agent 编排；编排、seed、密钥、agent 生命周期进 **Rust（Tauri commands / buzz crates）**。
+- Prompt 文案：`scripts/buzz-room/prompts/*.md` 可改内容；**不是**可执行业务层。
+
+## 决策
+
+```
+需要新能力？
+  → Rust crate / 扩现有 crate
+  → 仅缺启动编排时：用白名单 start 脚本（见 scripts-start-only）
+  → 禁止再加「方便脚本」或别的语言
+```

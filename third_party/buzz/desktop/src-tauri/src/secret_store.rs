@@ -21,6 +21,8 @@
 //! divergent-behavior trap.
 
 use std::collections::HashMap;
+#[cfg(all(feature = "system-keyring", windows))]
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -80,22 +82,29 @@ fn is_windows_credential_size_error(err: &str) -> bool {
 }
 
 /// Drop non-essential / oversized values so the blob fits under the Windows
-/// credential limit. Identity + agent nsecs are hex/nsec-sized (~64–128 chars)
-/// and must survive; long junk from migrations is the usual overflow source.
+/// credential limit. Identity + **recently written** agent nsecs are protected
+/// via `protect`; long junk from migrations is the usual overflow source.
+///
+/// Orphan `agent:*` keys accumulate when room agents are re-minted (new
+/// pubkeys) — each entry is ~140 UTF-16 units, so ~18 zombies already exhaust
+/// the 2560 cap even after non-essential keys are gone. The final step therefore
+/// **evicts unprotected agent keys** until the soft limit fits. Callers pass
+/// keys that were just written this mutation so live nsecs are not dropped.
 #[cfg(all(feature = "system-keyring", windows))]
-fn prune_windows_blob_if_needed(map: &mut HashMap<String, String>) {
+fn prune_windows_blob_if_needed(map: &mut HashMap<String, String>, protect: &HashSet<String>) {
     if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
         return;
     }
-    prune_windows_blob_hard(map);
+    prune_windows_blob_hard(map, protect);
 }
 
 #[cfg(all(feature = "system-keyring", windows))]
-fn prune_windows_blob_hard(map: &mut HashMap<String, String>) {
-    // Drop huge values first (anything that cannot be an nsec / short secret).
+fn prune_windows_blob_hard(map: &mut HashMap<String, String>, protect: &HashSet<String>) {
+    // Drop huge values first (anything that cannot be an nsec / short secret),
+    // but never drop a protected write mid-flight.
     let long_keys: Vec<String> = map
         .iter()
-        .filter(|(_, v)| v.len() > 512)
+        .filter(|(k, v)| v.len() > 512 && !protect.contains(*k))
         .map(|(k, _)| k.clone())
         .collect();
     for k in long_keys {
@@ -108,29 +117,81 @@ fn prune_windows_blob_hard(map: &mut HashMap<String, String>) {
     // Drop non-essential keys entirely.
     let drop_keys: Vec<String> = map
         .keys()
-        .filter(|k| !is_essential_secret_key(k))
+        .filter(|k| !is_essential_secret_key(k) && !protect.contains(*k))
         .cloned()
         .collect();
     for k in drop_keys {
         map.remove(&k);
         eprintln!("buzz-desktop: pruned non-essential keyring key {k}");
     }
-    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_MAX_UTF16 {
+    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
         return;
     }
-    // Last resort: keep identity + agent:* only (drop migration markers too).
+    // Drop migration markers too (identity + agent + protected only).
     let drop_more: Vec<String> = map
         .keys()
-        .filter(|k| *k != "identity" && !k.starts_with("agent:"))
+        .filter(|k| *k != "identity" && !k.starts_with("agent:") && !protect.contains(*k))
         .cloned()
         .collect();
     for k in drop_more {
         map.remove(&k);
     }
-    eprintln!(
-        "buzz-desktop: hard-pruned keyring blob to identity+agent keys (utf16≈{})",
-        blob_utf16_len(map)
-    );
+    if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
+        eprintln!(
+            "buzz-desktop: hard-pruned keyring blob to identity+agent keys (utf16≈{})",
+            blob_utf16_len(map)
+        );
+        return;
+    }
+    // Still too large: room re-mint orphans fill agent:* slots. Evict unprotected
+    // agent keys until under soft limit (deterministic order for stable logs).
+    cap_agent_keys_to_fit(map, protect);
+}
+
+/// Evict `agent:*` entries until `blob_utf16_len` ≤ soft target.
+/// Prefer dropping keys not in `protect`; only touch protected keys if identity
+/// alone cannot fit (should not happen for nsec-sized values).
+#[cfg(all(feature = "system-keyring", windows))]
+fn cap_agent_keys_to_fit(map: &mut HashMap<String, String>, protect: &HashSet<String>) {
+    let mut candidates: Vec<String> = map
+        .keys()
+        .filter(|k| k.starts_with("agent:") && !protect.contains(*k))
+        .cloned()
+        .collect();
+    candidates.sort();
+    let mut dropped = 0usize;
+    for k in candidates {
+        if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
+            break;
+        }
+        map.remove(&k);
+        dropped += 1;
+    }
+    // Absolute last resort: still over hard max → drop protected agents too
+    // (except we already failed identity-only capacity). Prefer smallest drop
+    // set: drop protect agents in sorted order until soft limit.
+    if blob_utf16_len(map) > WIN_CRED_PASSWORD_MAX_UTF16 {
+        let mut protect_agents: Vec<String> = map
+            .keys()
+            .filter(|k| k.starts_with("agent:") && protect.contains(*k))
+            .cloned()
+            .collect();
+        protect_agents.sort();
+        for k in protect_agents {
+            if blob_utf16_len(map) <= WIN_CRED_PASSWORD_SOFT_UTF16 {
+                break;
+            }
+            map.remove(&k);
+            dropped += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!(
+            "buzz-desktop: evicted {dropped} orphan agent key(s) to fit Windows \
+             credential limit (utf16≈{})",
+            blob_utf16_len(map)
+        );
+    }
 }
 
 // ── Interprocess advisory lock ─────────────────────────────────────────────
@@ -526,13 +587,24 @@ impl SecretStore {
         //
         // Windows Credential Manager caps Generic credential "password" blobs at
         // 2560 UTF-16 code units. A bloated secrets map (migrated junk, long
-        // values) makes every agent write fail with "password encoded as UTF-16
-        // is longer than platform limit". Prune non-essential entries / oversized
-        // values before write, then retry once on a size error so room agent
-        // nsecs still land.
+        // values, **orphan agent:* keys from re-minted room seats**) makes every
+        // agent write fail with "password encoded as UTF-16 is longer than
+        // platform limit". Prune non-essential entries / oversized values / excess
+        // unprotected agent keys before write, then retry once on a size error so
+        // the nsecs written this mutation still land.
         let mut to_write = next;
         #[cfg(windows)]
-        prune_windows_blob_if_needed(&mut to_write);
+        let protect: HashSet<String> = {
+            let mut protect = HashSet::new();
+            for (k, v) in &to_write {
+                if current.get(k) != Some(v) {
+                    protect.insert(k.clone());
+                }
+            }
+            protect
+        };
+        #[cfg(windows)]
+        prune_windows_blob_if_needed(&mut to_write, &protect);
         let json =
             serde_json::to_string(&to_write).map_err(|e| format!("blob serialize: {e}"))?;
         match self.write_blob_raw(json.as_bytes()) {
@@ -548,10 +620,10 @@ impl SecretStore {
                     if is_windows_credential_size_error(&e) {
                         eprintln!(
                             "buzz-desktop: keyring blob over Windows 2560 UTF-16 limit — \
-                             pruning to identity/agent keys and retrying ({e})"
+                             pruning + agent eviction and retrying ({e})"
                         );
                         let mut pruned = to_write;
-                        prune_windows_blob_hard(&mut pruned);
+                        prune_windows_blob_hard(&mut pruned, &protect);
                         if let Ok(json2) = serde_json::to_string(&pruned) {
                             if self.write_blob_raw(json2.as_bytes()).is_ok() {
                                 let mut guard =
@@ -1063,6 +1135,52 @@ mod tests {
         // Cache is warm and contains "identity" — probe must return Present
         // without touching the keychain.
         assert_eq!(store.probe("identity"), KeyringProbe::Present);
+    }
+
+    /// Building a map of ~25 agent nsecs exceeds the Windows Generic credential
+    /// UTF-16 cap even when every entry is "essential". Prune must keep
+    /// identity + protected keys and drop orphan agents until under the soft
+    /// limit so room-agent saves succeed after re-mints.
+    #[cfg(windows)]
+    #[test]
+    fn windows_prune_evicts_orphan_agents_to_fit_limit() {
+        let mut map = HashMap::new();
+        map.insert("identity".to_string(), "nsec1testidentityvaluexx".to_string());
+        for i in 0..25 {
+            let pk = format!("{i:064x}");
+            map.insert(
+                format!("agent:{pk}"),
+                format!("nsec1agent{i:0>55}"),
+            );
+        }
+        let protect_pk = format!("{:064x}", 0u64);
+        let protect_key = format!("agent:{protect_pk}");
+        let mut protect = HashSet::new();
+        protect.insert(protect_key.clone());
+        assert!(
+            blob_utf16_len(&map) > WIN_CRED_PASSWORD_MAX_UTF16,
+            "fixture must start over the hard limit"
+        );
+        prune_windows_blob_hard(&mut map, &protect);
+        assert!(
+            blob_utf16_len(&map) <= WIN_CRED_PASSWORD_SOFT_UTF16,
+            "after prune must fit soft target, got {}",
+            blob_utf16_len(&map)
+        );
+        assert!(map.contains_key("identity"));
+        assert!(
+            map.contains_key(&protect_key),
+            "protected agent write must survive orphan eviction"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_size_error_detector() {
+        assert!(is_windows_credential_size_error(
+            "Attribute 'password encoded as UTF-16' is longer than platform limit of 2560 chars"
+        ));
+        assert!(!is_windows_credential_size_error("entry not found"));
     }
 
     #[test]

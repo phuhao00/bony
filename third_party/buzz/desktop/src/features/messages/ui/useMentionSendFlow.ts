@@ -210,7 +210,16 @@ export function useMentionSendFlow({
                 await startAgentMutation.mutateAsync(agent.pubkey);
               }
             } else if (!isManagedAgentRunning(agent)) {
-              await startAgentMutation.mutateAsync(agent.pubkey);
+              // Only ask Desktop to spawn a local agent it actually owns the
+              // lifecycle of. `startOnAppLaunch === false` ("Manual start")
+              // means the operator runs/manages this process outside Desktop
+              // (e.g. an external buzz-acp instance) — Desktop has no record
+              // of it, so `isManagedAgentRunning` is always false for it, and
+              // spawning here would race a second process against the one
+              // already answering. Trust the mention and send straight away.
+              if (agent.startOnAppLaunch) {
+                await startAgentMutation.mutateAsync(agent.pubkey);
+              }
             }
           } else {
             await attachAgentMutation.mutateAsync({
