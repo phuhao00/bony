@@ -1,0 +1,35 @@
+---
+description: Bony Build 终止目标与完成判定 — 每次任务先对齐「做到哪里算完」
+alwaysApply: true
+---
+
+# 终止目标（Done = 这些成立）
+
+本仓库要交付的是 **原生高性能桌面 AI 编程 + 本地多 Agent 协作房间**，不是脚本农场或杂语言工具箱。
+
+## 产品终态
+
+| 产品面 | 终态 |
+|--------|------|
+| **Bony Build** | Rust（egui）桌面壳 + ACP 驱动本地 agent；任务 worktree 隔离；详情面板主仓 VCS；会话插件（Unity/Bevy）可用 |
+| **Agent 运行时** | 对齐 grok-build 上游；本机 BYOK；权限模式完整；不把无关逻辑塞进 PowerShell |
+| **Buzz 房间** | 单 monorepo workspace + 根 `target/`；Grok 协调 + specialists `@` 串行交接；工具硬拦 > prompt 软约束 |
+| **协作记忆** | 讨论→分工→执行→记忆写回（见 `docs/buzz-room-agent-orchestration-plan.md`）；交付物在房间内可交接 |
+
+## 任务级完成判定（缺一不可）
+
+1. **目标可验证**：用户可复现的命令或 UI 路径已写进回复；能 `cargo build/test -p <crate>` 的先过编译。
+2. **无旁路债务**：不新增「临时脚本 / 另一语言胶水 / 第二套 target」。
+3. **职责落对位置**：热路径与业务逻辑在 **Rust crate**；配置/文档可改；**禁止**用脚本实现业务。
+4. **协作路径最短**：需要多个 agent 时，选最少跳数、一次消息一个 `@Agent`；能量化则路由表优先于自由讨论。
+5. **性能默认最优**：见 `performance-collab` 规则；不为「省事」选解释性语言或进程外壳。
+6. **无冗余实现**：搜再写、一次真相、模块分层；见 `modularity-dry`。
+
+## 明确非目标
+
+- 不做跨语言微服务拼盘；不维护第二套构建入口。
+- 不把 Buzz Desktop 的 TS 面扩成新业务中枢；新能力优先进 Rust（`buzz-*` / `bony-*` / acp）。
+- 不把「今天资讯 / PDF」类路由变成 Grok 本地拼文件或 pandoc 旁路。
+---
+
+遇到范围歧义：先用本表判定「做完长什么样」，再改代码；不确定时问终态验收点，不问实现偏好清单。

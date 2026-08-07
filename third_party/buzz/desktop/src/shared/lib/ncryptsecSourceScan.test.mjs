@@ -21,15 +21,6 @@ const SRC_ROOT = path.resolve(
 
 const ALLOWLIST = [
   "shared/api/tauriIdentity.ts",
-  "features/onboarding/lib/encryptedBackup.ts",
-  "features/onboarding/lib/encryptedBackup.test.mjs",
-  "features/onboarding/lib/keyImportInput.ts",
-  "features/onboarding/lib/keyImportInput.test.mjs",
-  "features/onboarding/ui/BackupStep.tsx",
-  "features/onboarding/ui/BackupPasswordTimeline.tsx",
-  "features/onboarding/ui/BackupTestFlow.tsx",
-  "features/onboarding/ui/EncryptedBackupCreator.tsx",
-  "features/onboarding/ui/NostrKeyImportForm.tsx",
   "features/onboarding/ui/NsecMaskedDisplay.tsx",
   "features/settings/EncryptedBackupProvider.tsx",
   "features/settings/lib/encryptedBackup.ts",

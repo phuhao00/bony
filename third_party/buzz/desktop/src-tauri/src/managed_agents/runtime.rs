@@ -35,6 +35,23 @@ pub(crate) use sweep::sweep_untracked_bundle_harnesses;
 
 type RespondToEnv = (Vec<(&'static str, String)>, Vec<&'static str>);
 
+/// Resolves the effective MCP command for `record` given its currently
+/// effective harness `command`. An explicit non-empty `record.mcp_command`
+/// (set at create/update time from the caller's request) always wins —
+/// this lets a per-agent MCP pairing (e.g. a custom persona shipping its own
+/// MCP server) override the runtime catalog's default. Falls back to the
+/// catalog-derived default for `command` when the record has none.
+pub fn resolve_effective_mcp_command(record: &ManagedAgentRecord, command: &str) -> String {
+    let explicit = record.mcp_command.trim();
+    if !explicit.is_empty() {
+        return explicit.to_string();
+    }
+    known_acp_runtime(command)
+        .and_then(|runtime| runtime.mcp_command)
+        .unwrap_or("")
+        .to_string()
+}
+
 mod process;
 #[cfg(test)]
 use process::{
@@ -293,10 +310,7 @@ pub fn build_managed_agent_summary(
             env: Default::default(),
         }
     });
-    let effective_mcp_command = known_acp_runtime(&descriptor.command)
-        .and_then(|r| r.mcp_command)
-        .unwrap_or("")
-        .to_string();
+    let effective_mcp_command = resolve_effective_mcp_command(record, &descriptor.command);
 
     Ok(ManagedAgentSummary {
         pubkey: record.pubkey.clone(),
@@ -514,13 +528,11 @@ pub fn spawn_agent_child(
         .map_err(|error| format!("failed to clone log handle: {error}"))?;
     let resolved_acp_command = resolve_command(&record.acp_command)
         .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
-    let effective_mcp_command = known_acp_runtime(effective_command)
-        .and_then(|r| r.mcp_command)
-        .unwrap_or("");
+    let effective_mcp_command = resolve_effective_mcp_command(record, effective_command);
     let resolved_mcp_command: Option<std::path::PathBuf> = if effective_mcp_command.is_empty() {
         None
     } else {
-        match resolve_command(effective_mcp_command) {
+        match resolve_command(&effective_mcp_command) {
             Some(path) => Some(path),
             None => {
                 eprintln!(
@@ -535,9 +547,11 @@ pub fn spawn_agent_child(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| effective_command.clone());
 
-    // The caller supplies the explicit canonical pair relay. This is the only
-    // relay this child may connect to, regardless of the record/workspace default.
-    let effective_relay_url = runtime_key.relay_url.clone();
+    // Hard-canonicalize loopback: buzz-relay multi-tenant Host keys treat
+    // `localhost:3000` and `127.0.0.1:3000` as different communities — the latter
+    // returns WebSocket HTTP 404 and the agent dies immediately as Stopped.
+    let effective_relay_url =
+        crate::relay::canonicalize_loopback_relay_url(&runtime_key.relay_url);
 
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink
@@ -719,6 +733,22 @@ pub fn spawn_agent_child(
     command.env("BUZZ_ACP_AGENTS", record.parallelism.to_string());
     command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "steer");
     command.env("BUZZ_ACP_DEDUP", "queue");
+    // Cross-agent "@Name ..." text (e.g. Grok routing to ZeroClaw) only wakes
+    // the target's subscribe=mentions listener if it carries a real `p` tag —
+    // buzz-acp resolves that from BUZZ_ACP_MENTION_MAP (see
+    // `resolve_mention_pubkeys_from_content`). Without this env var the map
+    // is empty and every agent-authored @mention is presentation-only, so
+    // routed hand-offs silently never arrive.
+    let mention_map = super::load_agent_name_pubkey_pairs(app)
+        .into_iter()
+        .map(|(name, pubkey)| format!("{name}:{pubkey}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    if mention_map.is_empty() {
+        command.env_remove("BUZZ_ACP_MENTION_MAP");
+    } else {
+        command.env("BUZZ_ACP_MENTION_MAP", &mention_map);
+    }
     if let Some(meta) = runtime_meta {
         for (key, value) in meta.default_env {
             if std::env::var(key).is_err() {

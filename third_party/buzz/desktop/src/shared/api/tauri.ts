@@ -891,6 +891,35 @@ export async function deleteManagedAgent(
   });
 }
 
+export interface SeedRoomAgentsResult {
+  channelId: string;
+  createdChannel: boolean;
+  createdAgents: string[];
+  errors: string[];
+}
+
+/**
+ * Idempotently create the five local room agents (Grok, ZeroClaw, Unity,
+ * OpenMontage, DocSmith) and their shared "Local Room" channel, natively —
+ * replaces the old mint-agent-keys.ps1 / register-room-agents.ps1 /
+ * start-<name>-agent.ps1 script chain. Safe to call on every launch: a seat
+ * or channel that already exists is left untouched.
+ */
+export async function seedRoomAgents(): Promise<SeedRoomAgentsResult> {
+  const raw = await invokeTauri<{
+    channel_id: string;
+    created_channel: boolean;
+    created_agents: string[];
+    errors: string[];
+  }>("seed_room_agents");
+  return {
+    channelId: raw.channel_id,
+    createdChannel: raw.created_channel,
+    createdAgents: raw.created_agents,
+    errors: raw.errors,
+  };
+}
+
 export async function getManagedAgentLog(pubkey: string, lineCount?: number) {
   const response = await invokeTauri<RawManagedAgentLog>(
     "get_managed_agent_log",

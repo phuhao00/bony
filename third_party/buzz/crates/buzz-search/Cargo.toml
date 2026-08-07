@@ -5,13 +5,22 @@ edition = "2021"
 rust-version = "1.88.0"
 license = "Apache-2.0"
 repository = "https://github.com/phuhao00/buzz"
-description = "Postgres full-text search for Buzz, scoped by community"
+description = "SQLite FTS5 full-text search for Buzz, scoped by community"
 
 [dependencies]
 buzz-core   = { workspace = true }
 sqlx        = { workspace = true }
 uuid        = { workspace = true }
 thiserror   = { workspace = true }
+lancedb     = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+futures     = { workspace = true }
+chrono      = { workspace = true }
+hex         = { workspace = true }
 
 [dev-dependencies]
+buzz-db     = { workspace = true }
 tokio       = { workspace = true }
+tempfile    = { workspace = true }

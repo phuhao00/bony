@@ -1,18 +1,19 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-//! Buzz search — community-scoped Postgres full-text search over Buzz events.
+//! Buzz search — community-scoped SQLite FTS5 full-text search over Buzz events.
 //!
-//! The index lives in the `events` table: `search_tsv TSVECTOR GENERATED
-//! ALWAYS AS (to_tsvector('simple', content)) STORED`, with `GIN
-//! (search_tsv)` as the access path. Because the column is `GENERATED ALWAYS`,
-//! every row write *is* the index update — there is no separate indexer, no
-//! mpsc queue, no reindex job, no consistency window to reason about. A
-//! client cannot forge the tsvector out of sync with the content it signed.
+//! The index lives in a standalone `events_fts` FTS5 virtual table (see
+//! `migrations/0001_initial_schema.sql` in `buzz-db`), kept in sync by
+//! `AFTER INSERT/UPDATE/DELETE` triggers on `events`. Because the sync is a
+//! database trigger rather than an application-level write path, every row
+//! write *is* the index update — there is no separate indexer, no mpsc
+//! queue, no reindex job, no consistency window to reason about. A client
+//! cannot forge the FTS row out of sync with the content it signed.
 //!
-//! This crate is the **query** side. Indexing is the SQL row insert — owned
-//! by `buzz-db`. The relay refetches canonical events through `buzz-db`'s
-//! scoped fetcher and runs access checks per hit; search is never the access
-//! boundary (conformance row 50).
+//! This crate is the **query** side. Indexing is the trigger-maintained
+//! `events_fts` table — owned by `buzz-db`'s migration. The relay refetches
+//! canonical events through `buzz-db`'s scoped fetcher and runs access
+//! checks per hit; search is never the access boundary (conformance row 50).
 //!
 //! ## Multi-tenant fence
 //!
@@ -25,25 +26,31 @@
 pub mod error;
 /// Search query execution.
 pub mod query;
+/// Embedded LanceDB-backed semantic (vector) search — see module docs.
+pub mod vector;
 
 pub use buzz_core::CommunityId;
 pub use error::SearchError;
 pub use query::{search, ChannelScope, SearchHit, SearchMode, SearchQuery, SearchResult};
+pub use vector::{
+    EmbeddingGenerator, VectorRow, VectorSearchError, VectorSearchHit, VectorSearchQuery,
+    VectorSearchService,
+};
 
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 
-/// Thin handle around a `PgPool` for community-scoped FTS.
+/// Thin handle around a `SqlitePool` for community-scoped FTS.
 ///
 /// Holds nothing the pool itself doesn't already own. The whole purpose of
 /// this type is a stable injection point for the relay's `AppState`.
 #[derive(Debug, Clone)]
 pub struct SearchService {
-    pool: PgPool,
+    pool: SqlitePool,
 }
 
 impl SearchService {
-    /// Build a search service over an existing Postgres pool.
-    pub fn new(pool: PgPool) -> Self {
+    /// Build a search service over an existing SQLite pool.
+    pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 

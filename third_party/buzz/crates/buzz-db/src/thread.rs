@@ -6,12 +6,12 @@
 
 use buzz_core::StoredEvent;
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 use buzz_core::CommunityId;
 
-use crate::{error::Result, event::row_to_stored_event};
+use crate::{error::Result, event::row_to_stored_event, push_in_list};
 
 // -- Structs ------------------------------------------------------------------
 
@@ -114,7 +114,7 @@ pub struct ThreadMetadataRecord {
 /// with the actual number of reply rows (F9).
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_thread_metadata(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -207,7 +207,7 @@ pub async fn insert_thread_metadata(
                 r#"
                 UPDATE thread_metadata
                 SET reply_count   = reply_count + 1,
-                    last_reply_at = NOW()
+                    last_reply_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                 WHERE community_id = $1 AND event_id = $2
                 "#,
             )
@@ -249,7 +249,7 @@ pub async fn insert_thread_metadata(
 /// incrementing outside of insert is needed (e.g., event re-parenting).
 #[allow(dead_code)]
 pub async fn increment_reply_count(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     parent_event_id: &[u8],
     root_event_id: Option<&[u8]>,
@@ -259,7 +259,7 @@ pub async fn increment_reply_count(
         r#"
         UPDATE thread_metadata
         SET reply_count  = reply_count + 1,
-            last_reply_at = NOW()
+            last_reply_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE community_id = $1 AND event_id = $2
         "#,
     )
@@ -290,7 +290,7 @@ pub async fn increment_reply_count(
 /// If `root_event_id` is provided, also decrements `descendant_count` on the
 /// root -- even when root == parent. Mirrors the increment logic exactly.
 pub async fn decrement_reply_count(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     parent_event_id: &[u8],
     root_event_id: Option<&[u8]>,
@@ -343,7 +343,7 @@ pub async fn decrement_reply_count(
 ///   across same-second ties) -- prefer the composite form.
 /// - `limit` -- maximum rows returned (caller should cap this).
 pub async fn get_thread_replies(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     root_event_id: &[u8],
     depth_limit: Option<u32>,
@@ -367,7 +367,7 @@ pub async fn get_thread_replies(
 /// proved coverage (the proof is connection-local; a different pooled
 /// session may sit at a different replay position).
 pub(crate) async fn get_thread_replies_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community_id: CommunityId,
     root_event_id: &[u8],
     depth_limit: Option<u32>,
@@ -511,7 +511,7 @@ pub(crate) async fn get_thread_replies_on(
 
 /// Fetch aggregated thread stats for a single event, plus up to 10 participant pubkeys.
 pub async fn get_thread_summary(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     event_id: &[u8],
 ) -> Result<Option<ThreadSummary>> {
@@ -587,7 +587,7 @@ pub async fn get_thread_summary(
 /// and never reaches the wire; callers must not re-derive exhaustion from row
 /// counts (`rows < limit` proves nothing on an exact-multiple final page).
 pub async fn get_channel_window(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     limit: u32,
@@ -612,7 +612,7 @@ pub async fn get_channel_window(
 /// connection-local; a different pooled session may sit at a different
 /// replay position).
 pub(crate) async fn get_channel_window_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community_id: CommunityId,
     channel_id: Uuid,
     limit: u32,
@@ -744,7 +744,7 @@ pub(crate) async fn get_channel_window_on(
         .map(|r| r.stored_event.event.id.as_bytes().to_vec())
         .collect();
     if !roots.is_empty() {
-        let participant_rows = sqlx::query(
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
             r#"
             SELECT root_event_id, pubkey FROM (
                 SELECT
@@ -760,19 +760,22 @@ pub(crate) async fn get_channel_window_on(
                     ON e.community_id = tm.community_id
                    AND e.created_at = tm.event_created_at
                    AND e.id         = tm.event_id
-                WHERE tm.community_id = $1
-                  AND tm.root_event_id = ANY($2)
+                WHERE tm.community_id =
+            "#,
+        );
+        qb.push_bind(community_id.as_uuid());
+        qb.push(" AND tm.root_event_id IN ");
+        push_in_list(&mut qb, roots.iter().cloned());
+        qb.push(
+            r#"
                   AND e.deleted_at IS NULL
                 GROUP BY tm.root_event_id, e.pubkey
             ) sub
             WHERE rn <= 10
             ORDER BY root_event_id, rn
             "#,
-        )
-        .bind(community_id.as_uuid())
-        .bind(&roots)
-        .fetch_all(&mut *conn)
-        .await?;
+        );
+        let participant_rows = qb.build().fetch_all(&mut *conn).await?;
 
         let mut by_root: std::collections::HashMap<Vec<u8>, Vec<Vec<u8>>> =
             std::collections::HashMap::new();
@@ -802,7 +805,7 @@ pub(crate) async fn get_channel_window_on(
 /// Used when processing soft-deletes to find the parent/root so reply counts
 /// can be decremented.
 pub async fn get_thread_metadata_by_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     event_id: &[u8],
 ) -> Result<Option<ThreadMetadataRecord>> {
@@ -865,16 +868,25 @@ mod tests {
     };
     use nostr::{EventBuilder, Keys, Kind};
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
 
-        PgPool::connect(&database_url)
+        // A plain in-memory SQLite URL gives every pooled connection its own
+        // private empty database, so the pool must be capped at one
+        // connection to keep all queries on the same schema/data.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
     fn make_stream_event(keys: &Keys, content: &str) -> nostr::Event {
@@ -888,7 +900,7 @@ mod tests {
             .expect("event timestamp is valid")
     }
 
-    async fn make_test_community(pool: &PgPool) -> Uuid {
+    async fn make_test_community(pool: &SqlitePool) -> Uuid {
         let id = Uuid::new_v4();
         let host = format!("thread-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -901,7 +913,7 @@ mod tests {
     }
 
     async fn create_test_channel(
-        pool: &PgPool,
+        pool: &SqlitePool,
         name: &str,
         channel_type: ChannelType,
         visibility: ChannelVisibility,
@@ -917,8 +929,8 @@ mod tests {
             INSERT INTO channels
                 (id, community_id, name, channel_type, visibility, description, created_by, ttl_seconds, ttl_deadline)
             VALUES
-                ($1, $2, $3, $4::channel_type, $5::channel_visibility, $6, $7, $8,
-                 CASE WHEN $8 IS NOT NULL THEN NOW() + ($8 || ' seconds')::interval ELSE NULL END)
+                ($1, $2, $3, $4, $5, $6, $7, $8,
+                 CASE WHEN $8 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST($8 AS TEXT) || ' seconds') ELSE NULL END)
             "#,
         )
         .bind(id)
@@ -953,7 +965,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_thread_metadata_by_event_is_scoped_when_event_id_collides_across_communities() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1047,7 +1058,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_thread_replies_reconstructs_stored_events() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1110,7 +1120,6 @@ mod tests {
     /// every tied reply beyond the first page's limit — the "missed messages"
     /// bug this read-path work exists to fix. This pins the tiebreak.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_thread_replies_pages_same_second_ties_without_loss() {
         use nostr::Timestamp;
 
@@ -1226,7 +1235,6 @@ mod tests {
     /// its depth is recorded. This also exercises the root-stub INSERT branch
     /// (`root_id != pid`) end-to-end through the production insert path.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_thread_replies_reaches_nested_depth_two_replies() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1331,7 +1339,6 @@ mod tests {
     /// correct, which is why no test caught this. Pin the standalone function so
     /// the scrambled SQL can't return.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn insert_thread_metadata_nested_reply_creates_root_stub() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1394,7 +1401,6 @@ mod tests {
     /// must be skipped, with the rest of the thread still returned — not
     /// surfaced as a query error that takes down the whole thread read.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_thread_replies_skips_unreconstructable_row() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1467,7 +1473,7 @@ mod tests {
         // return `Ok(None)` — the case the skip-and-continue must handle.
         let rows_changed = sqlx::query("UPDATE events SET sig = $1 WHERE id = $2")
             .bind(vec![0u8; 32])
-            .bind(bad.id.as_bytes())
+            .bind(bad.id.as_bytes().as_slice())
             .execute(&pool)
             .await
             .expect("corrupt bad reply sig")
@@ -1487,7 +1493,7 @@ mod tests {
 
     /// Insert one top-level event (root metadata, broadcast) into a channel.
     async fn insert_root(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         channel_id: Uuid,
         event: &nostr::Event,
@@ -1515,7 +1521,7 @@ mod tests {
 
     /// Insert a depth-1 reply under `root`, with the given broadcast flag.
     async fn insert_reply(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         channel_id: Uuid,
         root: &nostr::Event,
@@ -1549,7 +1555,6 @@ mod tests {
     /// SQL-level guarantee that replaces the client-side "filter out replies,
     /// splice back islands" machinery.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn channel_window_top_level_predicate() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1612,7 +1617,6 @@ mod tests {
     /// runs. A timestamp-only cursor loses every tied row past the first
     /// page; this pins the tiebreak on the window path.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn channel_window_pages_same_second_ties_without_loss() {
         use nostr::Timestamp;
 
@@ -1673,7 +1677,6 @@ mod tests {
     /// exactly `limit` rows — `rows < limit` proves nothing, and `rows ==
     /// limit` must not imply more. Frozen ruling from the contract thread.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn channel_window_exact_multiple_final_page_reports_exhausted() {
         let pool = setup_pool().await;
         let author = Keys::generate();
@@ -1717,7 +1720,6 @@ mod tests {
     /// participants); rows without replies carry none. This is the join that
     /// lets the GUI render thread affordances without a per-root fan-out.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn channel_window_joins_thread_summaries_with_participants() {
         let pool = setup_pool().await;
         let author = Keys::generate();

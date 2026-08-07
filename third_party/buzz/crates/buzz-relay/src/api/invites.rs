@@ -565,8 +565,6 @@ mod tests {
         }
     }
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
-
     fn claim_cache(
         capacity: u64,
         ttl: Duration,
@@ -648,31 +646,20 @@ mod tests {
     }
 
     /// Build a closed-relay (`require_relay_membership = true`) test state with
-    /// a fresh community on `host`; returns `None` when Postgres is unavailable.
+    /// a fresh community on `host`.
     async fn invite_test_state(host: &str) -> Option<Arc<AppState>> {
         let mut config = crate::config::Config::from_env().ok()?;
-        let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| TEST_DB_URL.to_string());
-        config.database_url = database_url.clone();
         config.redis_url = "redis://127.0.0.1:1".to_string();
         config.relay_url = format!("wss://{host}");
         // The claim route must work on relays where membership is enforced —
         // that is the entire point of an invite.
         config.require_relay_membership = true;
 
-        let pool = sqlx::PgPool::connect(&database_url).await.ok()?;
+        let pool = crate::test_support::sqlite_test_pool().await;
         let db = buzz_db::Db::from_pool(pool.clone());
         db.ensure_configured_community(host).await.ok()?;
 
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .ok()?;
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .ok()?,
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -684,7 +671,6 @@ mod tests {
         let (mut state, _audit_shutdown) = AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,
@@ -838,7 +824,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn mint_validates_max_uses_and_ttl_bounds() {
         let host = format!("invites-validation-{}.example", Uuid::new_v4().simple());
         let owner = Keys::generate();
@@ -896,7 +881,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn malformed_and_unknown_v2_codes_are_forbidden_without_v1_fallback() {
         let host = format!("invites-v2-invalid-{}.example", Uuid::new_v4().simple());
         let joiner = Keys::generate();
@@ -931,7 +915,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn bounded_v2_claims_publish_side_effects_only_for_joined() {
         let host = format!(
             "invites-v2-side-effects-{}.example",
@@ -1078,7 +1061,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn owner_mints_and_new_pubkey_claims() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let owner = Keys::generate();
@@ -1148,7 +1130,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn join_policy_gate_end_to_end() {
         let host = format!("invites-policy-{}.example", Uuid::new_v4().simple());
         let owner = Keys::generate();
@@ -1357,7 +1338,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn non_admin_cannot_mint() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let member = Keys::generate();
@@ -1386,7 +1366,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn claim_rejects_invalid_code() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let joiner = Keys::generate();
@@ -1418,7 +1397,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn code_minted_for_one_community_fails_on_another() {
         let host_a = format!("invites-a-{}.example", Uuid::new_v4().simple());
         let host_b = format!("invites-b-{}.example", Uuid::new_v4().simple());
@@ -1498,7 +1476,6 @@ mod tests {
     /// rejected by `/api/invites/claim` with the distinguishable
     /// `invite_expired` body, and do not admit the caller.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn claim_rejects_expired_code() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let joiner = Keys::generate();
@@ -1569,7 +1546,6 @@ mod tests {
     /// Authorization header (same signed NIP-98 event id) is rejected as
     /// replay before the invite verification ever runs.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn claim_rejects_replayed_nip98_auth() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let owner = Keys::generate();
@@ -1656,7 +1632,6 @@ mod tests {
     /// `invite_invalid` (403) to `too many invite claim attempts` (429) proves
     /// the limiter guard is on the request path and fires on repeat pubkey.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn claim_rate_limit_fires_on_repeat_pubkey() {
         let host = format!("invites-{}.example", Uuid::new_v4().simple());
         let joiner = Keys::generate();
@@ -1725,7 +1700,6 @@ mod tests {
     /// The document routes are public (no NIP-98) and 404 until configured,
     /// exactly like the JSON policy endpoint they sit beside.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn join_policy_document_pages_serve_configured_markdown() {
         let host = format!("invites-docs-{}.example", Uuid::new_v4().simple());
         let Some(state) = invite_test_state(&host).await else {

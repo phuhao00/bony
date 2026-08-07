@@ -192,25 +192,13 @@ if (-not $ok) {
 }
 Write-Host "    health OK"
 
+# Room agents (Grok/ZeroClaw/Unity/OpenMontage/DocSmith) are no longer
+# minted here as external buzz-acp processes: they're native Desktop
+# managed-agents, seeded idempotently by Desktop itself on launch (native
+# `seed_room_agents` Tauri command — see start-desktop.ps1). This script only
+# brings up the relay/infra; run start-desktop.ps1 to get the agents.
 if (-not $SkipGrok) {
-  $keys = Join-Path $PSScriptRoot "keys\grok.json"
-  if (-not (Test-Path $keys)) {
-    Write-Host "==> mint keys"
-    & (Join-Path $PSScriptRoot "mint-agent-keys.ps1") -BuzzRoot $BuzzRoot
-  }
-  Write-Host "==> External room agents (all keyed seats, single instance)"
-  try {
-    & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
-  } catch {
-    Write-Warning "start-external-room-agents failed: $_"
-  }
-}
-
-Write-Host "==> Register room agents for Desktop visibility"
-try {
-  & (Join-Path $PSScriptRoot "register-room-agents.ps1") -RelayHttp "http://localhost:3000" -RelayWs "ws://localhost:3000"
-} catch {
-  Write-Warning "register-room-agents failed: $_"
+  Write-Host "==> Room agents: seeded natively by Desktop on launch (run start-desktop.ps1)"
 }
 
 Write-Host ""
@@ -219,4 +207,5 @@ Write-Host "  BuzzRoot: $BuzzRoot"
 Write-Host "  Relay:    http://127.0.0.1:3000/health"
 Write-Host "  WS:       ws://localhost:3000"
 Write-Host "  Logs:     $RuntimeDir"
+Write-Host "  Next:     powershell -File scripts/buzz-room/start-desktop.ps1  (seeds + starts the 5 room agents)"
 Write-Host "  Stop:     powershell -File scripts/buzz-room/stop-room-stack.ps1"

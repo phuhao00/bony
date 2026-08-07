@@ -91,48 +91,40 @@ if ($RelayUrl -match 'communities\.buzz\.xyz|blox\.sqprod|buzz\.xyz') {
 }
 $env:BUZZ_VITE_PORT = "$VitePort"
 $env:VITE_PORT = "$VitePort"
+# Single-machine local build: one fixed dev keyring service, always the same
+# value regardless of launch path (Fast / TauriDev). This is the service the
+# real identity + agent nsecs already live under (secrets.buzz-desktop-dev.bony
+# in Windows Credential Manager) — never change this string, or the next
+# launch silently generates a brand-new identity instead of reading the
+# existing one.
 $env:BUZZ_DEV_KEYRING_SERVICE = "buzz-desktop-dev.bony"
-# Isolate local monorepo Desktop from any previously installed official Buzz profile
-$env:BUZZ_DESKTOP_INSTANCE_ID = "bony-local"
+# Dead instance-id knob: nothing in the Rust code reads this env var (identity
+# scoping is 100% keyring-service + Tauri identifier, see app_state.rs /
+# app_state_keyring.rs). Kept unset so no future script resurrects a
+# per-launch identity fork through it.
+Remove-Item Env:BUZZ_DESKTOP_INSTANCE_ID -ErrorAction SilentlyContinue
 # Pin create-channel / managed-agent AUTH to this loopback relay (not a stale prod community).
 $env:BUZZ_FORCE_LOCAL_COMMUNITY = "1"
 Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
 
-# Repair Agents page store + Local Room membership before UI opens so a normal
-# Desktop create-agent/create-channel path has keys + directory profiles ready.
-if (-not $Standalone) {
-  Write-Host "==> Register / repair room agents (managed-agents + directory)"
-  try {
-    & (Join-Path $PSScriptRoot "register-room-agents.ps1") `
-      -RelayHttp ($env:BUZZ_RELAY_HTTP) `
-      -RelayWs $RelayUrl
-  } catch {
-    Write-Warning "register-room-agents failed (Desktop still launching): $_"
-  }
-  # Critical: register sets BUZZ_PRIVATE_KEY per-agent; leave last agent key in the
-  # process env and Desktop becomes that bot (white-screen identity chaos).
-  Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
-  Remove-Item Env:NOSTR_PRIVATE_KEY -ErrorAction SilentlyContinue
-  Remove-Item Env:BUZZ_SHARE_IDENTITY -ErrorAction SilentlyContinue
+# Room agents (Grok/ZeroClaw/Unity/OpenMontage/DocSmith) are no longer minted
+# by external PowerShell + a hand-written managed-agents.json: Desktop itself
+# calls the native, idempotent `seed_room_agents` Tauri command once identity
+# is ready (see `useAppOnboardingState` in features/onboarding/hooks.ts),
+# which creates any missing seats via the same `create_managed_agent` path a
+# manual "Add agent" click would use and lets Desktop's own managed-agent
+# lifecycle start/stop them with the app — no external buzz-acp processes.
 
-  # External ACP: every keyed room seat, single instance (no orphan duplicates).
-  Write-Host "==> External room agents (all seats, EnsureSingle)"
-  try {
-    & (Join-Path $PSScriptRoot "start-external-room-agents.ps1") -RelayUrl "ws://localhost:3000"
-  } catch {
-    Write-Warning "start-external-room-agents failed: $_"
-  }
-}
-
+# Only override the dev server wiring (custom Vite port) — never the
+# identifier/productName. Keeping one identifier across Fast and TauriDev
+# launches means one app-data folder, one keyring service, one identity.
 $configPath = Join-Path $RuntimeDir "tauri.dev.override.json"
 $configJson = @"
 {
   "build": {
     "devUrl": "http://localhost:$VitePort",
     "beforeDevCommand": "pnpm exec vite --port $VitePort --strictPort"
-  },
-  "identifier": "xyz.block.buzz.app.dev",
-  "productName": "Buzz Dev"
+  }
 }
 "@
 [System.IO.File]::WriteAllText($configPath, $configJson)

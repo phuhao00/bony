@@ -2006,12 +2006,8 @@ async fn synthesize_presence(
     all_pubkeys.sort_by_key(|pk| pk.to_hex());
     all_pubkeys.dedup();
 
-    // Look up Redis.
-    let presence_map = state
-        .pubsub
-        .get_presence_bulk(tenant, &all_pubkeys)
-        .await
-        .unwrap_or_default();
+    // Look up in-process presence.
+    let presence_map = state.pubsub.get_presence_bulk(tenant, &all_pubkeys).await;
 
     if presence_map.is_empty() {
         return Some(Vec::new());
@@ -2245,13 +2241,6 @@ mod tests {
     use nostr::{Alphabet, EventBuilder, Keys, Kind, SingleLetterTag, Tag};
     use std::sync::Mutex;
 
-    fn redis_pool() -> deadpool_redis::Pool {
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-        deadpool_redis::Config::from_url(url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .expect("create redis pool")
-    }
-
     fn fresh_tenant(host: &str) -> TenantContext {
         TenantContext::resolved(
             buzz_core::CommunityId::from_uuid(uuid::Uuid::new_v4()),
@@ -2321,68 +2310,41 @@ mod tests {
         );
     }
 
-    /// Attack 3 proof: two stateless relay pods sharing Redis must share one
-    /// community-scoped NIP-98 seen-set. Pod A's first claim succeeds; pod B's
-    /// replay of the same event id in the same community is rejected. The same
-    /// id in a different community still succeeds, proving the key is scoped by
-    /// server-resolved tenant rather than global process memory.
+    /// Attack 3: a single guard instance, called twice with the same
+    /// `TenantContext` and the same event id, MUST reject the second call.
+    /// Bites if `try_mark`'s admit/reject mapping is reversed or no-op'd. The
+    /// same event id in a *different* community still succeeds, proving the
+    /// key is scoped by server-resolved tenant.
     #[tokio::test]
-    #[ignore = "requires Redis"]
-    async fn nip98_replay_guard_rejects_cross_pod_replay_on_bridge_path() {
-        let pool = redis_pool();
-        let pod_a = buzz_pubsub::RedisNip98ReplayGuard::new(pool.clone());
-        let pod_b = buzz_pubsub::RedisNip98ReplayGuard::new(pool);
+    async fn nip98_replay_guard_rejects_same_community_replay() {
+        let guard = buzz_pubsub::InMemoryNip98ReplayGuard::new();
         let tenant_a = fresh_tenant("relay-a.example");
         let tenant_b = fresh_tenant("relay-b.example");
         let event_id_bytes = fresh_nip98_event_id_bytes();
 
-        check_nip98_replay_with_guard(&pod_a, &tenant_a, event_id_bytes)
+        check_nip98_replay_with_guard(&guard, &tenant_a, event_id_bytes)
             .await
-            .expect("first pod should claim fresh NIP-98 event id");
+            .expect("first claim should succeed");
 
-        let (status, _) = check_nip98_replay_with_guard(&pod_b, &tenant_a, event_id_bytes)
+        let (status, _) = check_nip98_replay_with_guard(&guard, &tenant_a, event_id_bytes)
             .await
-            .expect_err("second pod must reject same-community replay");
+            .expect_err("replay in the same community must reject");
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-        check_nip98_replay_with_guard(&pod_b, &tenant_b, event_id_bytes)
+        check_nip98_replay_with_guard(&guard, &tenant_b, event_id_bytes)
             .await
             .expect("same event id in a different community uses a distinct seen-set");
     }
 
-    /// Attack 3 same-pod regression guard: replacing the process-local moka
-    /// cache with a shared Redis seen-set must not weaken same-pod replay
-    /// rejection. A single guard instance, called twice with the same
-    /// `TenantContext` and the same event id, MUST reject the second call.
-    /// Bites if `try_mark`'s admit/reject mapping is reversed or no-op'd.
-    #[tokio::test]
-    #[ignore = "requires Redis"]
-    async fn nip98_replay_guard_rejects_same_pod_same_community_replay() {
-        let pool = redis_pool();
-        let pod = buzz_pubsub::RedisNip98ReplayGuard::new(pool);
-        let tenant = fresh_tenant("relay-a.example");
-        let event_id_bytes = fresh_nip98_event_id_bytes();
-
-        check_nip98_replay_with_guard(&pod, &tenant, event_id_bytes)
-            .await
-            .expect("first claim on a fresh event id must succeed");
-
-        let (status, _) = check_nip98_replay_with_guard(&pod, &tenant, event_id_bytes)
-            .await
-            .expect_err("same-pod replay of the same id+community must reject");
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
-    }
-
-    /// Attack 3 fail-closed guard: a stateless worker that loses Redis MUST
-    /// reject the request, never admit it. The shared seen-set is the
-    /// freshness fence; degrading to "best effort, allow on error" forfeits
-    /// the proof (per the `Nip98ReplayGuard` trait contract,
+    /// Attack 3 fail-closed guard: a relay that loses its replay store MUST
+    /// reject the request, never admit it. The seen-set is the freshness
+    /// fence; degrading to "best effort, allow on error" forfeits the proof
+    /// (per the `Nip98ReplayGuard` trait contract,
     /// `buzz-auth/src/nip98_replay.rs:70-73`).
     ///
-    /// This test does not require Redis — it injects a guard that always
-    /// returns `Err`, exercising the `Err =>` arm in
-    /// `check_nip98_replay_with_guard` directly. Bites if the arm is changed
-    /// to admit (`Ok(())` / `Ok(true)`) instead of returning 401.
+    /// This test injects a guard that always returns `Err`, exercising the
+    /// `Err =>` arm in `check_nip98_replay_with_guard` directly. Bites if the
+    /// arm is changed to admit (`Ok(())` / `Ok(true)`) instead of returning 401.
     #[tokio::test]
     async fn nip98_replay_check_fails_closed_when_guard_errors() {
         use buzz_auth::AuthError;
@@ -2398,11 +2360,7 @@ mod tests {
                 _event_id: &'a EventId,
                 _ttl_secs: u64,
             ) -> Pin<Box<dyn Future<Output = Result<bool, AuthError>> + Send + 'a>> {
-                Box::pin(async {
-                    Err(AuthError::Internal(
-                        "simulated Redis pool acquire failure".into(),
-                    ))
-                })
+                Box::pin(async { Err(AuthError::Internal("simulated replay store failure".into())) })
             }
         }
 
@@ -3357,38 +3315,22 @@ mod tests {
         }
     }
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
-
     /// Build an AppState suitable for handler-level bridge tests.
     ///
     /// - `require_auth_token = false` → X-Pubkey dev-mode fallback active.
     /// - `require_relay_membership = false` → membership check short-circuits to
     ///   OpenRelay without a DB lookup.
-    /// - `nip98_replay` replaced with an always-fresh guard → no Redis needed
-    ///   for replay detection.
-    /// - Redis pool points at the local dev instance for the admission check.
-    ///
-    /// Returns `None` when local Postgres is not reachable.
+    /// - `nip98_replay` replaced with an always-fresh guard → no replay-store
+    ///   dependency needed for this test.
     async fn bridge_handler_test_state() -> Option<Arc<crate::state::AppState>> {
         let mut config = crate::config::Config::from_env().ok()?;
-        config.database_url = TEST_DB_URL.to_string();
-        // Use the real local Redis so enforce_http_admission can pass.
-        config.redis_url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
         config.relay_url = "wss://bridge-test.local".to_string();
         config.require_auth_token = false;
         config.require_relay_membership = false;
 
-        let pool = sqlx::PgPool::connect(TEST_DB_URL).await.ok()?;
+        let pool = crate::test_support::sqlite_test_pool().await;
         let db = buzz_db::Db::from_pool(pool.clone());
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .ok()?;
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .ok()?,
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -3401,7 +3343,6 @@ mod tests {
         let (mut state, _audit_shutdown) = crate::state::AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,

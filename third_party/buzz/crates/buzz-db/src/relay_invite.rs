@@ -22,7 +22,7 @@ use buzz_core::invite::{
     V2_SECRET_LEN,
 };
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 
 use crate::error::Result;
 use crate::CommunityId;
@@ -96,7 +96,7 @@ fn validate_mint_inputs(ttl_secs: u64, max_uses: Option<i32>) -> Result<()> {
 /// `ttl_secs` must be in the shared invite lifetime range.
 /// `max_uses` must be `None` (unlimited) or `Some(1..=10000)`.
 pub async fn mint_relay_invite(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     created_by: &str,
     ttl_secs: u64,
@@ -110,21 +110,20 @@ pub async fn mint_relay_invite(
     let token_hash = hash_v2_code(&code);
     let now = Utc::now();
     let expires_at = now + chrono::Duration::seconds(ttl_secs as i64);
+    let invite_id = uuid::Uuid::new_v4();
 
-    let row = sqlx::query(
-        "INSERT INTO relay_invites (community_id, token_hash, max_uses, expires_at, created_by) \
-         VALUES ($1, $2, $3, $4, $5) \
-         RETURNING id",
+    sqlx::query(
+        "INSERT INTO relay_invites (community_id, id, token_hash, max_uses, expires_at, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(community.as_uuid())
+    .bind(invite_id)
     .bind(token_hash.as_slice())
     .bind(max_uses)
     .bind(expires_at)
     .bind(created_by)
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
-
-    let invite_id: uuid::Uuid = row.try_get("id")?;
 
     Ok(MintedInvite {
         code,
@@ -161,7 +160,7 @@ const RETENTION_SWEEP_BATCH_SIZE: i64 = 1_000;
 /// The relay calls this from its leader-only periodic tick. Ordering by the
 /// expiry index makes old rows drain first without turning cleanup into an
 /// unbounded transaction.
-pub async fn reap_expired_relay_invites(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<u64> {
+pub async fn reap_expired_relay_invites(pool: &SqlitePool, cutoff: DateTime<Utc>) -> Result<u64> {
     let result = sqlx::query(
         "DELETE FROM relay_invites \
          WHERE (community_id, id) IN (\
@@ -185,7 +184,7 @@ pub async fn reap_expired_relay_invites(pool: &PgPool, cutoff: DateTime<Utc>) ->
 /// 1. Hash the presented code.
 /// 2. `SELECT ... FOR UPDATE` on the invite row scoped by `(community, token_hash)`.
 /// 3. If no row → `Invalid`.
-/// 4. If `expires_at <= now()` → `Expired`.
+/// 4. If `expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')` → `Expired`.
 /// 5. Check existing membership.
 /// 6. If already a member → insert policy evidence (if configured), commit,
 ///    return `AlreadyMember` (no increment).
@@ -199,7 +198,7 @@ pub async fn reap_expired_relay_invites(pool: &PgPool, cutoff: DateTime<Utc>) ->
 /// final slot. Membership insertion, policy evidence, and consumption share
 /// one commit — a failure in any rolls back all.
 pub async fn claim_relay_invite(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     token_hash: &[u8; 32],
     claimer_pubkey: &str,
@@ -211,11 +210,10 @@ pub async fn claim_relay_invite(
     let row = sqlx::query(
         "SELECT id, max_uses, use_count, expires_at \
          FROM relay_invites \
-         WHERE community_id = $1 AND token_hash = $2 \
-         FOR UPDATE",
+         WHERE community_id = $1 AND token_hash = $2",
     )
     .bind(community.as_uuid())
-    .bind(token_hash)
+    .bind(token_hash.as_slice())
     .fetch_optional(&mut *tx)
     .await?;
 
@@ -374,21 +372,27 @@ pub async fn claim_relay_invite(
 mod tests {
     use super::*;
     use crate::relay_members::is_relay_member;
-    use sqlx::PgPool;
+    use sqlx::SqlitePool;
     use uuid::Uuid;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
+    const TEST_DB_URL: &str = "sqlite::memory:"; // sadscan:disable np.sqlite.1
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_test_community(pool: &PgPool) -> CommunityId {
+    async fn make_test_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
             .bind(id)
@@ -399,7 +403,7 @@ mod tests {
         CommunityId::from_uuid(id)
     }
 
-    async fn delete_test_community(pool: &PgPool, community: CommunityId) {
+    async fn delete_test_community(pool: &SqlitePool, community: CommunityId) {
         let mut tx = pool.begin().await.expect("begin test cleanup");
         sqlx::query("DELETE FROM relay_invites WHERE community_id = $1")
             .bind(community.as_uuid())
@@ -423,7 +427,7 @@ mod tests {
         format!("{:064x}", Uuid::new_v4().as_u128())
     }
 
-    async fn use_count(pool: &PgPool, community: CommunityId, invite_id: Uuid) -> i32 {
+    async fn use_count(pool: &SqlitePool, community: CommunityId, invite_id: Uuid) -> i32 {
         sqlx::query_scalar(
             "SELECT use_count FROM relay_invites WHERE community_id = $1 AND id = $2",
         )
@@ -449,7 +453,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn bounded_claim_exhausts_and_existing_member_retry_does_not_consume() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -495,7 +498,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn concurrent_claims_serialize_the_final_slot() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -540,7 +542,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn expiry_and_tenant_scope_return_typed_failures() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -558,7 +559,7 @@ mod tests {
         );
 
         sqlx::query(
-            "UPDATE relay_invites SET expires_at = now() - interval '1 second' \
+            "UPDATE relay_invites SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') \
              WHERE community_id = $1 AND id = $2",
         )
         .bind(community_a.as_uuid())
@@ -578,7 +579,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn retention_sweep_deletes_only_invites_older_than_cutoff() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -616,7 +616,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn unlimited_invites_count_each_new_member() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -641,7 +640,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn policy_evidence_failure_rolls_back_membership_and_consumption() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;

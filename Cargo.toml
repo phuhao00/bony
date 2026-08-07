@@ -168,7 +168,7 @@ base64 = "0.22"
 blake3 = "1"
 bytes = { version = "1", features = ["serde"] }
 camino = "1.1.10"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = { version = "4" }
 colored_json = "5"
@@ -403,7 +403,7 @@ zip = "3"
 zstd = "0.13"
 
 # --- Buzz stack (shared workspace deps; version conflicts with Grok stay as literals in Buzz crates) ---
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "sqlite", "uuid", "chrono", "json"] }
 redis = { version = "1.0", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 deadpool-redis = { version = "0.23", features = ["rt_tokio_1"] }
 kube = { version = "2.0", default-features = false, features = ["client", "rustls-tls"] }
@@ -414,7 +414,6 @@ iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring
 evalexpr = "11"
 cron = "0.16"
 metrics = "0.24"
-metrics-exporter-prometheus = "0.18"
 metrics-util = "0.20"
 hex = "0.4"
 hmac = "0.13"
@@ -424,6 +423,10 @@ proptest = "1"
 rmcp = { version = "1.1.0", features = ["server", "transport-io", "macros"] }
 # Ensure shared deps cover Buzz feature needs (union with existing)
 # note: tokio/axum/tower already declared above — crate-level feature activation still works
+# buzz-search vector (semantic) search backend — embedded, no server process.
+lancedb = "0.31.0"
+arrow-array = "58.0.0"
+arrow-schema = "58.0.0"
 
 buzz-core = { path = "third_party/buzz/crates/buzz-core" }
 buzz-conformance = { path = "third_party/buzz/crates/buzz-conformance" }

@@ -29,8 +29,8 @@
 pub const FEED_MAX_LIMIT: i64 = 100;
 
 use chrono::{DateTime, Utc};
-use sqlx::postgres::PgRow;
-use sqlx::{PgPool, QueryBuilder};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{SqlitePool, QueryBuilder};
 use uuid::Uuid;
 
 use buzz_core::kind::{
@@ -57,7 +57,7 @@ const EVENT_COLS_UNALIASED: &str =
 /// Feed reads may include channel-less community-global events, plus events in
 /// channels the caller can access. An empty accessible-channel list therefore
 /// means "global only", never "all channels".
-fn push_visible_channel_filter(qb: &mut QueryBuilder<sqlx::Postgres>, col: &str, ids: &[Uuid]) {
+fn push_visible_channel_filter(qb: &mut QueryBuilder<sqlx::Sqlite>, col: &str, ids: &[Uuid]) {
     if ids.is_empty() {
         qb.push(format!(" AND {col} IS NULL"));
         return;
@@ -72,7 +72,7 @@ fn push_visible_channel_filter(qb: &mut QueryBuilder<sqlx::Postgres>, col: &str,
 }
 
 /// Convert fetched rows into `Vec<StoredEvent>`, skipping any that fail conversion.
-fn collect_stored_events(rows: Vec<PgRow>) -> Result<Vec<StoredEvent>> {
+fn collect_stored_events(rows: Vec<SqliteRow>) -> Result<Vec<StoredEvent>> {
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         if let Some(ev) = row_to_stored_event(row)? {
@@ -88,11 +88,11 @@ fn build_mentions_query(
     accessible_channel_ids: &[Uuid],
     since: Option<DateTime<Utc>>,
     limit: i64,
-) -> QueryBuilder<sqlx::Postgres> {
+) -> QueryBuilder<sqlx::Sqlite> {
     let limit = limit.min(FEED_MAX_LIMIT);
     let pubkey_hex = hex::encode(pubkey_bytes);
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
+    let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(format!(
         "SELECT {EVENT_COLS} FROM events e \
          INNER JOIN event_mentions m ON e.community_id = m.community_id AND e.id = m.event_id \
          WHERE e.community_id = "
@@ -126,7 +126,7 @@ fn build_mentions_query(
 /// Only returns community-global events and events from `accessible_channel_ids`.
 /// `limit` is capped at [`FEED_MAX_LIMIT`] regardless of the value passed by the caller.
 pub async fn query_mentions(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey_bytes: &[u8],
     accessible_channel_ids: &[Uuid],
@@ -149,7 +149,7 @@ pub async fn query_mentions(
 /// the query on the exact reader connection whose heartbeat observation
 /// proved its predicate.
 pub(crate) async fn query_mentions_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community: CommunityId,
     pubkey_bytes: &[u8],
     accessible_channel_ids: &[Uuid],
@@ -173,11 +173,11 @@ fn build_needs_action_query(
     accessible_channel_ids: &[Uuid],
     since: Option<DateTime<Utc>>,
     limit: i64,
-) -> QueryBuilder<sqlx::Postgres> {
+) -> QueryBuilder<sqlx::Sqlite> {
     let limit = limit.min(FEED_MAX_LIMIT);
     let pubkey_hex = hex::encode(pubkey_bytes);
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
+    let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(format!(
         "SELECT {EVENT_COLS} FROM events e \
          INNER JOIN event_mentions m ON e.community_id = m.community_id AND e.id = m.event_id \
          WHERE e.community_id = "
@@ -210,7 +210,7 @@ fn build_needs_action_query(
 /// `(community_id, pubkey_hex, event_kind, event_created_at DESC)`.
 /// `limit` is capped at [`FEED_MAX_LIMIT`] regardless of the value passed by the caller.
 pub async fn query_needs_action(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey_bytes: &[u8],
     accessible_channel_ids: &[Uuid],
@@ -231,7 +231,7 @@ pub async fn query_needs_action(
 
 /// [`query_needs_action`] on a specific session — see [`query_mentions_on`].
 pub(crate) async fn query_needs_action_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community: CommunityId,
     pubkey_bytes: &[u8],
     accessible_channel_ids: &[Uuid],
@@ -254,9 +254,9 @@ fn build_activity_query(
     accessible_channel_ids: &[Uuid],
     since: Option<DateTime<Utc>>,
     limit: i64,
-) -> QueryBuilder<sqlx::Postgres> {
+) -> QueryBuilder<sqlx::Sqlite> {
     let limit = limit.min(FEED_MAX_LIMIT);
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(format!(
+    let mut qb: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(format!(
         "SELECT {EVENT_COLS_UNALIASED} FROM events WHERE community_id = "
     ));
     qb.push_bind(*community.as_uuid());
@@ -280,7 +280,7 @@ fn build_activity_query(
 /// **Performance**: uses indexed `kind` + `channel_id` columns -- no JSON scan.
 /// `limit` is capped at [`FEED_MAX_LIMIT`] regardless of the value passed by the caller.
 pub async fn query_activity(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     accessible_channel_ids: &[Uuid],
     since: Option<DateTime<Utc>>,
@@ -292,7 +292,7 @@ pub async fn query_activity(
 
 /// [`query_activity`] on a specific session — see [`query_mentions_on`].
 pub(crate) async fn query_activity_on(
-    conn: &mut sqlx::PgConnection,
+    conn: &mut sqlx::SqliteConnection,
     community: CommunityId,
     accessible_channel_ids: &[Uuid],
     since: Option<DateTime<Utc>>,
@@ -311,19 +311,25 @@ mod tests {
     use nostr::{EventBuilder, Keys, Kind, Tag};
     use uuid::Uuid;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
+    const TEST_DB_URL: &str = "sqlite::memory:"; // sadscan:disable np.sqlite.1 -- local test-only credentials
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
 
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_test_community(pool: &PgPool) -> Uuid {
+    async fn make_test_community(pool: &SqlitePool) -> Uuid {
         let id = Uuid::new_v4();
         let host = format!("feed-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -335,12 +341,12 @@ mod tests {
         id
     }
 
-    async fn insert_test_channel(pool: &PgPool, community: CommunityId) -> Uuid {
+    async fn insert_test_channel(pool: &SqlitePool, community: CommunityId) -> Uuid {
         let id = Uuid::new_v4();
         let creator = [0x11u8; 32];
         sqlx::query(
             "INSERT INTO channels (id, community_id, name, channel_type, visibility, created_by) \
-             VALUES ($1, $2, $3, 'stream'::channel_type, 'open'::channel_visibility, $4)",
+             VALUES ($1, $2, $3, 'stream', 'open', $4)",
         )
         .bind(id)
         .bind(community.as_uuid())
@@ -353,7 +359,7 @@ mod tests {
     }
 
     async fn store_feed_event(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         kind: u32,
         content: &str,
@@ -374,10 +380,9 @@ mod tests {
         event
     }
 
-    // -- Postgres tenant-scope regressions ------------------------------------
+    // -- Sqlite tenant-scope regressions ------------------------------------
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn query_mentions_is_scoped_across_communities() {
         let pool = setup_pool().await;
         let community_a = CommunityId::from_uuid(make_test_community(&pool).await);
@@ -425,7 +430,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn query_needs_action_is_scoped_across_communities() {
         let pool = setup_pool().await;
         let community_a = CommunityId::from_uuid(make_test_community(&pool).await);
@@ -473,7 +477,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn query_activity_is_scoped_and_empty_channels_are_global_only() {
         let pool = setup_pool().await;
         let community_a = CommunityId::from_uuid(make_test_community(&pool).await);

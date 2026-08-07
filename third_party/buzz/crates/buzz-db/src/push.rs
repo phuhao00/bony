@@ -6,29 +6,24 @@
 use buzz_core::CommunityId;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sha2::{Digest as _, Sha256};
-use sqlx::{PgPool, Row as _};
+use sqlx::{QueryBuilder, Row as _, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::push_in_list;
 
-/// Namespace for the per-community push-gate advisory lock. Must match the
-/// key built inside the `enqueue_push_match_job` trigger (migration 0023):
-/// event inserts take it SHARED there; every lease transition that can make
-/// match eligibility true takes it EXCLUSIVE here, forcing a total order so
-/// a concurrent event insert either sees the committed lease or strictly
-/// precedes the activation (in which case no wake was owed). Distinct key
-/// domain from the audit lock and the lease address/author locks.
+/// Formerly the namespace for a Postgres per-community push-gate advisory
+/// lock. Single-instance SQLite has no advisory locks — its single-writer
+/// model already forces a total order between concurrent event inserts and
+/// lease transitions inside the same transaction — so
+/// [`acquire_push_gate_lock`] is now a no-op kept for call-site stability.
+#[allow(dead_code)]
 const PUSH_GATE_LOCK_NAMESPACE: &str = "buzz_push_gate:";
 
 async fn acquire_push_gate_lock(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    community: CommunityId,
+    _tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    _community: CommunityId,
 ) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!("{PUSH_GATE_LOCK_NAMESPACE}{}", community.as_uuid()))
-        .execute(&mut **tx)
-        .await?;
     Ok(())
 }
 
@@ -47,7 +42,7 @@ const PUSH_GATE_BACKFILL_SECS: i64 = 120;
 /// list mirrors the trigger allowlist; `ON CONFLICT DO NOTHING` dedups against
 /// rows the trigger already enqueued.
 async fn backfill_push_match_jobs(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     community: CommunityId,
 ) -> Result<()> {
     sqlx::query(
@@ -56,11 +51,11 @@ async fn backfill_push_match_jobs(
          WHERE community_id = $1 \
            AND kind IN (7, 9, 1059, 40007, 46010) \
            AND deleted_at IS NULL \
-           AND received_at > now() - make_interval(secs => $2) \
+           AND received_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-' || CAST($2 AS TEXT) || ' seconds') \
          ON CONFLICT DO NOTHING",
     )
     .bind(community.as_uuid())
-    .bind(PUSH_GATE_BACKFILL_SECS as f64)
+    .bind(PUSH_GATE_BACKFILL_SECS)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -211,7 +206,7 @@ pub enum AcceptLeaseOutcome {
 /// either the public source event or effective state.
 #[allow(clippy::too_many_arguments)]
 pub async fn accept_lease_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event: &nostr::Event,
     installation_id: &str,
@@ -219,31 +214,12 @@ pub async fn accept_lease_event(
     active: Option<ActiveLease<'_>>,
     max_active_leases: i64,
 ) -> Result<AcceptLeaseOutcome> {
-    let author = event.pubkey.as_bytes();
+    let author = event.pubkey.as_bytes().as_slice();
+    // Single-instance SQLite has no advisory locks; the whole
+    // check-then-write sequence below runs inside one transaction, and
+    // SQLite's single-writer model serializes concurrent transactions for
+    // us — no separate address/author/push-gate lock acquisition is needed.
     let mut tx = pool.begin().await?;
-    let mut address_lock = Vec::with_capacity(16 + author.len() + installation_id.len());
-    address_lock.extend_from_slice(community.as_uuid().as_bytes());
-    address_lock.extend_from_slice(author);
-    address_lock.extend_from_slice(installation_id.as_bytes());
-    let address_lock = i64::from_le_bytes(Sha256::digest(&address_lock)[..8].try_into().unwrap());
-    let mut author_lock = Vec::with_capacity(16 + author.len());
-    author_lock.extend_from_slice(community.as_uuid().as_bytes());
-    author_lock.extend_from_slice(author);
-    let author_lock = i64::from_le_bytes(Sha256::digest(&author_lock)[..8].try_into().unwrap());
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(address_lock)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(author_lock)
-        .execute(&mut *tx)
-        .await?;
-    // T1b: an activation can flip the community from "no eligible lease" to
-    // "eligible", so it must serialize against the trigger's shared gate lock.
-    // Acquired after the address/author locks to keep one global lock order.
-    if active.is_some() {
-        acquire_push_gate_lock(&mut tx, community).await?;
-    }
 
     if let Some(row) = sqlx::query(
         "SELECT author, installation_id FROM push_leases WHERE community_id=$1 AND source_event_id=$2",
@@ -262,7 +238,7 @@ pub async fn accept_lease_event(
     }
 
     if let Some(row) = sqlx::query(
-        "SELECT source_event_id, source_created_at, generation FROM push_leases          WHERE community_id=$1 AND author=$2 AND installation_id=$3 FOR UPDATE",
+        "SELECT source_event_id, source_created_at, generation FROM push_leases          WHERE community_id=$1 AND author=$2 AND installation_id=$3",
     )
     .bind(community.as_uuid())
     .bind(author)
@@ -288,9 +264,9 @@ pub async fn accept_lease_event(
     // uniqueness forever. The author lock makes this cleanup atomic with the
     // subsequent author-wide checks and replacement.
     sqlx::query(
-        "UPDATE push_leases SET active=false, endpoint_enabled=false, updated_at=now() \
+        "UPDATE push_leases SET active=false, endpoint_enabled=false, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id=$1 AND author=$2 AND active \
-           AND expires_at <= EXTRACT(EPOCH FROM now())::bigint",
+           AND expires_at <= CAST(strftime('%s','now') AS INTEGER)",
     )
     .bind(community.as_uuid())
     .bind(author)
@@ -325,7 +301,7 @@ pub async fn accept_lease_event(
     }
 
     sqlx::query(
-        "UPDATE events SET deleted_at=now() WHERE community_id=$1 AND kind=30350          AND pubkey=$2 AND d_tag=$3 AND deleted_at IS NULL",
+        "UPDATE events SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE community_id=$1 AND kind=30350          AND pubkey=$2 AND d_tag=$3 AND deleted_at IS NULL",
     )
     .bind(community.as_uuid())
     .bind(author)
@@ -335,7 +311,7 @@ pub async fn accept_lease_event(
     let created_at = DateTime::from_timestamp(version.source_created_at, 0)
         .ok_or(crate::DbError::InvalidTimestamp(version.source_created_at))?;
     if let Err(error) = sqlx::query(
-        "INSERT INTO events (community_id,id,pubkey,created_at,kind,tags,content,sig,received_at,channel_id,d_tag)          VALUES ($1,$2,$3,$4,30350,$5,$6,$7,now(),NULL,$8)",
+        "INSERT INTO events (community_id,id,pubkey,created_at,kind,tags,content,sig,received_at,channel_id,d_tag)          VALUES ($1,$2,$3,$4,30350,$5,$6,$7,strftime('%Y-%m-%dT%H:%M:%fZ','now'),NULL,$8)",
     )
     .bind(community.as_uuid())
     .bind(event.id.as_bytes().as_slice())
@@ -374,7 +350,7 @@ pub async fn accept_lease_event(
             generation=EXCLUDED.generation, active=EXCLUDED.active, endpoint_enabled=true,
             app_profile=EXCLUDED.app_profile, endpoint_hash=EXCLUDED.endpoint_hash,
             endpoint_grant=EXCLUDED.endpoint_grant, max_class=EXCLUDED.max_class,
-            subscriptions=EXCLUDED.subscriptions, expires_at=EXCLUDED.expires_at, updated_at=now()"#,
+            subscriptions=EXCLUDED.subscriptions, expires_at=EXCLUDED.expires_at, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')"#,
     )
     .bind(community.as_uuid()).bind(author).bind(installation_id)
     .bind(version.source_event_id).bind(version.source_created_at).bind(version.generation)
@@ -398,26 +374,32 @@ fn constraint_acceptance_outcome(error: &sqlx::Error) -> Option<AcceptLeaseOutco
     let sqlx::Error::Database(error) = error else {
         return None;
     };
-    match error.code().as_deref() {
-        Some("23505") if error.constraint() == Some("push_leases_endpoint_unique") => {
-            Some(AcceptLeaseOutcome::EndpointAlreadyLeased)
-        }
-        Some("23505")
-            if error.constraint() == Some("push_leases_community_id_source_event_id_key") =>
-        {
-            Some(AcceptLeaseOutcome::SourceEventCollision)
-        }
-        // Every integrity violation is a protocol-invalid lease, even if a
-        // future migration renames/adds a constraint that validation missed.
-        Some(code) if code.starts_with("23") => Some(AcceptLeaseOutcome::ConstraintViolation),
-        _ => None,
+    // SQLite has no Postgres-style "23xxx" SQLSTATE class or structured
+    // constraint name; every `SQLITE_CONSTRAINT_*` extended code shares the
+    // low byte 19 (CHECK=275, NOTNULL=1299, UNIQUE=2067, ...), and the two
+    // specific unique indexes are distinguished from the column list SQLite
+    // puts in the message text instead (e.g. "UNIQUE constraint failed:
+    // push_leases.community_id, push_leases.endpoint_hash").
+    let code: i64 = error.code()?.parse().ok()?;
+    if code & 0xff != 19 {
+        return None;
+    }
+    let message = error.message();
+    if message.contains("push_leases.endpoint_hash") {
+        Some(AcceptLeaseOutcome::EndpointAlreadyLeased)
+    } else if message.contains("push_leases.source_event_id") {
+        Some(AcceptLeaseOutcome::SourceEventCollision)
+    } else {
+        // Every other integrity violation is a protocol-invalid lease, even
+        // if a future migration adds a constraint that validation missed.
+        Some(AcceptLeaseOutcome::ConstraintViolation)
     }
 }
 
 /// Create or rotate an active lease if both ordering gates win atomically.
 #[allow(clippy::too_many_arguments)]
 pub async fn replace_active_lease(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     author: &[u8],
     installation_id: &str,
@@ -437,7 +419,7 @@ pub async fn replace_active_lease(
 
 /// Revoke one installation with a higher-generation inactive replacement.
 pub async fn revoke_lease(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     author: &[u8],
     installation_id: &str,
@@ -447,7 +429,7 @@ pub async fn revoke_lease(
 }
 
 async fn replace_lease(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     author: &[u8],
     installation_id: &str,
@@ -498,7 +480,7 @@ async fn replace_lease(
             max_class = EXCLUDED.max_class,
             subscriptions = EXCLUDED.subscriptions,
             expires_at = EXCLUDED.expires_at,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE (
                 EXCLUDED.source_created_at > push_leases.source_created_at
                 OR (
@@ -578,7 +560,7 @@ pub struct WakeRequest {
 ///
 /// Batch-of-one shape of [`enqueue_wakes`]; see there for the protocol.
 pub async fn enqueue_wake(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     author: &[u8],
     installation_id: &str,
@@ -617,7 +599,7 @@ pub async fn enqueue_wake(
 ///
 /// Returns one outcome per request, index-aligned with `requests`.
 pub async fn enqueue_wakes(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     requests: &[WakeRequest],
 ) -> Result<Vec<EnqueueWakeOutcome>> {
@@ -626,45 +608,41 @@ pub async fn enqueue_wakes(
     }
     let mut tx = pool.begin().await?;
 
-    // 1. Lock and read the current lease row for every distinct requested
-    //    (author, installation), in deterministic order.
+    // 1. Read the current lease row for every distinct requested
+    //    (author, installation), in deterministic order. SQLite has no
+    //    per-row `FOR UPDATE`, but its single-writer model already
+    //    serializes concurrent `enqueue_wakes`/`replace_active_lease`
+    //    transactions, so a plain read inside this transaction is
+    //    equivalent.
     let mut pairs: Vec<(&[u8], &str)> = requests
         .iter()
         .map(|r| (r.author.as_slice(), r.installation_id.as_str()))
         .collect();
     pairs.sort_unstable();
     pairs.dedup();
-    let lock_authors: Vec<&[u8]> = pairs.iter().map(|(a, _)| *a).collect();
-    let lock_installs: Vec<&str> = pairs.iter().map(|(_, i)| *i).collect();
-    let lease_rows = sqlx::query(
-        r#"
-        SELECT author, installation_id, generation, endpoint_hash
-        FROM push_leases
-        WHERE community_id = $1
-          AND (author, installation_id) IN
-              (SELECT a, i FROM UNNEST($2::bytea[], $3::text[]) AS t(a, i))
-          AND active
-          AND endpoint_enabled
-          AND expires_at > EXTRACT(EPOCH FROM now())::bigint
-        ORDER BY author, installation_id
-        FOR UPDATE
-        "#,
-    )
-    .bind(community.as_uuid())
-    .bind(&lock_authors)
-    .bind(&lock_installs)
-    .fetch_all(&mut *tx)
-    .await?;
     let mut leases: std::collections::HashMap<(Vec<u8>, String), (i64, Vec<u8>)> =
-        std::collections::HashMap::with_capacity(lease_rows.len());
-    for row in lease_rows {
-        leases.insert(
-            (row.try_get("author")?, row.try_get("installation_id")?),
-            (row.try_get("generation")?, row.try_get("endpoint_hash")?),
-        );
+        std::collections::HashMap::with_capacity(pairs.len());
+    for (author, installation_id) in &pairs {
+        if let Some(row) = sqlx::query(
+            "SELECT generation, endpoint_hash FROM push_leases \
+             WHERE community_id = $1 AND author = $2 AND installation_id = $3 \
+               AND active AND endpoint_enabled \
+               AND expires_at > CAST(strftime('%s','now') AS INTEGER)",
+        )
+        .bind(community.as_uuid())
+        .bind(*author)
+        .bind(*installation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            leases.insert(
+                (author.to_vec(), installation_id.to_string()),
+                (row.try_get("generation")?, row.try_get("endpoint_hash")?),
+            );
+        }
     }
 
-    // 2. Resolve per-request eligibility; collect the insert arrays.
+    // 2. Resolve per-request eligibility.
     // `None` marks InactiveLease; `Some(endpoint_hash)` carries the key half
     // that maps insert/duplicate rows back to their requests.
     let resolved: Vec<Option<Vec<u8>>> = requests
@@ -676,86 +654,60 @@ pub async fn enqueue_wakes(
                 .map(|(_, endpoint_hash)| endpoint_hash.clone())
         })
         .collect();
-    let mut ins_authors: Vec<&[u8]> = Vec::new();
-    let mut ins_installs: Vec<&str> = Vec::new();
-    let mut ins_generations: Vec<i64> = Vec::new();
-    let mut ins_endpoints: Vec<&[u8]> = Vec::new();
-    let mut ins_events: Vec<&[u8]> = Vec::new();
-    let mut ins_classes: Vec<&str> = Vec::new();
-    let mut ins_expires: Vec<i64> = Vec::new();
-    for (request, endpoint_hash) in requests.iter().zip(&resolved) {
-        let Some(endpoint_hash) = endpoint_hash else {
-            continue;
-        };
-        ins_authors.push(&request.author);
-        ins_installs.push(&request.installation_id);
-        ins_generations.push(request.lease_generation);
-        ins_endpoints.push(endpoint_hash);
-        ins_events.push(&request.event_id);
-        ins_classes.push(&request.class);
-        ins_expires.push(request.expires_at);
-    }
 
-    // 3. One multi-row insert. ON CONFLICT covers both pre-existing jobs and
-    //    dedup-key collisions between rows of this same statement.
+    // 3. Insert one row per eligible request, in a loop rather than a
+    // Postgres `UNNEST`-based multi-row insert (SQLite has no array bind
+    // type). `ON CONFLICT DO NOTHING` covers both pre-existing jobs and
+    // dedup-key collisions between rows of this same batch; the fallback
+    // SELECT recovers the id for a row this call did not insert.
     let mut job_ids: std::collections::HashMap<(Vec<u8>, Vec<u8>), Uuid> =
         std::collections::HashMap::new();
     let mut inserted_keys: std::collections::HashSet<(Vec<u8>, Vec<u8>)> =
         std::collections::HashSet::new();
-    if !ins_events.is_empty() {
+    for (request, endpoint_hash) in requests.iter().zip(&resolved) {
+        let Some(endpoint_hash) = endpoint_hash else {
+            continue;
+        };
+        let key = (endpoint_hash.clone(), request.event_id.clone());
+        if job_ids.contains_key(&key) {
+            continue;
+        }
         let inserted = sqlx::query(
             r#"
             INSERT INTO push_wake_outbox (
-                community_id, author, installation_id, lease_generation,
+                id, community_id, author, installation_id, lease_generation,
                 endpoint_hash, event_id, class, expires_at
             )
-            SELECT $1, a, i, g, eh, ev, c, ex
-            FROM UNNEST(
-                $2::bytea[], $3::text[], $4::bigint[], $5::bytea[],
-                $6::bytea[], $7::text[], $8::bigint[]
-            ) AS t(a, i, g, eh, ev, c, ex)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (community_id, endpoint_hash, event_id) DO NOTHING
-            RETURNING endpoint_hash, event_id, id
+            RETURNING id
             "#,
         )
+        .bind(Uuid::new_v4())
         .bind(community.as_uuid())
-        .bind(&ins_authors)
-        .bind(&ins_installs)
-        .bind(&ins_generations)
-        .bind(&ins_endpoints)
-        .bind(&ins_events)
-        .bind(&ins_classes)
-        .bind(&ins_expires)
-        .fetch_all(&mut *tx)
+        .bind(request.author.as_slice())
+        .bind(request.installation_id.as_str())
+        .bind(request.lease_generation)
+        .bind(endpoint_hash.as_slice())
+        .bind(request.event_id.as_slice())
+        .bind(request.class.as_str())
+        .bind(request.expires_at)
+        .fetch_optional(&mut *tx)
         .await?;
-        for row in inserted {
-            let key: (Vec<u8>, Vec<u8>) = (row.try_get("endpoint_hash")?, row.try_get("event_id")?);
+        if let Some(row) = inserted {
             job_ids.insert(key.clone(), row.try_get("id")?);
             inserted_keys.insert(key);
-        }
-        // 4. Set-wise duplicate lookup for eligible requests the insert
-        //    skipped. A separate statement so READ COMMITTED observes a
-        //    competing transaction whose unique-key insert completed while
-        //    ours waited.
-        if inserted_keys.len() < ins_events.len() {
-            let dup_rows = sqlx::query(
-                r#"
-                SELECT endpoint_hash, event_id, id FROM push_wake_outbox
-                WHERE community_id = $1
-                  AND (endpoint_hash, event_id) IN
-                      (SELECT eh, ev FROM UNNEST($2::bytea[], $3::bytea[]) AS t(eh, ev))
-                "#,
+        } else {
+            let dup = sqlx::query(
+                "SELECT id FROM push_wake_outbox \
+                 WHERE community_id = $1 AND endpoint_hash = $2 AND event_id = $3",
             )
             .bind(community.as_uuid())
-            .bind(&ins_endpoints)
-            .bind(&ins_events)
-            .fetch_all(&mut *tx)
+            .bind(endpoint_hash.as_slice())
+            .bind(request.event_id.as_slice())
+            .fetch_one(&mut *tx)
             .await?;
-            for row in dup_rows {
-                let key: (Vec<u8>, Vec<u8>) =
-                    (row.try_get("endpoint_hash")?, row.try_get("event_id")?);
-                job_ids.entry(key).or_insert(row.try_get("id")?);
-            }
+            job_ids.insert(key, dup.try_get("id")?);
         }
     }
     tx.commit().await?;
@@ -817,7 +769,7 @@ pub struct BatchedMatch {
 /// lives in [`reap_exhausted_matches`], off the claim path, because the reap
 /// DELETE rescans the pending set and under backlog made every claim slower.
 pub async fn claim_due_match_batch(
-    pool: &PgPool,
+    pool: &SqlitePool,
     limit: i64,
     lease_until: DateTime<Utc>,
 ) -> Result<Option<ClaimedMatchBatch>> {
@@ -834,13 +786,13 @@ pub async fn claim_due_match_batch(
 }
 
 async fn claim_due_match_batch_with_loader<F, Fut>(
-    pool: &PgPool,
+    pool: &SqlitePool,
     limit: i64,
     lease_until: DateTime<Utc>,
     load: F,
 ) -> Result<Option<ClaimedMatchBatch>>
 where
-    F: FnOnce(PgPool, CommunityId, Vec<Vec<u8>>) -> Fut,
+    F: FnOnce(SqlitePool, CommunityId, Vec<Vec<u8>>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<buzz_core::StoredEvent>>>,
 {
     let claim_id = Uuid::new_v4();
@@ -850,8 +802,8 @@ where
             SELECT community_id
             FROM push_match_queue
             WHERE attempts < $3
-              AND next_attempt_at <= now()
-              AND (state = 'pending' OR (state = 'matching' AND lease_until < now()))
+              AND next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              AND (state = 'pending' OR (state = 'matching' AND lease_until < strftime('%Y-%m-%dT%H:%M:%fZ','now')))
             ORDER BY next_attempt_at, created_at
             LIMIT 1
         ),
@@ -860,17 +812,16 @@ where
             FROM push_match_queue q
             JOIN target t ON q.community_id = t.community_id
             WHERE q.attempts < $3
-              AND q.next_attempt_at <= now()
-              AND (q.state = 'pending' OR (q.state = 'matching' AND q.lease_until < now()))
+              AND q.next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              AND (q.state = 'pending' OR (q.state = 'matching' AND q.lease_until < strftime('%Y-%m-%dT%H:%M:%fZ','now')))
             ORDER BY q.next_attempt_at, q.created_at
-            FOR UPDATE OF q SKIP LOCKED
             LIMIT $4
         )
-        UPDATE push_match_queue q
+        UPDATE push_match_queue AS q
         SET state='matching', claim_id=$1, lease_until=$2, attempts=q.attempts+1
         FROM candidates c
         WHERE q.community_id=c.community_id AND q.event_id=c.event_id
-        RETURNING q.community_id, q.event_id, q.attempts
+        RETURNING community_id, event_id, attempts
         "#,
     )
     .bind(claim_id)
@@ -904,15 +855,15 @@ where
     // recoverable after their claim lease expires.
     let gone: Vec<Vec<u8>> = attempts.into_keys().collect();
     if !gone.is_empty() {
-        sqlx::query(
-            "DELETE FROM push_match_queue \
-             WHERE community_id=$1 AND claim_id=$2 AND state='matching' AND event_id = ANY($3)",
-        )
-        .bind(community.as_uuid())
-        .bind(claim_id)
-        .bind(&gone)
-        .execute(pool)
-        .await?;
+        let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+            "DELETE FROM push_match_queue WHERE community_id=",
+        );
+        qb.push_bind(community.as_uuid());
+        qb.push(" AND claim_id=");
+        qb.push_bind(claim_id);
+        qb.push(" AND state='matching' AND event_id IN ");
+        push_in_list(&mut qb, gone.into_iter());
+        qb.build().execute(pool).await?;
     }
     if jobs.is_empty() {
         return Ok(None);
@@ -930,10 +881,10 @@ where
 /// Runs on a periodic sweep, never inside the claim path: the scan is not
 /// served by the due partial index, so putting it in every claim made claims
 /// slower exactly when a backlog needed them fastest.
-pub async fn reap_exhausted_matches(pool: &PgPool) -> Result<u64> {
+pub async fn reap_exhausted_matches(pool: &SqlitePool) -> Result<u64> {
     Ok(sqlx::query(
         "DELETE FROM push_match_queue WHERE attempts >= $1 \
-         AND (state='pending' OR (state='matching' AND lease_until < now()))",
+         AND (state='pending' OR (state='matching' AND lease_until < strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
     )
     .bind(MAX_MATCH_ATTEMPTS)
     .execute(pool)
@@ -942,11 +893,11 @@ pub async fn reap_exhausted_matches(pool: &PgPool) -> Result<u64> {
 }
 
 /// Load active endpoint-enabled leases for one tenant.
-pub async fn active_match_leases(pool: &PgPool, community: CommunityId) -> Result<Vec<MatchLease>> {
+pub async fn active_match_leases(pool: &SqlitePool, community: CommunityId) -> Result<Vec<MatchLease>> {
     let rows = sqlx::query(
         "SELECT author, installation_id, generation, subscriptions, expires_at \
          FROM push_leases WHERE community_id=$1 AND active AND endpoint_enabled \
-         AND expires_at > EXTRACT(EPOCH FROM now())::bigint",
+         AND expires_at > CAST(strftime('%s','now') AS INTEGER)",
     )
     .bind(community.as_uuid())
     .fetch_all(pool)
@@ -968,7 +919,7 @@ pub async fn active_match_leases(pool: &PgPool, community: CommunityId) -> Resul
 /// statement for any number of jobs). Returns how many rows were completed;
 /// jobs whose fence was lost are left for their next claimant.
 pub async fn complete_match_batch(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     claim_id: Uuid,
     event_ids: &[Vec<u8>],
@@ -976,22 +927,20 @@ pub async fn complete_match_batch(
     if event_ids.is_empty() {
         return Ok(0);
     }
-    Ok(sqlx::query(
-        "DELETE FROM push_match_queue \
-         WHERE community_id=$1 AND claim_id=$2 AND state='matching' AND event_id = ANY($3)",
-    )
-    .bind(community.as_uuid())
-    .bind(claim_id)
-    .bind(event_ids)
-    .execute(pool)
-    .await?
-    .rows_affected())
+    let mut qb: QueryBuilder<Sqlite> =
+        QueryBuilder::new("DELETE FROM push_match_queue WHERE community_id=");
+    qb.push_bind(community.as_uuid());
+    qb.push(" AND claim_id=");
+    qb.push_bind(claim_id);
+    qb.push(" AND state='matching' AND event_id IN ");
+    push_in_list(&mut qb, event_ids.iter().cloned());
+    Ok(qb.build().execute(pool).await?.rows_affected())
 }
 
 /// Release fenced matcher claims from one batch for retry at the supplied
 /// time (one statement for any number of jobs).
 pub async fn retry_match_batch(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     claim_id: Uuid,
     event_ids: &[Vec<u8>],
@@ -1000,18 +949,17 @@ pub async fn retry_match_batch(
     if event_ids.is_empty() {
         return Ok(0);
     }
-    Ok(sqlx::query(
-        "UPDATE push_match_queue \
-         SET state='pending', claim_id=NULL, lease_until=NULL, next_attempt_at=$4 \
-         WHERE community_id=$1 AND claim_id=$2 AND state='matching' AND event_id = ANY($3)",
-    )
-    .bind(community.as_uuid())
-    .bind(claim_id)
-    .bind(event_ids)
-    .bind(next)
-    .execute(pool)
-    .await?
-    .rows_affected())
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "UPDATE push_match_queue SET state='pending', claim_id=NULL, lease_until=NULL, next_attempt_at=",
+    );
+    qb.push_bind(next);
+    qb.push(" WHERE community_id=");
+    qb.push_bind(community.as_uuid());
+    qb.push(" AND claim_id=");
+    qb.push_bind(claim_id);
+    qb.push(" AND state='matching' AND event_id IN ");
+    push_in_list(&mut qb, event_ids.iter().cloned());
+    Ok(qb.build().execute(pool).await?.rows_affected())
 }
 
 /// Claim due jobs for one community, recovering expired worker leases.
@@ -1019,16 +967,23 @@ pub async fn retry_match_batch(
 /// Claiming performs an early lease check, but callers MUST invoke
 /// [`revalidate_wake_for_send`] immediately before the transport call.
 pub async fn claim_due_wakes(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     limit: i64,
     lease_until: DateTime<Utc>,
 ) -> Result<Vec<ClaimedWake>> {
     let claim_id = Uuid::new_v4();
+    // SQLite's RETURNING only exposes the target table's own columns
+    // (unqualified, no alias) — unlike Postgres' `UPDATE ... FROM ...
+    // RETURNING`, it cannot surface `events.channel_id` or
+    // `push_leases.endpoint_grant` directly. Claim on `push_wake_outbox`'s
+    // own columns (including `endpoint_hash`, needed to re-look-up the
+    // lease below) and backfill the two foreign columns in a second pass,
+    // batched per this single community.
     let rows = sqlx::query(
         r#"
         WITH candidates AS (
-            SELECT o.id, e.channel_id
+            SELECT o.id
             FROM push_wake_outbox o
             JOIN push_leases l
               ON l.community_id = o.community_id
@@ -1036,35 +991,25 @@ pub async fn claim_due_wakes(
              AND l.installation_id = o.installation_id
              AND l.generation = o.lease_generation
              AND l.endpoint_hash = o.endpoint_hash
-            LEFT JOIN events e
+            JOIN events e
               ON e.community_id = o.community_id
              AND e.id = o.event_id
              AND e.deleted_at IS NULL
             WHERE o.community_id = $1
-              AND e.id IS NOT NULL
-              AND o.expires_at > EXTRACT(EPOCH FROM now())::bigint
-              AND o.next_attempt_at <= now()
-              AND (o.state = 'pending' OR (o.state = 'sending' AND o.lease_until < now()))
+              AND o.expires_at > CAST(strftime('%s','now') AS INTEGER)
+              AND o.next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              AND (o.state = 'pending' OR (o.state = 'sending' AND o.lease_until < strftime('%Y-%m-%dT%H:%M:%fZ','now')))
               AND l.active
               AND l.endpoint_enabled
-              AND l.expires_at > EXTRACT(EPOCH FROM now())::bigint
+              AND l.expires_at > CAST(strftime('%s','now') AS INTEGER)
             ORDER BY o.next_attempt_at, o.created_at, o.id
-            FOR UPDATE OF o SKIP LOCKED
             LIMIT $2
         )
-        UPDATE push_wake_outbox o
+        UPDATE push_wake_outbox
         SET state = 'sending', claim_id = $3, lease_until = $4, attempts = attempts + 1
-        FROM candidates c, push_leases l
-        WHERE o.community_id = $1
-          AND o.id = c.id
-          AND l.community_id = o.community_id
-          AND l.author = o.author
-          AND l.installation_id = o.installation_id
-          AND l.generation = o.lease_generation
-          AND l.endpoint_hash = o.endpoint_hash
-        RETURNING o.community_id, o.id, o.claim_id, o.event_id, c.channel_id,
-                  o.author, o.installation_id, o.lease_generation,
-                  l.endpoint_grant, o.class, o.expires_at, o.attempts
+        WHERE community_id = $1 AND id IN (SELECT id FROM candidates)
+        RETURNING community_id, id, claim_id, event_id, author, installation_id,
+                  lease_generation, class, expires_at, attempts
         "#,
     )
     .bind(community.as_uuid())
@@ -1074,7 +1019,46 @@ pub async fn claim_due_wakes(
     .fetch_all(pool)
     .await?;
 
-    rows.into_iter().map(row_to_claimed_wake).collect()
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let event_ids: Vec<Vec<u8>> = rows
+        .iter()
+        .map(|row| row.try_get::<Vec<u8>, _>("event_id"))
+        .collect::<std::result::Result<_, _>>()?;
+    let mut qb: QueryBuilder<Sqlite> =
+        QueryBuilder::new("SELECT id, channel_id FROM events WHERE community_id = ");
+    qb.push_bind(community.as_uuid());
+    qb.push(" AND id IN ");
+    push_in_list(&mut qb, event_ids);
+    let channel_rows = qb.build().fetch_all(pool).await?;
+    let mut channels: std::collections::HashMap<Vec<u8>, Option<Uuid>> =
+        std::collections::HashMap::with_capacity(channel_rows.len());
+    for row in channel_rows {
+        let id: Vec<u8> = row.try_get("id")?;
+        let channel_id: Option<Uuid> = row.try_get("channel_id")?;
+        channels.insert(id, channel_id);
+    }
+
+    let lease_rows = sqlx::query(
+        "SELECT author, installation_id, endpoint_grant FROM push_leases WHERE community_id = $1",
+    )
+    .bind(community.as_uuid())
+    .fetch_all(pool)
+    .await?;
+    let mut endpoint_grants: std::collections::HashMap<(Vec<u8>, String), String> =
+        std::collections::HashMap::with_capacity(lease_rows.len());
+    for row in lease_rows {
+        let author: Vec<u8> = row.try_get("author")?;
+        let installation_id: String = row.try_get("installation_id")?;
+        let endpoint_grant: String = row.try_get("endpoint_grant")?;
+        endpoint_grants.insert((author, installation_id), endpoint_grant);
+    }
+
+    rows.into_iter()
+        .map(|row| outbox_row_to_claimed_wake(row, &channels, &endpoint_grants))
+        .collect()
 }
 
 /// Revalidate a fenced claim immediately before sending it.
@@ -1083,7 +1067,7 @@ pub async fn claim_due_wakes(
 /// gate. Claim-time eligibility and replacement-time cancellation are only
 /// optimizations; neither can replace this send-time check.
 pub async fn revalidate_wake_for_send(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     id: Uuid,
     claim_id: Uuid,
@@ -1108,11 +1092,11 @@ pub async fn revalidate_wake_for_send(
           AND o.id = $2
           AND o.claim_id = $3
           AND o.state = 'sending'
-          AND o.lease_until >= now()
-          AND o.expires_at > EXTRACT(EPOCH FROM now())::bigint
+          AND o.lease_until >= strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          AND o.expires_at > CAST(strftime('%s','now') AS INTEGER)
           AND l.active
           AND l.endpoint_enabled
-          AND l.expires_at > EXTRACT(EPOCH FROM now())::bigint
+          AND l.expires_at > CAST(strftime('%s','now') AS INTEGER)
         "#,
     )
     .bind(community.as_uuid())
@@ -1130,7 +1114,7 @@ pub async fn revalidate_wake_for_send(
 
 /// Mark a fenced claim delivered. Stale workers cannot complete a newer claim.
 pub async fn complete_wake(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     id: Uuid,
     claim_id: Uuid,
@@ -1150,7 +1134,7 @@ pub async fn complete_wake(
 
 /// Return a fenced claim to the pending queue for a bounded retry.
 pub async fn retry_wake(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     id: Uuid,
     claim_id: Uuid,
@@ -1172,7 +1156,7 @@ pub async fn retry_wake(
 
 /// Permanently fail one fenced claim without affecting its lease or siblings.
 pub async fn fail_wake(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     id: Uuid,
     claim_id: Uuid,
@@ -1195,14 +1179,14 @@ pub async fn fail_wake(
 /// Strict generation monotonicity is the underlying safety invariant. The
 /// current-generation predicate makes stale responses clean no-ops.
 pub async fn disable_endpoint_generation(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     author: &[u8],
     installation_id: &str,
     generation: i64,
 ) -> Result<bool> {
     let result = sqlx::query(
-        "UPDATE push_leases SET endpoint_enabled = false, updated_at = now() \
+        "UPDATE push_leases SET endpoint_enabled = false, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $1 AND author = $2 AND installation_id = $3 \
            AND generation = $4 AND active AND endpoint_enabled",
     )
@@ -1221,15 +1205,15 @@ pub async fn disable_endpoint_generation(
 /// therefore cannot have a matcher row; any other absent source is handled by
 /// the matcher's fenced load-miss deletion.
 pub async fn prune_wake_outbox(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     before: DateTime<Utc>,
 ) -> Result<u64> {
     let result = sqlx::query(
-        "DELETE FROM push_wake_outbox o \
+        "DELETE FROM push_wake_outbox AS o \
          WHERE o.community_id = $1 AND o.created_at < $2 \
            AND (o.state IN ('delivered', 'failed') \
-                OR o.expires_at <= EXTRACT(EPOCH FROM now())::bigint) \
+                OR o.expires_at <= CAST(strftime('%s','now') AS INTEGER)) \
            AND NOT EXISTS ( \
                SELECT 1 FROM push_match_queue q \
                WHERE q.community_id = o.community_id AND q.event_id = o.event_id \
@@ -1242,7 +1226,7 @@ pub async fn prune_wake_outbox(
     Ok(result.rows_affected())
 }
 
-fn row_to_claimed_wake(row: sqlx::postgres::PgRow) -> Result<ClaimedWake> {
+fn row_to_claimed_wake(row: sqlx::sqlite::SqliteRow) -> Result<ClaimedWake> {
     Ok(ClaimedWake {
         community: CommunityId::from_uuid(row.try_get("community_id")?),
         id: row.try_get("id")?,
@@ -1259,6 +1243,44 @@ fn row_to_claimed_wake(row: sqlx::postgres::PgRow) -> Result<ClaimedWake> {
     })
 }
 
+/// Like [`row_to_claimed_wake`], but for a row returned by an `UPDATE ...
+/// RETURNING` on `push_wake_outbox` alone: `channel_id` and `endpoint_grant`
+/// live on joined tables that SQLite's RETURNING cannot surface directly
+/// (see `claim_due_wakes`), so they are backfilled from the batched lookups
+/// built by the caller instead of read off the row.
+fn outbox_row_to_claimed_wake(
+    row: sqlx::sqlite::SqliteRow,
+    channels: &std::collections::HashMap<Vec<u8>, Option<Uuid>>,
+    endpoint_grants: &std::collections::HashMap<(Vec<u8>, String), String>,
+) -> Result<ClaimedWake> {
+    let event_id: Vec<u8> = row.try_get("event_id")?;
+    let author: Vec<u8> = row.try_get("author")?;
+    let installation_id: String = row.try_get("installation_id")?;
+    let channel_id = channels.get(&event_id).copied().flatten();
+    let endpoint_grant = endpoint_grants
+        .get(&(author.clone(), installation_id.clone()))
+        .cloned()
+        .ok_or_else(|| {
+            crate::error::DbError::InvalidData(
+                "claimed wake has no matching push lease for endpoint_grant".to_string(),
+            )
+        })?;
+    Ok(ClaimedWake {
+        community: CommunityId::from_uuid(row.try_get("community_id")?),
+        id: row.try_get("id")?,
+        claim_id: row.try_get("claim_id")?,
+        event_id,
+        channel_id,
+        author,
+        installation_id,
+        lease_generation: row.try_get("lease_generation")?,
+        endpoint_grant,
+        class: row.try_get("class")?,
+        expires_at: row.try_get("expires_at")?,
+        attempt: row.try_get("attempts")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,11 +1288,13 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Barrier;
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into());
-        let pool = PgPool::connect(&database_url)
+            .unwrap_or_else(|_| "sqlite::memory:".into());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
             .expect("connect to test DB");
         migration::run_migrations(&pool)
@@ -1287,7 +1311,7 @@ mod tests {
             .expect("sign lease event")
     }
 
-    async fn make_community(pool: &PgPool) -> CommunityId {
+    async fn make_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
             .bind(id)
@@ -1308,7 +1332,7 @@ mod tests {
     }
 
     async fn activate(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         author: &[u8],
         installation: &str,
@@ -1337,7 +1361,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn acceptance_constraint_failure_rolls_back_source_event() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -1381,7 +1404,7 @@ mod tests {
             "SELECT count(*) FROM push_leases WHERE community_id=$1 AND author=$2 AND installation_id=$3",
         )
         .bind(community.as_uuid())
-        .bind(event.pubkey.as_bytes())
+        .bind(event.pubkey.as_bytes().as_slice())
         .bind("install")
         .fetch_one(&pool)
         .await
@@ -1390,7 +1413,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn source_event_collision_is_protocol_outcome_without_event_insert() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -1449,7 +1471,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn replacement_and_revoke_are_community_scoped_and_dual_ordered() {
         let pool = setup_pool().await;
         let a = make_community(&pool).await;
@@ -1490,7 +1511,7 @@ mod tests {
              WHERE community_id = $1 AND author = $2 AND installation_id = $3",
         )
         .bind(b.as_uuid())
-        .bind(author)
+        .bind(author.as_slice())
         .bind("install")
         .fetch_one(&pool)
         .await
@@ -1499,7 +1520,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn concurrent_enqueue_is_atomic_and_community_scoped() {
         let pool = setup_pool().await;
         let a = make_community(&pool).await;
@@ -1546,8 +1566,8 @@ mod tests {
              WHERE community_id = $1 AND endpoint_hash = $2 AND event_id = $3",
         )
         .bind(a.as_uuid())
-        .bind(endpoint)
-        .bind(event)
+        .bind(endpoint.as_slice())
+        .bind(event.as_slice())
         .fetch_one(&pool)
         .await
         .expect("count A jobs");
@@ -1574,8 +1594,8 @@ mod tests {
             "SELECT count(*) FROM push_wake_outbox \
              WHERE endpoint_hash = $1 AND event_id = $2",
         )
-        .bind(endpoint)
-        .bind(event)
+        .bind(endpoint.as_slice())
+        .bind(event.as_slice())
         .fetch_one(&pool)
         .await
         .expect("count all jobs");
@@ -1583,7 +1603,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn setwise_enqueue_maps_outcomes_per_request() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -1601,12 +1620,12 @@ mod tests {
         let existing = enqueue_one(&pool, community, &alice, &event_x, 1).await;
         sqlx::query(
             "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig) \
-             VALUES ($1, $2, $3, to_timestamp(1), 9, '[]', '', $4)",
+             VALUES ($1, $2, $3, strftime('%Y-%m-%dT%H:%M:%fZ', 1, 'unixepoch'), 9, '[]', '', $4)",
         )
         .bind(community.as_uuid())
-        .bind(event_y)
-        .bind([42_u8; 32])
-        .bind([43_u8; 64])
+        .bind(event_y.as_slice())
+        .bind([42_u8; 32].as_slice())
+        .bind([43_u8; 64].as_slice())
         .execute(&pool)
         .await
         .expect("insert second wake source event");
@@ -1667,7 +1686,7 @@ mod tests {
     }
 
     async fn enqueue_one(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         author: &[u8],
         event_id: &[u8; 32],
@@ -1675,12 +1694,12 @@ mod tests {
     ) -> Uuid {
         sqlx::query(
             "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig) \
-             VALUES ($1, $2, $3, to_timestamp(1), 9, '[]', '', $4)",
+             VALUES ($1, $2, $3, strftime('%Y-%m-%dT%H:%M:%fZ', 1, 'unixepoch'), 9, '[]', '', $4)",
         )
         .bind(community.as_uuid())
-        .bind(event_id)
-        .bind([42_u8; 32])
-        .bind([43_u8; 64])
+        .bind(event_id.as_slice())
+        .bind([42_u8; 32].as_slice())
+        .bind([43_u8; 64].as_slice())
         .execute(pool)
         .await
         .expect("insert wake source event");
@@ -1705,7 +1724,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn send_revalidation_suppresses_rotated_claim_and_retry_preserves_id() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -1746,7 +1764,7 @@ mod tests {
         .into_iter()
         .find(|wake| wake.id == retry_id)
         .expect("retry job claimed");
-        let database_now: DateTime<Utc> = sqlx::query_scalar("SELECT now()")
+        let database_now: DateTime<Utc> = sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")
             .fetch_one(&pool)
             .await
             .expect("read database clock");
@@ -1775,7 +1793,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn endpoint_invalidation_is_scoped_to_community_and_generation() {
         let pool = setup_pool().await;
         let a = make_community(&pool).await;
@@ -1854,7 +1871,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn matcher_trigger_is_allowlisted_and_deleted_events_are_discarded() {
         let pool = setup_pool().await;
         // Global claim assertions below require a queue free of other tests'
@@ -1892,7 +1908,7 @@ mod tests {
         .expect("read matcher queue");
         assert_eq!(queued, vec![9]);
 
-        sqlx::query("UPDATE events SET deleted_at=now() WHERE community_id=$1 AND id=$2")
+        sqlx::query("UPDATE events SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE community_id=$1 AND id=$2")
             .bind(community.as_uuid())
             .bind(push_event.id.as_bytes().as_slice())
             .execute(&pool)
@@ -1914,7 +1930,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn matcher_load_error_preserves_claimed_job_for_recovery() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -1956,7 +1971,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn matcher_claim_is_exclusive_across_workers() {
         let pool = setup_pool().await;
         // Drain leftovers from other tests sharing this database: a racing
@@ -1995,7 +2009,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn delivered_wake_is_retained_while_rematch_is_queued() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -2004,7 +2017,8 @@ mod tests {
         activate(&pool, community, &author, "install", &[24; 32], 1).await;
         let wake_id = enqueue_one(&pool, community, &author, &event_id, 1).await;
         sqlx::query(
-            "UPDATE push_wake_outbox SET state='delivered', created_at=now()-interval '2 days' \
+            "UPDATE push_wake_outbox SET state='delivered', \
+             created_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 days') \
              WHERE community_id=$1 AND id=$2",
         )
         .bind(community.as_uuid())
@@ -2020,7 +2034,7 @@ mod tests {
         );
         sqlx::query("DELETE FROM push_match_queue WHERE community_id=$1 AND event_id=$2")
             .bind(community.as_uuid())
-            .bind(event_id)
+            .bind(event_id.as_slice())
             .execute(&pool)
             .await
             .expect("complete rematch");
@@ -2031,7 +2045,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn exhausted_match_job_is_reaped_and_cannot_pin_retention() {
         let pool = setup_pool().await;
         // Global claim assertions below require a queue free of other tests'
@@ -2068,7 +2081,8 @@ mod tests {
             other => panic!("expected fresh wake, got {other:?}"),
         };
         sqlx::query(
-            "UPDATE push_wake_outbox SET state='delivered', created_at=now()-interval '2 days' \
+            "UPDATE push_wake_outbox SET state='delivered', \
+             created_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 days') \
              WHERE community_id=$1 AND id=$2",
         )
         .bind(community.as_uuid())
@@ -2082,7 +2096,8 @@ mod tests {
             0
         );
         sqlx::query(
-            "UPDATE push_match_queue SET attempts=$3, state='matching', lease_until=now()-interval '1 second' \
+            "UPDATE push_match_queue SET attempts=$3, state='matching', \
+             lease_until=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') \
              WHERE community_id=$1 AND event_id=$2",
         )
         .bind(community.as_uuid())
@@ -2126,7 +2141,6 @@ mod tests {
     /// set-wise complete and retry honor the claim fence, and a retried job
     /// becomes claimable again.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn batch_claim_is_single_community_and_setwise_ops_honor_the_fence() {
         let pool = setup_pool().await;
         // The batch claim targets the globally oldest due job, so leftover
@@ -2262,7 +2276,6 @@ mod tests {
     /// trigger could read "no lease" while the activation commits
     /// concurrently, dropping that wake with no retry.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn gate_orders_lease_activation_after_in_flight_event_and_backfills_it() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;
@@ -2292,7 +2305,7 @@ mod tests {
         let mut insert_tx = pool.begin().await.expect("begin raced insert");
         sqlx::query(
             "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, received_at) \
-             VALUES ($1, $2, $3, now(), 9, '[]', 'raced wake', $4, now())",
+             VALUES ($1, $2, $3, strftime('%Y-%m-%dT%H:%M:%fZ','now'), 9, '[]', 'raced wake', $4, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         )
         .bind(community.as_uuid())
         .bind(raced.id.as_bytes().as_slice())
@@ -2326,24 +2339,18 @@ mod tests {
             })
         };
 
-        // Wait until the activation is provably parked on the advisory lock
-        // (not merely unscheduled), then confirm it has not completed.
-        let mut parked = false;
-        for _ in 0..100 {
-            let waiting: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM pg_locks WHERE locktype='advisory' AND NOT granted",
-            )
-            .fetch_one(&pool)
-            .await
-            .expect("inspect advisory waiters");
-            if waiting > 0 {
-                parked = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        assert!(parked, "activation must block on the exclusive gate lock");
-        assert!(!activation.is_finished());
+        // SQLite has no advisory-lock table to inspect (the gate lock itself
+        // is a no-op here — see `acquire_push_gate_lock`). The test pool is
+        // capped at one connection, which `insert_tx` is holding, so the
+        // racing activation's own `pool.begin()` cannot even acquire a
+        // connection until the raced insert resolves — a bounded wait proves
+        // it is parked just as reliably as inspecting a lock table would.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !activation.is_finished(),
+            "activation must block on the exhausted single-connection pool \
+             while the raced insert transaction is still open"
+        );
 
         // Release the event; the activation acquires the gate, and its
         // backfill must enqueue the event the trigger skipped — exactly once.

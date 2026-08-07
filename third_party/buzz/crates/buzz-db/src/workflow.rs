@@ -1,6 +1,7 @@
 //! Workflow CRUD -- workflows, workflow_runs, and workflow_approvals tables.
 //!
-//! All IDs are native Postgres UUID columns. Never uses string interpolation
+//! All IDs are TEXT-encoded UUID strings (SQLite has no native UUID column
+//! type; see the crate's UUID -> TEXT mapping convention). Never uses string interpolation
 //! for query values -- all user data goes through bind parameters.
 //!
 //! Security notes:
@@ -12,7 +13,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{SqlitePool, Row};
 use uuid::Uuid;
 
 use buzz_core::CommunityId;
@@ -274,7 +275,7 @@ pub struct ApprovalRecord {
 /// NOTE: see the cache-invalidation note on [`update_workflow`]. The relay's
 /// creation path is [`upsert_workflow`] via event ingest. (No current callers.)
 pub async fn create_workflow(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Option<Uuid>,
     owner_pubkey: &[u8],
@@ -288,7 +289,7 @@ pub async fn create_workflow(
         r#"
         INSERT INTO workflows
             (id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, status, enabled)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', TRUE)
         "#,
     )
     .bind(id)
@@ -311,7 +312,7 @@ pub async fn create_workflow(
 /// cross-channel overwrite primitive while still making retries idempotent.
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_workflow(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     channel_id: Option<Uuid>,
@@ -324,12 +325,12 @@ pub async fn upsert_workflow(
         r#"
         INSERT INTO workflows
             (community_id, id, name, owner_pubkey, channel_id, definition, definition_hash, status, enabled)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', TRUE)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', TRUE)
         ON CONFLICT (community_id, id) DO UPDATE
         SET name = EXCLUDED.name,
             definition = EXCLUDED.definition,
             definition_hash = EXCLUDED.definition_hash,
-            updated_at = NOW()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE workflows.owner_pubkey = EXCLUDED.owner_pubkey
           AND workflows.channel_id IS NOT DISTINCT FROM EXCLUDED.channel_id
         RETURNING id
@@ -361,14 +362,14 @@ pub async fn upsert_workflow(
 /// supplies the server-resolved community (host-bound tenant for request paths,
 /// the run's own community for execution paths) — never a client-supplied id.
 pub async fn get_workflow(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
 ) -> Result<WorkflowRecord> {
     let row = sqlx::query(
         r#"
         SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
-               status::text AS status, enabled, created_at, updated_at
+               status AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND id = $2
         "#,
@@ -387,7 +388,7 @@ pub async fn get_workflow(
 /// `limit` is capped at [`LIST_MAX_LIMIT`]. Pass `None` to use [`LIST_DEFAULT_LIMIT`].
 /// `offset` enables pagination (0-based row offset).
 pub async fn list_channel_workflows(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     limit: Option<i64>,
@@ -399,7 +400,7 @@ pub async fn list_channel_workflows(
     let rows = sqlx::query(
         r#"
         SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
-               status::text AS status, enabled, created_at, updated_at
+               status AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND channel_id = $2
         ORDER BY created_at DESC
@@ -423,14 +424,14 @@ pub async fn list_channel_workflows(
 /// Bounded to [`LIST_MAX_LIMIT`] rows -- the trigger path should not process
 /// an unbounded number of workflows per event.
 pub async fn list_enabled_channel_workflows(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<Vec<WorkflowRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
-               status::text AS status, enabled, created_at, updated_at
+               status AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1
           AND channel_id = $2
@@ -454,11 +455,11 @@ pub async fn list_enabled_channel_workflows(
 /// Used by the cron scheduler. Filters by trigger type in SQL to avoid loading
 /// event-triggered workflows that the cron loop would immediately discard.
 /// Results are bounded to [`LIST_MAX_LIMIT`] rows.
-pub async fn list_all_enabled_workflows(pool: &PgPool) -> Result<Vec<WorkflowRecord>> {
+pub async fn list_all_enabled_workflows(pool: &SqlitePool) -> Result<Vec<WorkflowRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT w.id, w.community_id, w.name, w.owner_pubkey, w.channel_id, w.definition, w.definition_hash,
-               w.status::text AS status, w.enabled, w.created_at, w.updated_at
+               w.status AS status, w.enabled, w.created_at, w.updated_at
         FROM workflows w
         JOIN communities c ON c.id = w.community_id
         WHERE w.status = 'active'
@@ -494,7 +495,7 @@ pub async fn list_all_enabled_workflows(pool: &PgPool) -> Result<Vec<WorkflowRec
 /// `(community_id, id)` confines the claim — and its `SELECT`/`INSERT` row — to
 /// exactly the intended tenant.
 pub async fn claim_scheduled_workflow_fire(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
     scheduled_for: DateTime<Utc>,
@@ -535,7 +536,7 @@ pub async fn claim_scheduled_workflow_fire(
 /// reads from `scheduled_workflow_fires`, not `workflow_runs`, because the claim
 /// row is the source of truth for schedule deduplication.
 pub async fn latest_scheduled_workflow_fire(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
 ) -> Result<Option<DateTime<Utc>>> {
@@ -561,7 +562,7 @@ pub async fn latest_scheduled_workflow_fire(
 /// spawning execution. If run creation fails, leaving `workflow_run_id` NULL is
 /// intentional: the schedule instant was claimed and must not duplicate later.
 pub async fn attach_scheduled_workflow_run(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
     scheduled_for: DateTime<Utc>,
@@ -595,7 +596,7 @@ pub async fn attach_scheduled_workflow_run(
 /// deployment supports, or interval workflows can lose their DB-authoritative
 /// anchor after pruning.
 pub async fn prune_scheduled_workflow_fires_before(
-    pool: &PgPool,
+    pool: &SqlitePool,
     older_than: DateTime<Utc>,
 ) -> Result<u64> {
     let result = sqlx::query(
@@ -618,7 +619,7 @@ pub async fn prune_scheduled_workflow_fires_before(
 /// invalidate via `WorkflowEngine::invalidate_channel_workflows` or trigger
 /// matching lags the change by up to the cache TTL. (No current callers.)
 pub async fn update_workflow(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     name: &str,
@@ -628,7 +629,7 @@ pub async fn update_workflow(
     let affected = sqlx::query(
         r#"
         UPDATE workflows
-        SET name = $1, definition = $2::jsonb, definition_hash = $3
+        SET name = $1, definition = $2, definition_hash = $3
         WHERE community_id = $4 AND id = $5
         "#,
     )
@@ -652,7 +653,7 @@ pub async fn update_workflow(
 /// NOTE: status gates trigger eligibility; see the cache-invalidation note on
 /// [`update_workflow`]. (No current callers.)
 pub async fn update_workflow_status(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     status: WorkflowStatus,
@@ -660,7 +661,7 @@ pub async fn update_workflow_status(
     let affected = sqlx::query(
         r#"
         UPDATE workflows
-        SET status = $1::workflow_status
+        SET status = $1
         WHERE community_id = $2 AND id = $3
         "#,
     )
@@ -682,7 +683,7 @@ pub async fn update_workflow_status(
 /// NOTE: `enabled` gates trigger eligibility; see the cache-invalidation note
 /// on [`update_workflow`]. (No current callers.)
 pub async fn set_workflow_enabled(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     enabled: bool,
@@ -715,7 +716,7 @@ pub async fn set_workflow_enabled(
 /// run. Idempotent; returns the number of workflows disabled so the caller
 /// can decide whether a trigger-cache invalidation is needed.
 pub async fn disable_workflows_for_owner_in_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     owner_pubkey: &[u8],
@@ -742,7 +743,7 @@ pub async fn disable_workflows_for_owner_in_channel(
 /// NOTE: see the cache-invalidation note on [`update_workflow`]. The relay's
 /// deletion path uses [`delete_workflow_for_owner`], which returns the
 /// `channel_id` needed for invalidation. (No current callers.)
-pub async fn delete_workflow(pool: &PgPool, community_id: CommunityId, id: Uuid) -> Result<()> {
+pub async fn delete_workflow(pool: &SqlitePool, community_id: CommunityId, id: Uuid) -> Result<()> {
     let affected = sqlx::query("DELETE FROM workflows WHERE community_id = $1 AND id = $2")
         .bind(community_id.as_uuid())
         .bind(id)
@@ -766,7 +767,7 @@ pub async fn delete_workflow(pool: &PgPool, community_id: CommunityId, id: Uuid)
 /// Returns the deleted workflow's `channel_id` so the caller can invalidate
 /// the per-channel trigger cache without a separate lookup.
 pub async fn delete_workflow_for_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     owner_pubkey: &[u8],
@@ -795,7 +796,7 @@ pub async fn delete_workflow_for_owner(
 /// so that post-approval resume steps can restore the original trigger data and
 /// correctly resolve `{{trigger.*}}` template variables.
 pub async fn create_workflow_run(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
     trigger_event_id: Option<&[u8]>,
@@ -823,13 +824,13 @@ pub async fn create_workflow_run(
 
 /// Fetch a single workflow run by ID, scoped to its community.
 pub async fn get_workflow_run(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
 ) -> Result<WorkflowRunRecord> {
     let row = sqlx::query(
         r#"
-        SELECT community_id, id, workflow_id, status::text AS status, trigger_event_id, current_step,
+        SELECT community_id, id, workflow_id, status AS status, trigger_event_id, current_step,
                execution_trace, trigger_context, started_at, completed_at, error_message, created_at
         FROM workflow_runs
         WHERE community_id = $1 AND id = $2
@@ -846,7 +847,7 @@ pub async fn get_workflow_run(
 
 /// List runs for a workflow, newest first, up to `limit` rows.
 pub async fn list_workflow_runs(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
     limit: i64,
@@ -854,7 +855,7 @@ pub async fn list_workflow_runs(
     let limit = limit.min(1000);
     let rows = sqlx::query(
         r#"
-        SELECT community_id, id, workflow_id, status::text AS status, trigger_event_id, current_step,
+        SELECT community_id, id, workflow_id, status AS status, trigger_event_id, current_step,
                execution_trace, trigger_context, started_at, completed_at, error_message, created_at
         FROM workflow_runs
         WHERE community_id = $1 AND workflow_id = $2
@@ -878,7 +879,7 @@ pub async fn list_workflow_runs(
 /// column AFTER `SET status = ?` had already changed it, so the condition was
 /// always false. We now check the bind parameter directly.
 pub async fn update_workflow_run(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     id: Uuid,
     status: RunStatus,
@@ -890,14 +891,14 @@ pub async fn update_workflow_run(
     let affected = sqlx::query(
         r#"
         UPDATE workflow_runs
-        SET status        = $1::run_status,
+        SET status        = $1,
             current_step  = $2,
             execution_trace = $3,
             error_message = $4,
             started_at    = CASE WHEN $5 = 'running' AND started_at IS NULL
-                                 THEN NOW() ELSE started_at END,
+                                 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE started_at END,
             completed_at  = CASE WHEN $6 IN ('completed','failed','cancelled')
-                                 THEN NOW() ELSE completed_at END
+                                 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE completed_at END
         WHERE community_id = $7 AND id = $8
         "#,
     )
@@ -945,7 +946,7 @@ pub struct CreateApprovalParams<'a> {
 ///
 /// The `token` parameter is the raw (plaintext) token. It is hashed with
 /// SHA-256 before storage so the DB never holds the raw value.
-pub async fn create_approval(pool: &PgPool, params: CreateApprovalParams<'_>) -> Result<()> {
+pub async fn create_approval(pool: &SqlitePool, params: CreateApprovalParams<'_>) -> Result<()> {
     let CreateApprovalParams {
         community_id,
         token,
@@ -984,7 +985,7 @@ pub async fn create_approval(pool: &PgPool, params: CreateApprovalParams<'_>) ->
 /// The token is hashed before the DB lookup so plaintext tokens are never
 /// sent to the database layer.
 pub async fn get_approval(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     token: &str,
 ) -> Result<ApprovalRecord> {
@@ -1001,14 +1002,14 @@ pub async fn get_approval(
 /// could in principle collide across communities, so the lookup binds the
 /// server-resolved community alongside the token.
 pub async fn get_approval_by_stored_hash(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     token_hash: &[u8],
 ) -> Result<ApprovalRecord> {
     let row = sqlx::query(
         r#"
         SELECT token, workflow_id, run_id, step_id, step_index, approver_spec,
-               status::text AS status, approver_pubkey, note, expires_at, created_at
+               status AS status, approver_pubkey, note, expires_at, created_at
         FROM workflow_approvals
         WHERE community_id = $1 AND token = $2
         "#,
@@ -1024,7 +1025,7 @@ pub async fn get_approval_by_stored_hash(
 
 /// Fetch all approval records for a given workflow run.
 pub async fn get_run_approvals(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     workflow_id: Uuid,
     run_id: Uuid,
@@ -1032,7 +1033,7 @@ pub async fn get_run_approvals(
     let rows = sqlx::query(
         r#"
         SELECT token, workflow_id, run_id, step_id, step_index, approver_spec,
-               status::text AS status, approver_pubkey, note, expires_at, created_at
+               status AS status, approver_pubkey, note, expires_at, created_at
         FROM workflow_approvals
         WHERE community_id = $1 AND run_id = $2 AND workflow_id = $3
         ORDER BY step_index, created_at
@@ -1059,7 +1060,7 @@ pub async fn get_run_approvals(
 /// on (status != 'pending'), the UPDATE touches 0 rows and this function
 /// returns `Ok(false)`. Callers should treat `false` as a conflict (HTTP 409).
 pub async fn update_approval(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     token: &str,
     status: ApprovalStatus,
@@ -1087,7 +1088,7 @@ pub async fn update_approval(
 /// server-resolved community alongside the token so an approval action for A/X
 /// can never act on B/X.
 pub async fn update_approval_by_stored_hash(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     token_hash: &[u8],
     status: ApprovalStatus,
@@ -1098,11 +1099,11 @@ pub async fn update_approval_by_stored_hash(
     let affected = sqlx::query(
         r#"
         UPDATE workflow_approvals
-        SET status          = $1::approval_status,
+        SET status          = $1,
             approver_pubkey = $2,
             note            = $3,
-            granted_at      = CASE WHEN $4 = 'granted' THEN NOW() ELSE granted_at END,
-            denied_at       = CASE WHEN $5 = 'denied'  THEN NOW() ELSE denied_at  END
+            granted_at      = CASE WHEN $4 = 'granted' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE granted_at END,
+            denied_at       = CASE WHEN $5 = 'denied'  THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE denied_at  END
         WHERE community_id = $6 AND token = $7 AND status = 'pending'
         "#,
     )
@@ -1122,7 +1123,7 @@ pub async fn update_approval_by_stored_hash(
 
 // -- Row mappers --------------------------------------------------------------
 
-fn row_to_workflow_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRecord> {
+fn row_to_workflow_record(row: sqlx::sqlite::SqliteRow) -> Result<WorkflowRecord> {
     let id: Uuid = row.try_get("id")?;
     let channel_id: Option<Uuid> = row.try_get("channel_id")?;
 
@@ -1148,7 +1149,7 @@ fn row_to_workflow_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRecord> 
     })
 }
 
-fn row_to_run_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRunRecord> {
+fn row_to_run_record(row: sqlx::sqlite::SqliteRow) -> Result<WorkflowRunRecord> {
     let id: Uuid = row.try_get("id")?;
     let community_id: Uuid = row.try_get("community_id")?;
     let workflow_id: Uuid = row.try_get("workflow_id")?;
@@ -1172,7 +1173,7 @@ fn row_to_run_record(row: sqlx::postgres::PgRow) -> Result<WorkflowRunRecord> {
     })
 }
 
-fn row_to_approval_record(row: sqlx::postgres::PgRow) -> Result<ApprovalRecord> {
+fn row_to_approval_record(row: sqlx::sqlite::SqliteRow) -> Result<ApprovalRecord> {
     let workflow_id: Uuid = row.try_get("workflow_id")?;
     let run_id: Uuid = row.try_get("run_id")?;
 
@@ -1197,7 +1198,7 @@ fn row_to_approval_record(row: sqlx::postgres::PgRow) -> Result<ApprovalRecord> 
 /// Find a workflow by owner pubkey and name within a community. Returns the
 /// first match (active or not).
 pub async fn find_by_owner_and_name(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     owner_pubkey: &[u8],
     name: &str,
@@ -1205,7 +1206,7 @@ pub async fn find_by_owner_and_name(
     let row = sqlx::query(
         r#"
         SELECT id, community_id, name, owner_pubkey, channel_id, definition, definition_hash,
-               status::text AS status, enabled, created_at, updated_at
+               status AS status, enabled, created_at, updated_at
         FROM workflows
         WHERE community_id = $1 AND owner_pubkey = $2 AND name = $3
         LIMIT 1
@@ -1726,20 +1727,26 @@ mod tests {
 
     use crate::user::ensure_user;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
 
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
     /// Insert a community with a unique host. Returns its `CommunityId`.
-    async fn make_community(pool: &PgPool) -> CommunityId {
+    async fn make_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         let host = format!("test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -1752,7 +1759,7 @@ mod tests {
     }
 
     /// Insert a channel under a community. Returns the channel id.
-    async fn make_channel(pool: &PgPool, community: CommunityId, owner: &[u8]) -> Uuid {
+    async fn make_channel(pool: &SqlitePool, community: CommunityId, owner: &[u8]) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query(
             r#"
@@ -1773,7 +1780,7 @@ mod tests {
     /// Insert a workflow whose tenant is `community`'s channel. Returns the
     /// workflow id and the owning community for callers that want to assert
     /// the resolved tenant.
-    async fn make_workflow_in(pool: &PgPool, community: CommunityId) -> (Uuid, CommunityId) {
+    async fn make_workflow_in(pool: &SqlitePool, community: CommunityId) -> (Uuid, CommunityId) {
         let owner = vec![0xa1; 32];
         ensure_user(pool, community, &owner)
             .await
@@ -1805,7 +1812,6 @@ mod tests {
     /// BOTH workflow rows and fanned the claim across A and B — this test goes
     /// RED on that regression (B/id is no longer independently claimable).
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn claim_confined_to_its_community() {
         let pool = setup_pool().await;
 
@@ -1861,7 +1867,6 @@ mod tests {
     /// is server provenance, not a client-named label. Characterization guard:
     /// protects the dedup boundary against regressions in the claim SQL.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn concurrent_same_window_claims_exactly_one_wins() {
         let pool = setup_pool().await;
 
@@ -1900,7 +1905,6 @@ mod tests {
     /// `workflow_run_id IS NULL` guard makes a second attach a no-op. It is RED
     /// without the migration column.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn attach_links_run_to_claim_and_is_idempotent() {
         let pool = setup_pool().await;
 
@@ -1970,9 +1974,8 @@ mod tests {
     /// Test isolation: the prune primitive is global (filters only on
     /// `claimed_at`), so to avoid colliding with parallel claim tests we
     /// back-date this workflow's `claimed_at` into the deep past and use a
-    /// past cutoff that cannot match any other test's `claimed_at = NOW()`.
+    /// past cutoff that cannot match any other test's `claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn latest_after_prune_below_interval_breaks_anchor() {
         let pool = setup_pool().await;
 
@@ -2037,7 +2040,7 @@ mod tests {
     /// and channel UUID (the PK is `(community_id, id)`, which structurally
     /// allows the collision). Returns nothing; callers already hold the ids.
     async fn insert_workflow_with_ids(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community: CommunityId,
         id: Uuid,
         channel_id: Uuid,
@@ -2066,7 +2069,7 @@ mod tests {
             r#"
             INSERT INTO workflows
                 (id, community_id, name, owner_pubkey, channel_id, definition, definition_hash, status, enabled)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'active', TRUE)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', TRUE)
             "#,
         )
         .bind(id)
@@ -2089,7 +2092,6 @@ mod tests {
     /// B-host request (or a webhook/manual trigger satisfying membership against
     /// B's colliding channel) could load and drive A's workflow.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn workflow_lookup_is_confined_to_its_community() {
         let pool = setup_pool().await;
 
@@ -2163,7 +2165,6 @@ mod tests {
     /// `delete_workflow` predicated only on `id`, so a NIP-09 a-tag deletion in
     /// one community would erase the colliding workflow in every community.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn workflow_delete_is_confined_to_its_community() {
         let pool = setup_pool().await;
 
@@ -2212,7 +2213,6 @@ mod tests {
     /// predicated only on `token`, so granting one community's approval would
     /// silently resolve another's colliding gate.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn approval_is_confined_to_its_community() {
         let pool = setup_pool().await;
 
@@ -2310,7 +2310,6 @@ mod tests {
     /// workflows, not the same owner's workflows in other channels — and be
     /// idempotent. Disabled workflows must drop out of the trigger-path list.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn disable_for_owner_scopes_to_owner_and_channel() {
         let pool = setup_pool().await;
         let community = make_community(&pool).await;

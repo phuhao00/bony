@@ -40,6 +40,10 @@ pub mod state;
 pub mod storage_sweep;
 /// Subscription registry with (channel, kind) fan-out index.
 pub mod subscription;
+/// Shared in-memory SQLite pool helper for `#[cfg(test)]` modules across
+/// this crate. See [`test_support::sqlite_test_pool`].
+#[cfg(test)]
+pub(crate) mod test_support;
 /// OpenTelemetry tracing initialisation (tracer provider + OTLP exporter).
 pub mod telemetry;
 /// Row-zero host binding: resolve the request community from the connection host.

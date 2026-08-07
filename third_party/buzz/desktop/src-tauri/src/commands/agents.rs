@@ -747,13 +747,23 @@ pub async fn create_managed_agent(
                 .collect::<Vec<_>>(),
         );
 
-        // Derive MCP command exclusively from the runtime catalog — the
-        // per-record field is never read at spawn time so user-supplied input
-        // is silently discarded. Always sourcing from the catalog ensures
-        // new agents pick up the correct value without any stored override.
-        let mcp_command = match crate::managed_agents::known_acp_runtime(&agent_command) {
-            Some(p) => p.mcp_command.unwrap_or("").to_string(),
-            None => String::new(),
+        // An explicit `mcp_command` in the request (e.g. a custom persona
+        // pairing with its own MCP server) is stored on the record and wins
+        // at spawn time (see `resolve_effective_mcp_command`). Otherwise fall
+        // back to the runtime catalog's default for the resolved harness so
+        // existing callers that never send this field keep working exactly
+        // as before.
+        let mcp_command = match input
+            .mcp_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(explicit) => explicit.to_string(),
+            None => match crate::managed_agents::known_acp_runtime(&agent_command) {
+                Some(p) => p.mcp_command.unwrap_or("").to_string(),
+                None => String::new(),
+            },
         };
 
         let team_id = input

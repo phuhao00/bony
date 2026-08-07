@@ -81,7 +81,7 @@ enum PersistResult {
     /// Event was already processed — return idempotent success.
     Duplicate,
     /// Event inserted — transaction is open, handler must commit after mutations.
-    Inserted(sqlx::Transaction<'static, sqlx::Postgres>),
+    Inserted(sqlx::Transaction<'static, sqlx::Sqlite>),
 }
 
 /// Persist a command event inside a transaction. Returns the OPEN transaction
@@ -139,39 +139,18 @@ async fn persist_command_event(
         // definitions are NIP-33 events. Serialize writers for the same
         // coordinate and reject stale writes before executing the domain
         // mutation, otherwise old updates can overwrite newer workflow state.
-        let lock_key = {
-            let mut h: u64 = 0xcbf29ce484222325;
-            for b in tenant.community().as_uuid().as_bytes() {
-                h ^= *b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
-            for b in kind_i32.to_le_bytes() {
-                h ^= b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
-            for b in pubkey_bytes.as_slice() {
-                h ^= *b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
-            for b in d_tag.as_bytes() {
-                h ^= *b as u64;
-                h = h.wrapping_mul(0x100000001b3);
-            }
-            h as i64
-        };
-
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(lock_key)
-            .execute(tx.as_mut())
-            .await
-            .map_err(|e| IngestError::Internal(format!("error: lock event coordinate: {e}")))?;
-
+        //
+        // Single-instance SQLite: no advisory locks (the Postgres
+        // `pg_advisory_xact_lock` hash-key computation this used to gate on
+        // is gone with it); the check-then-write below runs inside one
+        // transaction, serialized by SQLite itself — same convention as
+        // `buzz_db::replace_parameterized_event`.
         let existing: Option<(chrono::DateTime<chrono::Utc>, Vec<u8>)> = sqlx::query_as(
             "SELECT created_at, id FROM events \
              WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 AND deleted_at IS NULL \
              ORDER BY created_at DESC, id ASC LIMIT 1",
         )
-        .bind(tenant.community().as_uuid())
+        .bind(tenant.community().as_uuid().to_string())
         .bind(kind_i32)
         .bind(pubkey_bytes.as_slice())
         .bind(d_tag)
@@ -188,10 +167,11 @@ async fn persist_command_event(
             }
 
             sqlx::query(
-                "UPDATE events SET deleted_at = NOW() \
-                 WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 AND deleted_at IS NULL",
+                "UPDATE events SET deleted_at = $1 \
+                 WHERE community_id = $2 AND kind = $3 AND pubkey = $4 AND d_tag = $5 AND deleted_at IS NULL",
             )
-            .bind(tenant.community().as_uuid())
+            .bind(Utc::now())
+            .bind(tenant.community().as_uuid().to_string())
             .bind(kind_i32)
             .bind(pubkey_bytes.as_slice())
             .bind(d_tag)
@@ -208,7 +188,7 @@ async fn persist_command_event(
         ON CONFLICT DO NOTHING
         "#,
     )
-    .bind(tenant.community().as_uuid())
+    .bind(tenant.community().as_uuid().to_string())
     .bind(id_bytes.as_slice())
     .bind(pubkey_bytes.as_slice())
     .bind(created_at)
@@ -217,7 +197,7 @@ async fn persist_command_event(
     .bind(&event.content)
     .bind(sig_bytes.as_slice())
     .bind(received_at)
-    .bind(channel_id)
+    .bind(channel_id.map(|c| c.to_string()))
     .bind(d_tag.as_deref())
     .execute(tx.as_mut())
     .await

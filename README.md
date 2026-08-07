@@ -322,6 +322,8 @@ git push --force-with-lease origin main
 
 ## 开发
 
+**项目强制规范**（终止目标 · 只用 Rust · 除启动外禁止脚本 · 性能 / 协作默认）：[`docs/PROJECT_STANDARDS.md`](docs/PROJECT_STANDARDS.md) · [`AGENTS.md`](AGENTS.md)
+
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
 $env:PROTOC = "$PWD\.tools\protoc\bin\protoc.exe"   # 若已放置 protoc
@@ -338,6 +340,7 @@ cargo run -p bony-build -- --cwd $PWD
 
 ## 文档与许可
 
+- 项目规范：[`docs/PROJECT_STANDARDS.md`](docs/PROJECT_STANDARDS.md)
 - 用户指南：[`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
 - 认证：[`02-authentication.md`](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 - 自定义模型：[`11-custom-models.md`](crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md)

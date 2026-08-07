@@ -1,7 +1,7 @@
 //! API token CRUD operations.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::{SqlitePool, Row};
 use uuid::Uuid;
 
 use crate::error::{DbError, Result};
@@ -13,7 +13,7 @@ use crate::error::{DbError, Result};
 /// from the request's resolved tenant — never client-supplied here.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_api_token(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     token_hash: &[u8],
     owner_pubkey: &[u8],
@@ -67,7 +67,7 @@ pub async fn create_api_token(
 /// Returns `Ok(Some(uuid))` on success, `Ok(None)` if the 10-token limit is exceeded.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_api_token_if_under_limit(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     token_hash: &[u8],
     owner_pubkey: &[u8],
@@ -102,7 +102,7 @@ pub async fn create_api_token_if_under_limit(
             WHERE community_id = $1
               AND owner_pubkey = $9
               AND revoked_at IS NULL
-              AND (expires_at IS NULL OR expires_at > NOW())
+              AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         ) < 10
         "#,
     )
@@ -142,7 +142,7 @@ pub async fn create_api_token_if_under_limit(
 /// The relay layer uses this to return distinct `token_revoked` vs `invalid_token`
 /// error responses rather than treating both as "not found".
 pub async fn get_api_token_by_hash_including_revoked(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     hash: &[u8],
 ) -> Result<Option<crate::ApiTokenRecord>> {
@@ -206,7 +206,7 @@ pub async fn get_api_token_by_hash_including_revoked(
 /// raw token value is never exposed after the initial mint response.
 /// Used by `GET /api/tokens` to show a user their full token history.
 pub async fn list_tokens_by_owner(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     pubkey: &[u8],
 ) -> Result<Vec<crate::ApiTokenRecord>> {
@@ -270,7 +270,7 @@ pub async fn list_tokens_by_owner(
 /// Only revokes if the token is in `community_id`, owned by `owner_pubkey`, and not already revoked.
 /// Returns `true` if the token was revoked, `false` if not found, not owned, or already revoked.
 pub async fn revoke_token(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     id: Uuid,
     owner_pubkey: &[u8],
@@ -279,7 +279,7 @@ pub async fn revoke_token(
     let result = sqlx::query(
         r#"
         UPDATE api_tokens
-        SET revoked_at = NOW(), revoked_by = $1
+        SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_by = $1
         WHERE community_id = $2
           AND id = $3
           AND owner_pubkey = $4
@@ -301,7 +301,7 @@ pub async fn revoke_token(
 /// Skips already-revoked tokens (idempotent). Returns the count of newly revoked tokens.
 /// If all tokens are already revoked, returns 0 with no error.
 pub async fn revoke_all_tokens(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Uuid,
     owner_pubkey: &[u8],
     revoked_by: &[u8],
@@ -309,7 +309,7 @@ pub async fn revoke_all_tokens(
     let result = sqlx::query(
         r#"
         UPDATE api_tokens
-        SET revoked_at = NOW(), revoked_by = $1
+        SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_by = $1
         WHERE community_id = $2
           AND owner_pubkey = $3
           AND revoked_at IS NULL
@@ -342,18 +342,23 @@ mod tests {
     //! tenant. Mutate-bite proof: drop the clause, the test fails.
     use super::*;
     use crate::{ApiTokenRecord, Db};
-    use sqlx::PgPool;
+    use sqlx::SqlitePool;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
     async fn setup_db() -> Db {
-        let pool = PgPool::connect(TEST_DB_URL)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(TEST_DB_URL)
             .await
             .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
         Db::from_pool(pool)
     }
 
-    async fn make_community(pool: &PgPool) -> Uuid {
+    async fn make_community(pool: &SqlitePool) -> Uuid {
         let id = Uuid::new_v4();
         let host = format!("api-token-tenancy-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -365,7 +370,7 @@ mod tests {
         id
     }
 
-    async fn insert_user(pool: &PgPool, community_id: Uuid, pubkey: &[u8]) {
+    async fn insert_user(pool: &SqlitePool, community_id: Uuid, pubkey: &[u8]) {
         sqlx::query(
             r#"
             INSERT INTO users (community_id, pubkey)
@@ -382,7 +387,7 @@ mod tests {
     /// Direct INSERT bypassing `create_api_token` so the test pins the
     /// **lookup**'s scoping, not the insert path's.
     async fn raw_insert_token(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community_id: Uuid,
         token_hash: &[u8],
         owner_pubkey: &[u8],
@@ -418,10 +423,9 @@ mod tests {
     /// Mutate-bite handle: the WHERE clause in
     /// `get_api_token_by_hash_including_revoked` is the only thing keeping
     /// this test green. Strip `AND community_id = $1` and the lookup becomes
-    /// hash-only — Postgres returns whichever row it picks (insert-order
+    /// hash-only — Sqlite returns whichever row it picks (insert-order
     /// dependent), and the cross-tenancy assertion fails.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn lookup_by_hash_is_scoped_to_community() {
         let db = setup_db().await;
 
@@ -484,7 +488,6 @@ mod tests {
     /// Mirrors the obligation for the `revoked_at IS NULL` variant at
     /// `Db::get_api_token_by_hash`.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn active_lookup_by_hash_is_scoped_to_community() {
         let db = setup_db().await;
 

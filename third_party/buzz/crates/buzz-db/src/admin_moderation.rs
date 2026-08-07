@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -108,7 +108,7 @@ pub struct AdminFeedback {
 /// List reports across all communities by stable descending keyset.
 #[allow(clippy::too_many_arguments)]
 pub async fn list_reports(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: Option<Uuid>,
     status: Option<&str>,
     report_type: Option<&str>,
@@ -128,13 +128,13 @@ pub async fn list_reports(
                r.resolved_at, r.action_id, r.created_at
         FROM moderation_reports r
         JOIN communities c ON c.id = r.community_id
-        WHERE ($1::uuid IS NULL OR r.community_id = $1)
-          AND ($2::text IS NULL OR r.status = $2)
-          AND ($3::text IS NULL OR r.report_type = $3)
-          AND ($4::text IS NULL OR r.target_kind = $4)
-          AND ($5::timestamptz IS NULL OR r.created_at >= $5)
-          AND ($6::timestamptz IS NULL OR r.created_at < $6)
-          AND ($7::timestamptz IS NULL OR (r.created_at, r.id) < ($7, $8))
+        WHERE ($1 IS NULL OR r.community_id = $1)
+          AND ($2 IS NULL OR r.status = $2)
+          AND ($3 IS NULL OR r.report_type = $3)
+          AND ($4 IS NULL OR r.target_kind = $4)
+          AND ($5 IS NULL OR r.created_at >= $5)
+          AND ($6 IS NULL OR r.created_at < $6)
+          AND ($7 IS NULL OR (r.created_at, r.id) < ($7, $8))
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT $9
         "#,
@@ -154,7 +154,7 @@ pub async fn list_reports(
 }
 
 /// Fetch one report globally by its row id, including its event target content.
-pub async fn get_report(pool: &PgPool, report_id: Uuid) -> Result<Option<AdminReportDetail>> {
+pub async fn get_report(pool: &SqlitePool, report_id: Uuid) -> Result<Option<AdminReportDetail>> {
     let row = sqlx::query(
         r#"
         SELECT r.id, r.community_id, c.host AS community_host,
@@ -168,15 +168,13 @@ pub async fn get_report(pool: &PgPool, report_id: Uuid) -> Result<Option<AdminRe
                target.deleted_at AS message_deleted_at
         FROM moderation_reports r
         JOIN communities c ON c.id = r.community_id
-        LEFT JOIN LATERAL (
-            SELECT e.pubkey, e.content, e.created_at, e.deleted_at
-            FROM events e
-            WHERE r.target_kind = 'event'
-              AND e.community_id = r.community_id
-              AND e.id = r.target_event_id
-            ORDER BY e.created_at DESC
-            LIMIT 1
-        ) target ON TRUE
+        LEFT JOIN events target
+            ON target.community_id = r.community_id
+           AND target.id = r.target_event_id
+           AND target.created_at = (
+                SELECT MAX(e2.created_at) FROM events e2
+                WHERE e2.community_id = r.community_id AND e2.id = r.target_event_id
+           )
         WHERE r.id = $1
         "#,
     )
@@ -203,7 +201,7 @@ pub async fn get_report(pool: &PgPool, report_id: Uuid) -> Result<Option<AdminRe
     .transpose()
 }
 
-fn row_to_report(row: sqlx::postgres::PgRow) -> Result<AdminReport> {
+fn row_to_report(row: sqlx::sqlite::SqliteRow) -> Result<AdminReport> {
     let target_kind: String = row.try_get("target_kind")?;
     let target = match target_kind.as_str() {
         "event" => row.try_get::<Vec<u8>, _>("target_event_id")?,
@@ -233,7 +231,7 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<AdminReport> {
 }
 
 /// List product feedback across all communities, newest first.
-pub async fn list_feedback(pool: &PgPool, limit: i64) -> Result<Vec<AdminFeedback>> {
+pub async fn list_feedback(pool: &SqlitePool, limit: i64) -> Result<Vec<AdminFeedback>> {
     let rows = sqlx::query(
         r#"
         SELECT f.id, f.community_id, c.host AS community_host, f.event_id,
@@ -252,7 +250,7 @@ pub async fn list_feedback(pool: &PgPool, limit: i64) -> Result<Vec<AdminFeedbac
 }
 
 /// Fetch one feedback submission globally by its row id.
-pub async fn get_feedback(pool: &PgPool, id: Uuid) -> Result<Option<AdminFeedback>> {
+pub async fn get_feedback(pool: &SqlitePool, id: Uuid) -> Result<Option<AdminFeedback>> {
     let row = sqlx::query(
         r#"
         SELECT f.id, f.community_id, c.host AS community_host, f.event_id,
@@ -269,7 +267,7 @@ pub async fn get_feedback(pool: &PgPool, id: Uuid) -> Result<Option<AdminFeedbac
     row.map(row_to_feedback).transpose()
 }
 
-fn row_to_feedback(row: sqlx::postgres::PgRow) -> Result<AdminFeedback> {
+fn row_to_feedback(row: sqlx::sqlite::SqliteRow) -> Result<AdminFeedback> {
     Ok(AdminFeedback {
         id: row.try_get("id")?,
         community_id: row.try_get("community_id")?,
@@ -288,18 +286,24 @@ fn row_to_feedback(row: sqlx::postgres::PgRow) -> Result<AdminFeedback> {
 mod tests {
     use super::*;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn insert_community(pool: &PgPool, label: &str) -> Uuid {
+    async fn insert_community(pool: &SqlitePool, label: &str) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
             .bind(id)
@@ -311,7 +315,7 @@ mod tests {
     }
 
     async fn insert_event(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community_id: Uuid,
         event_id: &[u8],
         author: &[u8],
@@ -322,7 +326,7 @@ mod tests {
             r#"
             INSERT INTO events (
                 community_id, id, pubkey, created_at, kind, tags, content, sig, deleted_at
-            ) VALUES ($1, $2, $3, $4, 9, '[]'::jsonb, $5, $6, $7)
+            ) VALUES ($1, $2, $3, $4, 9, '[]', $5, $6, $7)
             "#,
         )
         .bind(community_id)
@@ -338,7 +342,7 @@ mod tests {
     }
 
     async fn insert_event_report(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community_id: Uuid,
         target_event_id: &[u8],
     ) -> Uuid {
@@ -362,7 +366,7 @@ mod tests {
         id
     }
 
-    async fn insert_pubkey_report(pool: &PgPool, community_id: Uuid) -> Uuid {
+    async fn insert_pubkey_report(pool: &SqlitePool, community_id: Uuid) -> Uuid {
         let id = Uuid::new_v4();
         sqlx::query(
             r#"
@@ -383,7 +387,7 @@ mod tests {
         id
     }
 
-    async fn delete_report_fixture(pool: &PgPool, community_id: Uuid) {
+    async fn delete_report_fixture(pool: &SqlitePool, community_id: Uuid) {
         sqlx::query("DELETE FROM moderation_reports WHERE community_id = $1")
             .bind(community_id)
             .execute(pool)
@@ -397,7 +401,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn report_detail_reads_only_the_same_community_target_and_includes_deleted_content() {
         let pool = setup_pool().await;
         let report_community = insert_community(&pool, "reported").await;
@@ -438,20 +441,18 @@ mod tests {
             .execute(&pool)
             .await
             .expect("delete report fixture");
-        sqlx::query("DELETE FROM events WHERE community_id = ANY($1)")
-            .bind(vec![report_community, other_community])
-            .execute(&pool)
-            .await
-            .expect("delete event fixtures");
-        sqlx::query("DELETE FROM communities WHERE id = ANY($1)")
-            .bind(vec![report_community, other_community])
+        let mut qb = sqlx::QueryBuilder::new("DELETE FROM events WHERE community_id IN ");
+        crate::push_in_list(&mut qb, vec![report_community, other_community]);
+        qb.build().execute(&pool).await.expect("delete event fixtures");
+        let mut qb = sqlx::QueryBuilder::new("DELETE FROM communities WHERE id IN ");
+        crate::push_in_list(&mut qb, vec![report_community, other_community]);
+        qb.build()
             .execute(&pool)
             .await
             .expect("delete community fixtures");
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn report_detail_has_no_message_for_non_event_target() {
         let pool = setup_pool().await;
         let community_id = insert_community(&pool, "pubkey-target").await;
@@ -468,7 +469,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn report_detail_has_no_message_when_event_row_is_missing() {
         let pool = setup_pool().await;
         let community_id = insert_community(&pool, "missing-event").await;

@@ -5,10 +5,11 @@
 //! - `private`: hidden, invite-only
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
 use crate::error::{DbError, Result};
+use crate::push_in_list;
 use buzz_core::CommunityId;
 
 // Re-export the canonical enum definitions from buzz-core.
@@ -85,7 +86,7 @@ pub struct MemberRecord {
 /// Creates a new channel, bootstraps the creator as owner, and returns the record.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     name: &str,
     channel_type: ChannelType,
@@ -113,8 +114,8 @@ pub async fn create_channel(
     sqlx::query(
         r#"
         INSERT INTO channels (id, community_id, name, channel_type, visibility, description, created_by, ttl_seconds, ttl_deadline)
-        VALUES ($1, $2, $3, $4::channel_type, $5::channel_visibility, $6, $7, $8,
-                CASE WHEN $8 IS NOT NULL THEN NOW() + ($8 || ' seconds')::interval ELSE NULL END)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                CASE WHEN $8 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST($8 AS TEXT) || ' seconds') ELSE NULL END)
         "#,
     )
     .bind(id)
@@ -147,7 +148,7 @@ pub async fn create_channel(
 
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -173,7 +174,7 @@ pub async fn create_channel(
 /// channel with `channel_id` already exists (duplicate — caller should reject the event).
 #[allow(clippy::too_many_arguments)]
 pub async fn create_channel_with_id(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     name: &str,
@@ -206,8 +207,8 @@ pub async fn create_channel_with_id(
     let rows_affected = sqlx::query(
         r#"
         INSERT INTO channels (id, community_id, name, channel_type, visibility, description, created_by, ttl_seconds, ttl_deadline)
-        VALUES ($1, $2, $3, $4::channel_type, $5::channel_visibility, $6, $7, $8,
-                CASE WHEN $8 IS NOT NULL THEN NOW() + ($8 || ' seconds')::interval ELSE NULL END)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                CASE WHEN $8 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST($8 AS TEXT) || ' seconds') ELSE NULL END)
         ON CONFLICT (community_id, id) DO NOTHING
         "#,
     )
@@ -247,7 +248,7 @@ pub async fn create_channel_with_id(
 
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -269,13 +270,13 @@ pub async fn create_channel_with_id(
 
 /// Fetches a channel record by `(community_id, id)`. Returns `ChannelNotFound` if missing or deleted.
 pub async fn get_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<ChannelRecord> {
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -296,7 +297,7 @@ pub async fn get_channel(
 
 /// Returns the canvas content for a channel, if any.
 pub async fn get_canvas(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<Option<String>> {
@@ -313,7 +314,7 @@ pub async fn get_canvas(
 
 /// Sets or clears the canvas content for a channel.
 pub async fn set_canvas(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     canvas: Option<&str>,
@@ -345,24 +346,22 @@ pub async fn set_canvas(
 /// serialize against unrelated channel metadata writers (`update_channel`,
 /// `set_topic`, the TTL transition). Distinct key domain from
 /// `buzz_channel_ttl:`.
+#[allow(dead_code)]
 const CHANNEL_MEMBERSHIP_LOCK_NAMESPACE: &str = "buzz_channel_membership:";
 
 /// Take the per-channel membership lock. MUST be the first statement in the
 /// transaction that then reads roles/owner counts and writes membership, so the
 /// whole check-then-write sequence is atomic against a concurrent one.
+///
+/// No-op on SQLite: the single-connection pool already serializes every
+/// transaction at connection-checkout time (see [`crate::DbConfig`]), which
+/// gives the same total ordering the Postgres advisory lock provided. Kept
+/// for call-site stability.
 async fn acquire_channel_membership_lock(
-    tx: &mut Transaction<'_, Postgres>,
-    community_id: CommunityId,
-    channel_id: Uuid,
+    _tx: &mut Transaction<'_, Sqlite>,
+    _community_id: CommunityId,
+    _channel_id: Uuid,
 ) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!(
-            "{CHANNEL_MEMBERSHIP_LOCK_NAMESPACE}{}:{}",
-            community_id.as_uuid(),
-            channel_id
-        ))
-        .execute(&mut **tx)
-        .await?;
     Ok(())
 }
 
@@ -378,7 +377,7 @@ async fn acquire_channel_membership_lock(
 /// The entire check-then-insert sequence runs inside a transaction to prevent TOCTOU
 /// races (e.g. the inviter being removed between the role check and the INSERT).
 pub async fn add_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
@@ -502,7 +501,7 @@ pub async fn add_member(
     sqlx::query(
         r#"
         INSERT INTO channel_members (community_id, channel_id, pubkey, role, invited_by)
-        VALUES ($1, $2, $3, $4::member_role, $5)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (community_id, channel_id, pubkey) DO UPDATE SET
             removed_at = NULL,
             removed_by = NULL,
@@ -519,7 +518,7 @@ pub async fn add_member(
 
     let row = sqlx::query(
         r#"
-        SELECT channel_id, pubkey, role::text AS role, joined_at, invited_by, removed_at
+        SELECT channel_id, pubkey, role AS role, joined_at, invited_by, removed_at
         FROM channel_members WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3
         "#,
     )
@@ -554,7 +553,7 @@ pub async fn add_member(
 /// updates it when it `IS NULL` (first-mint-wins), so its value cannot change
 /// under us and needs no serialization.
 pub async fn remove_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
@@ -616,7 +615,7 @@ pub async fn remove_member(
     let result = sqlx::query(
         r#"
         UPDATE channel_members
-        SET removed_at = NOW(), removed_by = $1
+        SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), removed_by = $1
         WHERE community_id = $2 AND channel_id = $3 AND pubkey = $4 AND removed_at IS NULL
         "#,
     )
@@ -637,7 +636,7 @@ pub async fn remove_member(
 
 /// Returns `true` if the given pubkey is an active member of the channel.
 pub async fn is_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
@@ -660,7 +659,7 @@ pub async fn is_member(
 /// memberships, restricted to non-deleted channels — one statement for any
 /// batch size (T2b). Semantics per pair match [`is_member`].
 pub async fn membership_pairs(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_ids: &[Uuid],
     pubkeys: &[Vec<u8>],
@@ -668,16 +667,18 @@ pub async fn membership_pairs(
     if channel_ids.is_empty() || pubkeys.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query(
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
         "SELECT cm.channel_id, cm.pubkey FROM channel_members cm \
          JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL \
-         WHERE cm.community_id = $1 AND cm.channel_id = ANY($2) AND cm.pubkey = ANY($3) AND cm.removed_at IS NULL",
-    )
-    .bind(community_id.as_uuid())
-    .bind(channel_ids)
-    .bind(pubkeys)
-    .fetch_all(pool)
-    .await?;
+         WHERE cm.community_id = ",
+    );
+    qb.push_bind(community_id.as_uuid());
+    qb.push(" AND cm.channel_id IN ");
+    push_in_list(&mut qb, channel_ids.iter().copied());
+    qb.push(" AND cm.pubkey IN ");
+    push_in_list(&mut qb, pubkeys.iter().cloned());
+    qb.push(" AND cm.removed_at IS NULL");
+    let rows = qb.build().fetch_all(pool).await?;
     rows.into_iter()
         .map(|row| Ok((row.try_get("channel_id")?, row.try_get("pubkey")?)))
         .collect()
@@ -687,13 +688,13 @@ pub async fn membership_pairs(
 ///
 /// Returns an empty list if the channel has been soft-deleted.
 pub async fn get_members(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<Vec<MemberRecord>> {
     let rows = sqlx::query(
         r#"
-        SELECT cm.channel_id, cm.pubkey, cm.role::text AS role, cm.joined_at, cm.invited_by, cm.removed_at
+        SELECT cm.channel_id, cm.pubkey, cm.role AS role, cm.joined_at, cm.invited_by, cm.removed_at
         FROM channel_members cm
         JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL
         WHERE cm.community_id = $1 AND cm.channel_id = $2 AND cm.removed_at IS NULL
@@ -716,26 +717,24 @@ pub async fn get_members(
 /// group by `channel_id` if per-channel access is needed.
 /// Returns an empty vec immediately when `channel_ids` is empty.
 pub async fn get_members_bulk(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_ids: &[Uuid],
 ) -> Result<Vec<MemberRecord>> {
     if channel_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query(
-        r#"
-        SELECT cm.channel_id, cm.pubkey, cm.role::text AS role, cm.joined_at, cm.invited_by, cm.removed_at
-        FROM channel_members cm
-        JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL
-        WHERE cm.community_id = $1 AND cm.channel_id = ANY($2) AND cm.removed_at IS NULL
-        ORDER BY cm.joined_at ASC
-        "#,
-    )
-    .bind(community_id.as_uuid())
-    .bind(channel_ids)
-    .fetch_all(pool)
-    .await?;
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT cm.channel_id, cm.pubkey, cm.role AS role, cm.joined_at, cm.invited_by, cm.removed_at \
+         FROM channel_members cm \
+         JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL \
+         WHERE cm.community_id = ",
+    );
+    qb.push_bind(community_id.as_uuid());
+    qb.push(" AND cm.channel_id IN ");
+    push_in_list(&mut qb, channel_ids.iter().copied());
+    qb.push(" AND cm.removed_at IS NULL ORDER BY cm.joined_at ASC");
+    let rows = qb.build().fetch_all(pool).await?;
     rows.into_iter().map(row_to_member_record).collect()
 }
 
@@ -744,7 +743,7 @@ pub async fn get_members_bulk(
 /// Includes channels where the pubkey is an active member AND all open channels.
 /// Open channels must be included in REQ filter resolution.
 pub async fn get_accessible_channel_ids(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
 ) -> Result<Vec<Uuid>> {
@@ -775,14 +774,14 @@ pub async fn get_accessible_channel_ids(
 
 /// Lists channels in a community, optionally filtered by visibility string.
 pub async fn list_channels(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     visibility: Option<&str>,
 ) -> Result<Vec<ChannelRecord>> {
     let rows = if let Some(vis) = visibility {
         sqlx::query(
             r#"
-            SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+            SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                    description, canvas,
                    created_by, created_at, updated_at, archived_at, deleted_at,
                    nip29_group_id, topic_required, max_members,
@@ -790,7 +789,7 @@ pub async fn list_channels(
                    purpose, purpose_set_by, purpose_set_at,
                    ttl_seconds, ttl_deadline
             FROM channels
-            WHERE community_id = $1 AND deleted_at IS NULL AND visibility::text = $2
+            WHERE community_id = $1 AND deleted_at IS NULL AND visibility = $2
             ORDER BY created_at DESC
             LIMIT 1000
             "#,
@@ -802,7 +801,7 @@ pub async fn list_channels(
     } else {
         sqlx::query(
             r#"
-            SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+            SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                    description, canvas,
                    created_by, created_at, updated_at, archived_at, deleted_at,
                    nip29_group_id, topic_required, max_members,
@@ -825,13 +824,13 @@ pub async fn list_channels(
 
 /// Transaction-aware variant of [`get_active_role_tx`].
 async fn get_active_role_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Sqlite>,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
 ) -> Result<Option<String>> {
     let row = sqlx::query(
-        "SELECT role::text AS role FROM channel_members \
+        "SELECT role AS role FROM channel_members \
          WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3 AND removed_at IS NULL",
     )
     .bind(community_id.as_uuid())
@@ -844,13 +843,13 @@ async fn get_active_role_tx(
 
 /// Transaction-aware variant of [`get_channel`].
 async fn get_channel_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Sqlite>,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<ChannelRecord> {
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -934,7 +933,7 @@ pub struct AccessibleChannel {
 /// If `visibility_filter` is `Some("open")` or `Some("private")`, only channels with
 /// that visibility value are returned. `None` returns all accessible channels.
 pub async fn get_accessible_channels(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
     visibility_filter: Option<&str>,
@@ -952,8 +951,8 @@ pub async fn get_accessible_channels(
 
     let base = format!(
         r#"
-        SELECT c.id, c.name, c.channel_type::text AS channel_type,
-               c.visibility::text AS visibility, c.description, c.canvas,
+        SELECT c.id, c.name, c.channel_type AS channel_type,
+               c.visibility AS visibility, c.description, c.canvas,
                c.created_by, c.created_at, c.updated_at, c.archived_at, c.deleted_at,
                c.nip29_group_id, c.topic_required, c.max_members,
                c.topic, c.topic_set_by, c.topic_set_at,
@@ -969,10 +968,14 @@ pub async fn get_accessible_channels(
     "#
     );
 
+    // SQLite has no `array_position`; the same fixed channel-type ordering is
+    // expressed as an explicit CASE ranking.
+    const CHANNEL_TYPE_ORDER: &str =
+        "CASE c.channel_type WHEN 'stream' THEN 1 WHEN 'forum' THEN 2 WHEN 'dm' THEN 3 ELSE 4 END";
     let sql = if visibility_filter.is_some() {
-        format!("{base}  AND c.visibility::text = $3\n        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000")
+        format!("{base}  AND c.visibility = $3\n        ORDER BY {CHANNEL_TYPE_ORDER}, c.name\n        LIMIT 1000")
     } else {
-        format!("{base}        ORDER BY array_position(ARRAY['stream','forum','dm']::text[], c.channel_type::text), c.name\n        LIMIT 1000")
+        format!("{base}        ORDER BY {CHANNEL_TYPE_ORDER}, c.name\n        LIMIT 1000")
     };
 
     let query = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -1000,13 +1003,13 @@ pub async fn get_accessible_channels(
 /// preserving the 1:1 name↔UUID pairing. No separate string_agg ordering issues.
 /// Members with no active channel memberships are excluded (INNER JOIN on channels).
 pub async fn get_bot_members(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
 ) -> Result<Vec<BotMemberRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT cm.pubkey, u.display_name, u.agent_type, u.capabilities,
-               COALESCE(json_agg(DISTINCT jsonb_build_object('name', c.name, 'id', c.id::text)), '[]') AS channels_json
+               COALESCE(json_group_array(DISTINCT json_object('name', c.name, 'id', c.id)), '[]') AS channels_json
         FROM channel_members cm
         LEFT JOIN users u ON cm.community_id = u.community_id AND cm.pubkey = u.pubkey
         JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL
@@ -1044,7 +1047,7 @@ pub async fn get_bot_members(
 /// is NOT guaranteed — callers should index by pubkey if order matters.
 /// Returns an empty vec immediately when `pubkeys` is empty (no query issued).
 pub async fn get_users_bulk(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkeys: &[Vec<u8>],
 ) -> Result<Vec<UserRecord>> {
@@ -1081,7 +1084,7 @@ pub async fn get_users_bulk(
     Ok(out)
 }
 
-fn row_to_channel_record(row: sqlx::postgres::PgRow) -> Result<ChannelRecord> {
+fn row_to_channel_record(row: sqlx::sqlite::SqliteRow) -> Result<ChannelRecord> {
     let id: Uuid = row.try_get("id")?;
     let topic_required: bool = row.try_get("topic_required")?;
 
@@ -1122,7 +1125,7 @@ fn row_to_channel_record(row: sqlx::postgres::PgRow) -> Result<ChannelRecord> {
     })
 }
 
-fn row_to_member_record(row: sqlx::postgres::PgRow) -> Result<MemberRecord> {
+fn row_to_member_record(row: sqlx::sqlite::SqliteRow) -> Result<MemberRecord> {
     let channel_id: Uuid = row.try_get("channel_id")?;
 
     Ok(MemberRecord {
@@ -1156,7 +1159,7 @@ pub struct ChannelUpdate {
 /// At least one field must be provided; returns `InvalidData` otherwise.
 /// Returns the updated `ChannelRecord` on success.
 pub async fn update_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     mut updates: ChannelUpdate,
@@ -1191,7 +1194,7 @@ pub async fn update_channel(
         param_idx += 1;
     }
     if updates.visibility.is_some() {
-        set_parts.push(format!("visibility = ${param_idx}::channel_visibility"));
+        set_parts.push(format!("visibility = ${param_idx}"));
         param_idx += 1;
     }
     if let Some(ref ttl) = updates.ttl_seconds {
@@ -1200,7 +1203,7 @@ pub async fn update_channel(
         param_idx += 1;
         match ttl {
             Some(_) => set_parts.push(format!(
-                "ttl_deadline = NOW() + (${} || ' seconds')::interval",
+                "ttl_deadline = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST(${} AS TEXT) || ' seconds')",
                 param_idx - 1
             )),
             None => set_parts.push("ttl_deadline = NULL".to_string()),
@@ -1208,7 +1211,7 @@ pub async fn update_channel(
     }
     let channel_param_idx = param_idx + 1;
     let sql = format!(
-        "UPDATE channels SET {}, updated_at = NOW() WHERE community_id = ${param_idx} AND id = ${channel_param_idx} AND deleted_at IS NULL",
+        "UPDATE channels SET {}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE community_id = ${param_idx} AND id = ${channel_param_idx} AND deleted_at IS NULL",
         set_parts.join(", ")
     );
 
@@ -1229,21 +1232,14 @@ pub async fn update_channel(
     q = q.bind(channel_id);
 
     // T1a repair: a TTL change can flip this channel's event-trigger fast
-    // path (migration 0024 reads ttl_seconds under a SHARED per-channel
-    // advisory lock). Take the same key EXCLUSIVE before the UPDATE so a
-    // concurrent event either sees the committed TTL or strictly precedes
-    // this transition — whose own deadline reset is then the latest word.
-    // Non-TTL updates don't touch the fast path and skip the lock.
+    // path. On Postgres this required an EXCLUSIVE advisory lock so a
+    // concurrent event either saw the committed TTL or strictly preceded this
+    // transition. SQLite's single-connection pool already serializes every
+    // transaction at connection-checkout time (see [`crate::DbConfig`]), so
+    // no explicit lock is needed here — the transaction alone is sufficient.
+    // Non-TTL updates don't touch the fast path and skip the transaction.
     if updates.ttl_seconds.is_some() {
         let mut tx = pool.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(format!(
-                "buzz_channel_ttl:{}:{}",
-                community_id.as_uuid(),
-                channel_id
-            ))
-            .execute(&mut *tx)
-            .await?;
         let result = q.execute(&mut *tx).await?;
         if result.rows_affected() == 0 {
             return Err(DbError::ChannelNotFound(channel_id));
@@ -1261,14 +1257,14 @@ pub async fn update_channel(
 
 /// Sets the topic for a channel, recording who set it and when.
 pub async fn set_topic(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     topic: &str,
     set_by: &[u8],
 ) -> Result<()> {
     let result = sqlx::query(
-        "UPDATE channels SET topic = $1, topic_set_by = $2, topic_set_at = NOW() \
+        "UPDATE channels SET topic = $1, topic_set_by = $2, topic_set_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $3 AND id = $4 AND deleted_at IS NULL",
     )
     .bind(topic)
@@ -1285,14 +1281,14 @@ pub async fn set_topic(
 
 /// Sets the purpose for a channel, recording who set it and when.
 pub async fn set_purpose(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     purpose: &str,
     set_by: &[u8],
 ) -> Result<()> {
     let result = sqlx::query(
-        "UPDATE channels SET purpose = $1, purpose_set_by = $2, purpose_set_at = NOW() \
+        "UPDATE channels SET purpose = $1, purpose_set_by = $2, purpose_set_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $3 AND id = $4 AND deleted_at IS NULL",
     )
     .bind(purpose)
@@ -1312,7 +1308,7 @@ pub async fn set_purpose(
 /// Returns `AccessDenied` if the channel is already archived.
 /// Returns `ChannelNotFound` if the channel does not exist or is deleted.
 pub async fn archive_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<()> {
@@ -1338,7 +1334,7 @@ pub async fn archive_channel(
     }
 
     sqlx::query(
-        "UPDATE channels SET archived_at = NOW() \
+        "UPDATE channels SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
          WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL AND archived_at IS NULL",
     )
     .bind(community_id.as_uuid())
@@ -1354,7 +1350,7 @@ pub async fn archive_channel(
 /// Returns `AccessDenied` if the channel is not currently archived.
 /// Returns `ChannelNotFound` if the channel does not exist or is deleted.
 pub async fn unarchive_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<()> {
@@ -1380,7 +1376,7 @@ pub async fn unarchive_channel(
     sqlx::query(
         "UPDATE channels SET archived_at = NULL, \
              ttl_deadline = CASE \
-                 WHEN ttl_seconds IS NOT NULL THEN NOW() + (ttl_seconds || ' seconds')::interval \
+                 WHEN ttl_seconds IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST(ttl_seconds AS TEXT) || ' seconds') \
                  ELSE ttl_deadline \
              END \
          WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL AND archived_at IS NOT NULL",
@@ -1393,17 +1389,17 @@ pub async fn unarchive_channel(
     Ok(())
 }
 
-/// Soft-delete a channel by setting `deleted_at = NOW()`.
+/// Soft-delete a channel by setting `deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`.
 ///
 /// Returns `Ok(true)` if the channel was deleted, `Ok(false)` if already
 /// deleted or not found.
 pub async fn soft_delete_channel(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<bool> {
     let result = sqlx::query(
-        "UPDATE channels SET deleted_at = NOW() WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL",
+        "UPDATE channels SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL",
     )
             .bind(community_id.as_uuid())
             .bind(channel_id)
@@ -1415,7 +1411,7 @@ pub async fn soft_delete_channel(
 
 /// Returns the count of active (non-removed) members in a channel.
 pub async fn get_member_count(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
 ) -> Result<i64> {
@@ -1434,7 +1430,7 @@ pub async fn get_member_count(
 /// Returns a map of `channel_id -> count`. Channels with zero members are omitted.
 /// Single query regardless of input size.
 pub async fn get_member_counts_bulk(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_ids: &[Uuid],
 ) -> Result<std::collections::HashMap<Uuid, i64>> {
@@ -1442,7 +1438,7 @@ pub async fn get_member_counts_bulk(
         return Ok(std::collections::HashMap::new());
     }
 
-    let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
+    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
         "SELECT channel_id, COUNT(*) as cnt FROM channel_members \
          WHERE community_id = ",
     );
@@ -1469,13 +1465,13 @@ pub async fn get_member_counts_bulk(
 ///
 /// Returns `None` if the pubkey is not an active member.
 pub async fn get_member_role(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
 ) -> Result<Option<String>> {
     let row = sqlx::query(
-        "SELECT cm.role::text AS role FROM channel_members cm \
+        "SELECT cm.role AS role FROM channel_members cm \
          JOIN channels c ON cm.community_id = c.community_id AND cm.channel_id = c.id AND c.deleted_at IS NULL \
          WHERE cm.community_id = $1 AND cm.channel_id = $2 AND cm.pubkey = $3 AND cm.removed_at IS NULL",
     )
@@ -1492,26 +1488,55 @@ pub async fn get_member_role(
 /// Returns the `(community_id, host, channel_id)` list that was archived. Idempotent — the
 /// `archived_at IS NULL` guard prevents double-archiving even if called
 /// concurrently from multiple relay pods.
-pub async fn reap_expired_ephemeral_channels(pool: &PgPool) -> Result<Vec<ReapedEphemeralChannel>> {
+pub async fn reap_expired_ephemeral_channels(pool: &SqlitePool) -> Result<Vec<ReapedEphemeralChannel>> {
+    // SQLite's RETURNING clause only exposes columns of the table being
+    // written (no alias-qualified or FROM-joined columns), unlike Postgres'
+    // `UPDATE ... FROM ... RETURNING`. Fold the community filter into an
+    // `IN (SELECT ...)` predicate and fetch `host` in a second pass.
     let rows = sqlx::query(
-        "UPDATE channels AS ch SET archived_at = NOW() \
-         FROM communities AS c \
-         WHERE ch.community_id = c.id \
-           AND ch.ttl_seconds IS NOT NULL \
-           AND ch.ttl_deadline < NOW() \
-           AND ch.archived_at IS NULL \
-           AND ch.deleted_at IS NULL \
-           AND c.archived_at IS NULL \
-         RETURNING ch.community_id, c.host, ch.id",
+        "UPDATE channels SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+         WHERE ttl_seconds IS NOT NULL \
+           AND ttl_deadline < strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+           AND archived_at IS NULL \
+           AND deleted_at IS NULL \
+           AND community_id IN (SELECT id FROM communities WHERE archived_at IS NULL) \
+         RETURNING community_id, id",
     )
     .fetch_all(pool)
     .await?;
 
-    rows.into_iter()
-        .map(|row| {
+    let reaped: Vec<(Uuid, Uuid)> = rows
+        .into_iter()
+        .map(|row| -> Result<(Uuid, Uuid)> {
             let community_id: Uuid = row.try_get("community_id")?;
-            let host: String = row.try_get("host")?;
             let channel_id: Uuid = row.try_get("id")?;
+            Ok((community_id, channel_id))
+        })
+        .collect::<Result<_>>()?;
+
+    if reaped.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> =
+        sqlx::QueryBuilder::new("SELECT id, host FROM communities WHERE id IN ");
+    let mut community_ids: Vec<Uuid> = reaped.iter().map(|(c, _)| *c).collect();
+    community_ids.sort_unstable();
+    community_ids.dedup();
+    push_in_list(&mut qb, community_ids);
+    let host_rows = qb.build().fetch_all(pool).await?;
+    let mut hosts: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::with_capacity(host_rows.len());
+    for row in host_rows {
+        let id: Uuid = row.try_get("id")?;
+        let host: String = row.try_get("host")?;
+        hosts.insert(id, host);
+    }
+
+    reaped
+        .into_iter()
+        .map(|(community_id, channel_id)| {
+            let host = hosts.get(&community_id).cloned().unwrap_or_default();
             Ok(ReapedEphemeralChannel {
                 community_id: CommunityId::from_uuid(community_id),
                 host,
@@ -1527,19 +1552,28 @@ mod tests {
     use crate::user::{ensure_user, set_agent_owner};
     use nostr::Keys;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
-        PgPool::connect(TEST_DB_URL)
+    async fn setup_pool() -> SqlitePool {
+        // A plain in-memory SQLite URL gives every pooled connection its own
+        // private empty database, so the pool must be capped at one
+        // connection to keep all queries on the same schema/data.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(TEST_DB_URL)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
     fn random_pubkey() -> Vec<u8> {
         Keys::generate().public_key().to_bytes().to_vec()
     }
 
-    async fn make_test_community(pool: &PgPool) -> Uuid {
+    async fn make_test_community(pool: &SqlitePool) -> Uuid {
         let id = Uuid::new_v4();
         let host = format!("channel-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -1553,7 +1587,7 @@ mod tests {
 
     #[allow(clippy::too_many_arguments)]
     async fn create_test_channel(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community_id: Uuid,
         name: &str,
         channel_type: ChannelType,
@@ -1569,8 +1603,10 @@ mod tests {
             INSERT INTO channels
                 (id, community_id, name, channel_type, visibility, description, created_by, ttl_seconds, ttl_deadline)
             VALUES
-                ($1, $2, $3, $4::channel_type, $5::channel_visibility, $6, $7, $8,
-                 CASE WHEN $8 IS NOT NULL THEN NOW() + ($8 || ' seconds')::interval ELSE NULL END)
+                ($1, $2, $3, $4, $5, $6, $7, $8,
+                 CASE WHEN $8 IS NOT NULL
+                      THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+' || CAST($8 AS TEXT) || ' seconds')
+                      ELSE NULL END)
             "#,
         )
         .bind(id)
@@ -1603,7 +1639,7 @@ mod tests {
     }
 
     async fn insert_channel_with_id(
-        pool: &PgPool,
+        pool: &SqlitePool,
         community_id: Uuid,
         id: Uuid,
         name: &str,
@@ -1627,7 +1663,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_users_bulk_is_scoped_when_pubkey_exists_in_multiple_communities() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -1661,7 +1696,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn get_channel_is_scoped_when_channel_uuid_collides_across_communities() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -1709,7 +1743,6 @@ mod tests {
 
     /// Agent owner (non-admin) can remove their own bot from a channel.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_agent_owner_can_remove_bot() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -1785,7 +1818,6 @@ mod tests {
     /// Unarchiving an expired ephemeral channel renews its TTL lease so the
     /// reaper does not immediately archive it again.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_unarchive_expired_ephemeral_channel_renews_ttl_deadline() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -1809,7 +1841,7 @@ mod tests {
         .expect("create ephemeral channel");
 
         sqlx::query(
-            "UPDATE channels SET archived_at = NOW(), ttl_deadline = NOW() - interval '1 second' WHERE community_id = $1 AND id = $2",
+            "UPDATE channels SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), ttl_deadline = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') WHERE community_id = $1 AND id = $2",
         )
         .bind(community_id)
         .bind(channel.id)
@@ -1845,7 +1877,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn reap_expired_ephemeral_channels_returns_row_community_and_host() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -1874,7 +1905,7 @@ mod tests {
         .expect("create ephemeral channel");
 
         sqlx::query(
-            "UPDATE channels SET ttl_deadline = NOW() - interval '1 second' WHERE community_id = $1 AND id = $2",
+            "UPDATE channels SET ttl_deadline = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') WHERE community_id = $1 AND id = $2",
         )
         .bind(community_id)
         .bind(channel.id)
@@ -1896,31 +1927,28 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn accessible_channel_ids_are_not_truncated_at_one_thousand() {
-        let database_url =
-            std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string());
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("connect to test DB");
+        let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
         let community = CommunityId::from_uuid(community_id);
         let viewer = random_pubkey();
         let channel_count = 1_001;
 
-        sqlx::query(
-            r#"
-            INSERT INTO channels (id, community_id, name, channel_type, visibility, created_by)
-            SELECT gen_random_uuid(), $1, 'high-volume-' || n, 'stream', 'open', $2
-            FROM generate_series(1, $3) n
-            "#,
-        )
-        .bind(community_id)
-        .bind(&viewer)
-        .bind(channel_count)
-        .execute(&pool)
-        .await
-        .expect("insert high-volume open channels");
+        // No `generate_series`/`gen_random_uuid()` in SQLite: seed the
+        // high-volume fixture with per-row inserts and Rust-generated ids.
+        for n in 0..channel_count {
+            sqlx::query(
+                "INSERT INTO channels (id, community_id, name, channel_type, visibility, created_by)
+                 VALUES ($1, $2, $3, 'stream', 'open', $4)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(community_id)
+            .bind(format!("high-volume-{n}"))
+            .bind(&viewer)
+            .execute(&pool)
+            .await
+            .expect("insert high-volume open channel");
+        }
 
         let channel_ids = get_accessible_channel_ids(&pool, community, &viewer)
             .await
@@ -1930,7 +1958,6 @@ mod tests {
 
     /// A random non-admin, non-owner user cannot remove someone else's bot.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn test_random_user_cannot_remove_bot() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -2006,7 +2033,6 @@ mod tests {
     /// If this succeeds, add_member has no demotion authorization and no
     /// last-owner guard.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn repro_unprivileged_member_can_demote_owner() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -2097,7 +2123,6 @@ mod tests {
     /// SECURITY REPRO (Dawn): same demotion on a PRIVATE channel, where the
     /// attacker is a plain member. The report claims any member suffices here.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn repro_private_channel_member_can_demote_owner() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -2172,7 +2197,6 @@ mod tests {
     /// co-owner (while another owner remains) must still succeed, and promotion
     /// by an owner must still succeed.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn owner_can_still_manage_roles_after_demotion_guard() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -2285,7 +2309,6 @@ mod tests {
     /// second owner remains, so the last-owner guard cannot fire and only the
     /// actor check stands between an unprivileged member and a co-owner's role.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn unprivileged_member_cannot_demote_a_co_owner() {
         let pool = setup_pool().await;
         let community_id = make_test_community(&pool).await;
@@ -2373,7 +2396,7 @@ mod tests {
     /// Sets up an open channel with exactly two owners, returning
     /// `(community, channel_id, owner_a, owner_b)`.
     async fn channel_with_two_owners(
-        pool: &PgPool,
+        pool: &SqlitePool,
         name: &str,
     ) -> (CommunityId, Uuid, Vec<u8>, Vec<u8>) {
         let community_id = make_test_community(pool).await;
@@ -2589,7 +2612,7 @@ mod tests {
             .expect("an owner may remove another owner");
 
         let stored: String = sqlx::query_scalar(
-            "SELECT role::text FROM channel_members \
+            "SELECT role FROM channel_members \
              WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3",
         )
         .bind(community.as_uuid())

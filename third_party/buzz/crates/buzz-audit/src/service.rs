@@ -1,6 +1,5 @@
-use chrono::{DateTime, Utc};
-use futures_util::FutureExt as _;
-use sqlx::{Acquire, PgPool, Row};
+﻿use chrono::{DateTime, Utc};
+use sqlx::{Row, SqlitePool};
 use tracing::{debug, instrument, warn};
 use uuid::Uuid;
 
@@ -15,76 +14,41 @@ use crate::{
 
 /// The `created_at` stamped on a new entry.
 ///
-/// Reduced to the precision Postgres round-trips before it is hashed — see
-/// [`to_storage_precision`]. Split out from [`AuditService::log_inner`] so the
+/// Reduced to the precision the database round-trips before it is hashed —
+/// see [`to_storage_precision`]. Split out from [`AuditService::log`] so the
 /// invariant is testable without a database.
 fn log_timestamp() -> DateTime<Utc> {
     to_storage_precision(Utc::now())
 }
 
-/// Per-community advisory lock key. Derived in Postgres from the community UUID
-/// so two communities never serialize each other's audit writes (which would be
-/// both a throughput bottleneck and a cross-tenant timing oracle). The lock is
-/// taken with `pg_advisory_lock(hashtextextended(...))` — see [`AuditService::log`].
-const AUDIT_LOCK_NAMESPACE: &str = "buzz_audit:";
-
-/// Append-only, per-community hash-chain audit log backed by Postgres.
+/// Append-only, per-community hash-chain audit log.
 ///
-/// Each community has an independent chain keyed `(community_id, seq)`. Writes
-/// for one community are serialized by a per-community advisory lock so the chain
-/// stays consistent across relay processes; different communities proceed in
-/// parallel.
+/// Each community has an independent chain keyed `(community_id, seq)`. The
+/// head-read + insert that appends an entry runs inside one transaction, so
+/// there is no read-modify-write gap for a concurrent append to land in.
+/// Postgres additionally serialized writers with a per-community
+/// `pg_advisory_lock` so two relay *processes* never raced the same chain;
+/// single-instance SQLite has exactly one writer process and already
+/// serializes every write transaction at the file level (see `buzz-db`'s
+/// `DbConfig` — the pool's `busy_timeout` covers the resulting contention),
+/// so that lock has no SQLite equivalent to reach for and is dropped rather
+/// than emulated with an in-process mutex that would only fence this one
+/// pool handle, not actually add any additional safety over what SQLite's
+/// own transaction serialization already provides.
 pub struct AuditService {
-    pool: PgPool,
+    pool: SqlitePool,
 }
 
 impl AuditService {
     /// Creates a new `AuditService` using the given connection pool.
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 
     /// Append a new entry to the calling community's chain.
-    ///
-    /// Serialized per-community via `pg_advisory_lock`. Postgres advisory locks
-    /// are session-scoped, so we acquire before the transaction and release
-    /// after commit (or on any error path).
     #[instrument(skip(self, entry), fields(action = %entry.action))]
     pub async fn log(&self, entry: NewAuditEntry) -> Result<AuditEntry, AuditError> {
-        let mut conn = self.pool.acquire().await?;
-
-        // Per-community advisory lock: hash the namespaced community id to an
-        // i64 lock key inside Postgres. Communities lock independently.
-        let lock_key = format!("{AUDIT_LOCK_NAMESPACE}{}", entry.community_id);
-        sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
-            .bind(&lock_key)
-            .execute(&mut *conn)
-            .await?;
-
-        // Run the chain append and release the lock regardless of outcome.
-        // catch_unwind so a panic still releases the lock before the connection
-        // returns to the pool.
-        let result = std::panic::AssertUnwindSafe(self.log_inner(&mut conn, entry))
-            .catch_unwind()
-            .await;
-
-        let _ = sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
-            .bind(&lock_key)
-            .execute(&mut *conn)
-            .await;
-
-        match result {
-            Ok(inner_result) => inner_result,
-            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
-        }
-    }
-
-    async fn log_inner(
-        &self,
-        conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
-        entry: NewAuditEntry,
-    ) -> Result<AuditEntry, AuditError> {
-        let mut tx = conn.begin().await?;
+        let mut tx = self.pool.begin().await?;
 
         // The stored row keys on the raw UUID; the typed `CommunityId` on the
         // input is the provenance fence, dereferenced here at the DB boundary.
@@ -235,7 +199,7 @@ impl AuditService {
     }
 }
 
-fn row_to_audit_entry(row: &sqlx::postgres::PgRow) -> Result<AuditEntry, AuditError> {
+fn row_to_audit_entry(row: &sqlx::sqlite::SqliteRow) -> Result<AuditEntry, AuditError> {
     let action_str: String = row.get("action");
     let action: AuditAction = action_str.parse().map_err(|_| {
         warn!("unknown action in audit log");
@@ -265,21 +229,28 @@ mod tests {
     use tokio::sync::Mutex;
     use uuid::Uuid;
 
-    // The per-community advisory lock means different communities don't contend,
-    // but tests share one table; serialize them so seq assertions are stable.
+    // Different communities' chains don't contend with each other (each append
+    // is a single self-contained transaction scoped by community_id), but the
+    // tests below share one in-memory database and assert on absolute `seq`
+    // values, so serialize them against each other.
     static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     fn db_lock() -> &'static Mutex<()> {
         DB_LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    async fn test_pool() -> Option<PgPool> {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into());
-        PgPool::connect(&url).await.ok()
+    /// A private in-memory SQLite database with the full schema applied —
+    /// no external server required, unlike the Postgres-backed tests these
+    /// replaced (see `buzz-db`'s own test `setup_db` for the same pattern).
+    async fn test_pool() -> Option<SqlitePool> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .ok()?;
+        buzz_db::migration::run_migrations(&pool).await.ok()?;
+        Some(pool)
     }
 
-    /// Runs without Postgres, so a regression here is caught by `just
-    /// test-unit` rather than only by the `#[ignore]` chain tests below.
     #[test]
     fn log_timestamp_carries_no_sub_microsecond_digits() {
         let ts = log_timestamp();
@@ -293,7 +264,7 @@ mod tests {
 
     /// A `community_id` known to exist in `communities` (FK target). Inserts a
     /// throwaway community row with a unique host and returns its id.
-    async fn make_community(pool: &PgPool) -> Uuid {
+    async fn make_community(pool: &SqlitePool) -> Uuid {
         let id = Uuid::new_v4();
         let host = format!("test-{id}.example");
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -316,7 +287,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn community_chain_starts_at_seq_1_with_null_prev() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {
@@ -336,7 +306,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn chain_links_within_one_community() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {
@@ -374,7 +343,6 @@ mod tests {
     /// starts at seq 1; interleaving writes does not link them; verifying one
     /// never traverses the other.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn chains_are_independent_per_community() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {
@@ -435,7 +403,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn verify_detects_tampering_within_a_community() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {
@@ -473,7 +440,6 @@ mod tests {
     /// the chain it was stamped for, because community_id is hashed in. (Models
     /// "a row can't be replayed across chains and still verify".)
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn cross_community_row_does_not_verify() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {
@@ -491,7 +457,7 @@ mod tests {
         // Forge: copy A's seq-1 row's hash into B's chain at seq 1.
         sqlx::query(
             "INSERT INTO audit_log (community_id, seq, hash, prev_hash, action, actor_pubkey, object_id, detail, created_at)
-             VALUES ($1, 1, $2, NULL, $3, $4, $5, $6, NOW())",
+             VALUES ($1, 1, $2, NULL, $3, $4, $5, $6, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
         )
         .bind(b)
         .bind(&a1.hash) // A's hash, which was computed over community_id = A
@@ -504,13 +470,12 @@ mod tests {
         .unwrap();
 
         // Verifying B's chain recomputes the hash with community_id = B, which
-        // won't match A's stored hash → HashMismatch. The forge is rejected.
+        // won't match A's stored hash 鈫?HashMismatch. The forge is rejected.
         let r = svc.verify_chain(CommunityId::from_uuid(b), 1, 1).await;
         assert!(matches!(r, Err(AuditError::HashMismatch { seq: 1 })));
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn verify_empty_range_is_false() {
         let _g = db_lock().lock().await;
         let Some(pool) = test_pool().await else {

@@ -5,7 +5,7 @@ use buzz_push_gateway::{
     config::Config,
     grant::{GrantKey, GrantKeyring},
     postgres::PostgresAuthorityStore,
-    router_with_metrics,
+    router,
     token::{TokenKey, TokenKeyring},
     AppState,
 };
@@ -34,7 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let c = Config::from_env()?;
-    let metrics_handle = buzz_push_gateway::metrics::install()?;
     let transport = Arc::new(ApnsTransport::token(
         &fs::read(&c.apns_key_path)?,
         &c.apns_key_id,
@@ -82,24 +81,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fs::read(&c.app_attest_root_cert_path)?,
     )?);
     let accepting = Arc::new(AtomicBool::new(true));
-    let (public, health) = router_with_metrics(
-        AppState {
-            grant_keyring: Arc::new(grant_keyring),
-            app_attest,
-            authority,
-            token_keyring: Arc::new(token_keyring),
-            transport,
-            delivery_url: c.public_delivery_url,
-            max_grant_lifetime_seconds: c.max_grant_lifetime_seconds,
-            max_installation_lifetime_seconds: c.max_installation_lifetime_seconds,
-            endpoint_quota_window_seconds: c.endpoint_quota_window_seconds,
-            endpoint_quota_max_deliveries: c.endpoint_quota_max_deliveries,
-            enabled_profiles: c.enabled_profiles,
-            now: || chrono::Utc::now().timestamp(),
-            accepting: accepting.clone(),
-        },
-        Some(metrics_handle),
-    );
+    let (public, health) = router(AppState {
+        grant_keyring: Arc::new(grant_keyring),
+        app_attest,
+        authority,
+        token_keyring: Arc::new(token_keyring),
+        transport,
+        delivery_url: c.public_delivery_url,
+        max_grant_lifetime_seconds: c.max_grant_lifetime_seconds,
+        max_installation_lifetime_seconds: c.max_installation_lifetime_seconds,
+        endpoint_quota_window_seconds: c.endpoint_quota_window_seconds,
+        endpoint_quota_max_deliveries: c.endpoint_quota_max_deliveries,
+        enabled_profiles: c.enabled_profiles,
+        now: || chrono::Utc::now().timestamp(),
+        accepting: accepting.clone(),
+    });
     let pl = tokio::net::TcpListener::bind(c.bind_addr).await?;
     let hl = tokio::net::TcpListener::bind(c.health_addr).await?;
     let (ptx, prx) = tokio::sync::watch::channel(false);
