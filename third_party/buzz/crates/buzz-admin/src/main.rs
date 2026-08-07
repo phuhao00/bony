@@ -7,10 +7,11 @@
 //! ## Why only kind:13534 (membership list), not kind:8000/8001 (deltas)
 //!
 //! CLI intentionally does not emit kind 8000/8001 deltas —
-//! `publish_nip43_delta` is in-process-only (no Redis hop), so a sidecar call
-//! stores but never pushes. The 13534 list snapshot is the authoritative roster
-//! and rides Redis to live clients. Do not wire a delta call that passes
-//! in-process tests and silently no-ops in the deployed `compose exec` path.
+//! `publish_nip43_delta` is in-process-only, so a sidecar call stores but
+//! never pushes. The 13534 list snapshot is the authoritative roster, and its
+//! DB write is durable regardless of push. Do not wire a delta call that
+//! passes in-process tests and silently no-ops in the deployed `compose exec`
+//! path.
 //!
 //! ## Same-second domination guard
 //!
@@ -42,9 +43,10 @@ struct Cli {
 enum Command {
     /// Add a pubkey to the relay membership list.
     ///
-    /// Accepts a bech32 npub or 64-char hex pubkey. After inserting the DB row,
-    /// publishes a kind:13534 membership roster via Redis so live clients see
-    /// the updated list immediately.
+    /// Accepts a bech32 npub or 64-char hex pubkey. After inserting the DB
+    /// row, publishes a kind:13534 membership roster; the DB write is
+    /// durable, but the CLI runs out-of-process from `buzz-relay` so
+    /// already-connected clients only see it on their next reconnect/refetch.
     AddMember {
         /// Nostr public key — bech32 npub or 64-char hex.
         #[arg(long)]
@@ -399,20 +401,13 @@ async fn connect_member_services() -> Result<(Db, Arc<PubSubManager>, Keys)> {
         Keys::parse(&hex).map_err(|e| anyhow::anyhow!("invalid BUZZ_RELAY_PRIVATE_KEY: {e}"))?
     };
 
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
-
-    let redis_pool = {
-        let cfg = deadpool_redis::Config::from_url(&redis_url);
-        cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .map_err(|e| anyhow::anyhow!("Redis pool creation failed: {e}"))?
-    };
-
-    let pubsub = Arc::new(
-        PubSubManager::new(&redis_url, redis_pool)
-            .await
-            .map_err(|e| anyhow::anyhow!("PubSub init failed: {e}"))?,
-    );
+    // `buzz-admin` runs as a separate process from `buzz-relay`, and pub/sub
+    // is in-process only (single-instance deployment — see `buzz-pubsub`).
+    // This manager therefore has no local subscribers, so `publish_event`
+    // below is a durable no-op: the DB write is the authoritative change,
+    // but already-connected WS clients won't get a live push from this CLI
+    // path until they reconnect (or the relay re-reads on its own cadence).
+    let pubsub = Arc::new(PubSubManager::new());
 
     Ok((db, pubsub, relay_keypair))
 }

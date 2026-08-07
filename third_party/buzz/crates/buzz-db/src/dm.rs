@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{SqlitePool, Row};
 use uuid::Uuid;
 
 use crate::channel::ChannelRecord;
@@ -63,13 +63,13 @@ pub fn compute_participant_hash(pubkeys: &[&[u8]]) -> [u8; 32] {
 ///
 /// Returns `None` if no matching DM exists or if it has been deleted.
 pub async fn find_dm_by_participants(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     participant_hash: &[u8],
 ) -> Result<Option<ChannelRecord>> {
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -99,7 +99,7 @@ pub async fn find_dm_by_participants(
 /// - `created_by` must be one of the participants.
 /// - The operation is idempotent: same participant set -> same channel returned.
 pub async fn create_dm(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     participants: &[&[u8]],
     created_by: &[u8],
@@ -130,7 +130,7 @@ pub async fn create_dm(
     // Idempotency check inside the transaction.
     let existing = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -200,7 +200,7 @@ pub async fn create_dm(
 
     let row = sqlx::query(
         r#"
-        SELECT id, name, channel_type::text AS channel_type, visibility::text AS visibility,
+        SELECT id, name, channel_type AS channel_type, visibility AS visibility,
                description, canvas,
                created_by, created_at, updated_at, archived_at, deleted_at,
                nip29_group_id, topic_required, max_members,
@@ -224,7 +224,7 @@ pub async fn create_dm(
 /// Includes participant details for each DM. Supports cursor-based pagination
 /// using `updated_at` ordering.
 pub async fn list_dms_for_user(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
     limit: u32,
@@ -307,7 +307,7 @@ pub async fn list_dms_for_user(
         // Fetch participants for this DM.
         let member_rows = sqlx::query(
             r#"
-            SELECT cm.pubkey, cm.role::text AS role, u.display_name
+            SELECT cm.pubkey, cm.role AS role, u.display_name
             FROM channel_members cm
             LEFT JOIN users u
               ON u.community_id = cm.community_id
@@ -354,7 +354,7 @@ pub async fn list_dms_for_user(
 /// - `was_created = true`  -- a new DM was created.
 /// - `was_created = false` -- an existing DM was returned.
 pub async fn open_dm(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkeys: &[&[u8]],
     created_by: &[u8],
@@ -389,13 +389,13 @@ pub async fn open_dm(
 
 // -- Hide / unhide ------------------------------------------------------------
 
-/// Hide a DM for a specific user by setting `hidden_at = NOW()`.
+/// Hide a DM for a specific user by setting `hidden_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`.
 ///
 /// The DM is not deleted — it can be restored by opening a new DM with the
 /// same participants (which clears `hidden_at`). Returns an error if the user
 /// is not an active member of the channel.
 pub async fn hide_dm(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
@@ -403,7 +403,7 @@ pub async fn hide_dm(
     let result = sqlx::query(
         r#"
         UPDATE channel_members
-        SET hidden_at = NOW()
+        SET hidden_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE community_id = $1 AND channel_id = $2 AND pubkey = $3 AND removed_at IS NULL
         "#,
     )
@@ -427,7 +427,7 @@ pub async fn hide_dm(
 /// This is called automatically when a user re-opens a DM via [`open_dm`].
 /// It is a no-op if the membership is not currently hidden.
 pub async fn unhide_dm(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     channel_id: Uuid,
     pubkey: &[u8],
@@ -452,7 +452,7 @@ pub async fn unhide_dm(
 /// (`hidden_at IS NOT NULL`) while still being an active member. Used to build
 /// the relay-signed NIP-DV visibility snapshot.
 pub async fn list_hidden_dms(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &[u8],
 ) -> Result<Vec<Uuid>> {
@@ -484,7 +484,7 @@ pub async fn list_hidden_dms(
 
 // -- Row mapping --------------------------------------------------------------
 
-fn row_to_channel_record(row: sqlx::postgres::PgRow) -> Result<ChannelRecord> {
+fn row_to_channel_record(row: sqlx::sqlite::SqliteRow) -> Result<ChannelRecord> {
     let id: Uuid = row.try_get("id")?;
     let topic_required: bool = row.try_get("topic_required")?;
 

@@ -132,8 +132,8 @@ pub fn effective_agent_relay_url(_record_relay: &str, workspace_relay: &str) -> 
     if let Some(forced) = monorepo_force_loopback_agent_relay() {
         return forced;
     }
-    // Even without force env, avoid 127.0.0.1 / ::1 community hosts on a single
-    // local Open relay whose tenant is registered as `localhost:3000`.
+    // Always canonicalize loopback workspace hosts — even non-forced paths —
+    // so 127.0.0.1 never leaks into buzz-acp (Host-keyed multi-tenant 404).
     if is_loopback_relay_url(workspace_relay) {
         return canonicalize_loopback_relay_url(workspace_relay);
     }

@@ -1,0 +1,38 @@
+---
+description: 开发规范 — 改哪、怎么验证、最小 diff、与上游边界
+alwaysApply: true
+---
+
+# 开发规范
+
+## 改哪里
+
+| 需求 | 落点 |
+|------|------|
+| 桌面 AI 编程壳 | `crates/codegen/bony-build` |
+| Agent/工具/会话 | `crates/codegen/xai-grok-*` 等 |
+| Buzz 协议/ACP/池 | `third_party/buzz/crates/*` |
+| Desktop 本机命令/seed | `third_party/buzz/desktop/src-tauri`（Rust） |
+| 房间协作策略文档 | `docs/buzz-room-*.md`、`scripts/buzz-room/prompts/*.md` |
+| 监控 | `crates/codegen/bony-monitor` |
+
+Buzz 在 **`third_party/buzz` 普通目录**（非 submodule），是根 workspace 成员。
+
+## 做 diff 的规矩
+
+- **只改任务需要的文件**；不顺手大清理、不扩 scope。
+- **复用优先**：先搜同位逻辑；抽共享进既有 mod/crate，禁止平行复制。
+- 入口薄、领域厚；细节见 `modularity-dry` 规则与 `docs/PROJECT_STANDARDS.md` §6。
+- 不主动 commit；用户要求再按 git 协议提交。
+- 不写用户未要的 markdown，**项目规范文档**（本规则 + `docs/PROJECT_STANDARDS.md`）除外。
+- 与上游 grok-build 对齐的代码：小而清晰的 diff；产品壳可独立演进。
+
+## 验证顺序
+
+1. `cargo check` / `cargo test -p <touched>`（能定位则只测该包）。
+2. 涉及 Desktop/房间：先确认根 `target/` 有二进制，再白名单 **start** 脚本；需要重编只用 `cargo build -p …`。
+3. 编译闸门细节：`.cursor/skills/buzz-room-build-gate/SKILL.md`（以本规则集 **start-only + cargo** 为准，若 skill 与规则冲突，**以规则为准**并修正 skill）。
+
+## 回复语言
+
+与用户沟通：**中文**。代码与公开 API 标识符保持仓库既有英文风格。

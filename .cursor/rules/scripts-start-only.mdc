@@ -1,0 +1,38 @@
+---
+description: 仅允许启动脚本；禁止新增/依赖其它自动化脚本
+alwaysApply: true
+---
+
+# 脚本政策：只留启动入口
+
+## 白名单（仅这些可当「启动」入口）
+
+从仓库根执行：
+
+| 意图 | 命令 |
+|------|------|
+| 房间栈启动 | `powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild`（已有产物时必带 `-SkipBuild`） |
+| Desktop 启动 | `powershell -File .\scripts\buzz-room\start-desktop.ps1` |
+| 停 harness | `powershell -File .\scripts\buzz-room\stop-room-stack.ps1` |
+| Bony 桌面（若用） | 既有 `scripts/run-*.ps1` **仅启动**；不在此扩业务 |
+
+白名单脚本的内部 helper（`_paths.ps1` 等）**只许被 start 链引用**，禁止 agent 单独当工具链入口。
+
+## 一律改用 Cargo / 进程本身
+
+| 意图 | 正确做法 |
+|------|----------|
+| 编译 Desktop / relay / tools | `cargo build -p buzz-desktop`、`cargo build -p buzz-relay`、`cargo build -p <tool>`（根目录） |
+| 测 | `cargo test -p <crate>` |
+| 注册/seed agent、密钥、房间 | **Rust 命令或 Desktop/seed API**（如 `room_seed` 等），不写/不跑 mint/register ps1 |
+| 清理磁盘 | 仅用户明确要求时；优先删 PDB/增量；**禁止**无确认 `cargo clean` |
+
+## 禁止
+
+- **新增**任何 `.ps1` / `.sh` / `.py` / `.mjs` 自动化（除修白名单 start 脚本里的 **启动** bug）。
+- 调用已删除或非白名单脚本：`build-*.ps1`、`mint-*`、`register-*`、`clean-*`、`ensure-*`、`setup-*`、`open-coding-task.ps1` 等。
+- 用脚本包装本可用 `cargo -p` 完成的一步。
+
+## 原则
+
+**脚本只负责「把已有二进制拉起来」**；构建、编排、seed、迁移、清理策略进 **Rust** 或 Cargo 原生能力。

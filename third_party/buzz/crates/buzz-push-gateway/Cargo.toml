@@ -27,7 +27,6 @@ chrono = { workspace = true }
 hex = { workspace = true }
 getrandom = "0.4"
 metrics = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
 nostr = { workspace = true }
 p256 = { version = "0.14", features = ["ecdsa", "pem", "pkcs8"] }
 rand = "0.10"

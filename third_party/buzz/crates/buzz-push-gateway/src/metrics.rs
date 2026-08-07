@@ -1,14 +1,9 @@
-//! Sanitized, bounded-cardinality Prometheus metrics for the push gateway.
+//! Sanitized, bounded-cardinality metrics for the push gateway, recorded via
+//! the `metrics` facade (`metrics::counter!`, `metrics::histogram!`).
 //!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │  metrics-rs facade (metrics::counter!, histogram!)        │
-//! │         ↓                                                 │
-//! │  PrometheusBuilder::install_recorder() → PrometheusHandle │
-//! │         ↓                                                 │
-//! │  GET /metrics on the PRIVATE health router (port 8081)    │
-//! └──────────────────────────────────────────────────────────┘
-//! ```
+//! No exporter or scrape endpoint is installed — this deployment target runs
+//! single-instance without external monitoring infrastructure. Recording
+//! through the facade is a harmless no-op when no recorder is installed.
 //!
 //! Every label value emitted here is a compile-time `&'static str` drawn from a
 //! closed set (the [`DeliveryOutcome`] variants, the gateway's fixed error
@@ -17,27 +12,6 @@
 //! so metric cardinality is structurally bounded regardless of traffic.
 
 use crate::apns::DeliveryOutcome;
-use metrics_exporter_prometheus::{BuildError, Matcher, PrometheusBuilder, PrometheusHandle};
-
-/// Seconds-scale buckets for the APNs send round-trip histogram.
-const APNS_LATENCY_BUCKETS_S: [f64; 11] = [
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0,
-];
-
-/// Install the global metrics recorder and return the render handle.
-///
-/// Unlike the relay's exporter, this installs **no** HTTP listener: rendering is
-/// served from the private health router so metrics never share the public port.
-/// Must be called at most once per process, from within a Tokio runtime.
-pub fn install() -> Result<PrometheusHandle, BuildError> {
-    let handle = PrometheusBuilder::new()
-        .set_buckets_for_metric(
-            Matcher::Full("push_gateway_apns_delivery_seconds".to_owned()),
-            &APNS_LATENCY_BUCKETS_S,
-        )?
-        .install_recorder()?;
-    Ok(handle)
-}
 
 /// Stable metric label for each sanitized delivery outcome. The mapping is total
 /// over the closed [`DeliveryOutcome`] enum, so the `outcome` label can only take
@@ -152,13 +126,11 @@ mod tests {
         }
     }
 
-    // The global metrics recorder can be installed only once per process, so a
-    // single test owns the install and exercises every helper end-to-end,
-    // asserting the rendered exposition is sanitized and bounded-cardinality.
+    // No global recorder is installed in this deployment target, so these
+    // calls only exercise that the facade macros compile and run without a
+    // recorder attached (a documented no-op behavior of the `metrics` crate).
     #[test]
-    fn recorder_renders_sanitized_bounded_series() {
-        let handle = install().expect("recorder installs exactly once per test process");
-
+    fn record_helpers_run_without_a_recorder_installed() {
         record_apns_delivery(DeliveryOutcome::Accepted, 0.012);
         record_apns_delivery(
             DeliveryOutcome::InvalidEndpoint {
@@ -175,33 +147,5 @@ mod tests {
         record_reaper_failure();
         record_readiness_failure(ReadinessFailure::NotAccepting);
         record_readiness_failure(ReadinessFailure::Authority);
-
-        let rendered = handle.render();
-
-        // All expected series are present.
-        for needle in [
-            "push_gateway_apns_deliveries_total",
-            "push_gateway_apns_delivery_seconds",
-            "push_gateway_apns_credential_refreshes_total",
-            "push_gateway_admissions_total",
-            "push_gateway_delivery_errors_total",
-            "push_gateway_reaper_failures_total",
-            "push_gateway_readiness_failures_total",
-        ] {
-            assert!(rendered.contains(needle), "missing series {needle}");
-        }
-        // Labels are the closed static sets only.
-        for needle in [
-            "outcome=\"accepted\"",
-            "outcome=\"invalid_endpoint\"",
-            "result=\"admitted\"",
-            "result=\"rejected\"",
-            "result=\"unavailable\"",
-            "class=\"invalid_grant\"",
-            "cause=\"not_accepting\"",
-            "cause=\"authority\"",
-        ] {
-            assert!(rendered.contains(needle), "missing label {needle}");
-        }
     }
 }

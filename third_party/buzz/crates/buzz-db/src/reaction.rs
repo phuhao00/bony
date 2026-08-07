@@ -1,9 +1,9 @@
-//! Reaction persistence.
+﻿//! Reaction persistence.
 //!
 //! One reaction per user per emoji per event. Soft-delete via removed_at.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{SqlitePool, Sqlite, Row, Transaction};
 
 use crate::error::Result;
 use crate::CommunityId;
@@ -66,7 +66,7 @@ const ADD_REACTION_SQL: &str = r#"
         INSERT INTO reactions (community_id, event_created_at, event_id, pubkey, emoji, reaction_event_id)
         VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (community_id, event_created_at, event_id, pubkey, emoji) DO UPDATE SET
-            created_at = NOW(),
+            created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
             removed_at = NULL,
             reaction_event_id = COALESCE(EXCLUDED.reaction_event_id, reactions.reaction_event_id)
         WHERE reactions.removed_at IS NOT NULL
@@ -80,7 +80,7 @@ const ADD_REACTION_SQL: &str = r#"
 /// Uses `INSERT ... ON CONFLICT DO UPDATE` to eliminate the TOCTOU race where
 /// two concurrent adds both see no existing row and then race to INSERT.
 pub async fn add_reaction(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -113,7 +113,7 @@ pub async fn add_reaction(
 /// statement as [`add_reaction`], preserving the new / re-activate / active-duplicate
 /// semantics while letting callers atomically couple the reaction row to other writes.
 pub(crate) async fn add_reaction_tx(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut Transaction<'_, Sqlite>,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -138,7 +138,7 @@ pub(crate) async fn add_reaction_tx(
 ///
 /// Returns `true` if a row was updated, `false` if not found or already removed.
 pub async fn remove_reaction(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -148,7 +148,7 @@ pub async fn remove_reaction(
     let result = sqlx::query(
         r#"
         UPDATE reactions
-        SET removed_at = NOW()
+        SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE community_id = $1
           AND event_created_at = $2
           AND event_id = $3
@@ -172,14 +172,14 @@ pub async fn remove_reaction(
 ///
 /// Returns `true` if a row was updated, `false` if not found or already removed.
 pub async fn remove_reaction_by_source_event_id(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     reaction_event_id: &[u8],
 ) -> Result<bool> {
     let result = sqlx::query(
         r#"
         UPDATE reactions
-        SET removed_at = NOW()
+        SET removed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE community_id = $1
           AND reaction_event_id = $2
           AND removed_at IS NULL
@@ -195,7 +195,7 @@ pub async fn remove_reaction_by_source_event_id(
 
 /// Look up the active reaction row for one actor + emoji + target tuple.
 pub async fn get_active_reaction_record(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -236,7 +236,7 @@ pub async fn get_active_reaction_record(
 /// Called after the kind:7 event is created and stored, to link the
 /// reaction row to its source event. Returns `true` if the row was updated.
 pub async fn set_reaction_event_id(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -278,7 +278,7 @@ pub async fn set_reaction_event_id(
 ///
 /// `cursor` is reserved for future keyset pagination (currently unused).
 pub async fn get_reactions(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_id: &[u8],
     event_created_at: DateTime<Utc>,
@@ -364,7 +364,7 @@ pub async fn get_reactions(
 /// Returns one [`BulkReactionEntry`] per input pair that has at least one
 /// active reaction. Pairs with no reactions are omitted.
 pub async fn get_reactions_bulk(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     event_ids: &[(&[u8], DateTime<Utc>)],
 ) -> Result<Vec<BulkReactionEntry>> {

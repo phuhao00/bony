@@ -564,28 +564,18 @@ mod integration_tests {
     //! that mentions a channel member by name (`@Name`) must emit a `p` tag for
     //! that member so ACP agent wake (`event_mentions_agent`, p-tag gated) fires.
     //!
-    //! Postgres-gated like the other DB-backed relay tests. Run with:
-    //!   `cargo test -p buzz-relay --lib workflow_sink -- --ignored`
     use super::*;
     use buzz_core::channel::{ChannelType, ChannelVisibility, MemberRole};
     use buzz_db::CreateCommunityWithOwnerResult;
     use std::sync::Arc;
 
-    /// Real-PG state mirroring `handlers::event::tests::test_state_with_redis_url`.
+    /// Mirrors `handlers::event::tests::fanout_access::test_state`.
     async fn test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
-        config.redis_url = "redis://127.0.0.1:1".to_string();
-        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let pool = crate::test_support::sqlite_test_pool().await;
         let db = buzz_db::Db::from_pool(pool.clone());
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .expect("redis pool");
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .expect("pubsub manager"),
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -597,7 +587,6 @@ mod integration_tests {
         let (state, _audit_shutdown) = AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,
@@ -610,7 +599,6 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn workflow_send_message_p_tags_mentioned_member() {
         let state = test_state().await;
 

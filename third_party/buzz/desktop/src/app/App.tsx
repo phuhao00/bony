@@ -31,15 +31,6 @@ import {
   isTransactionStillConnecting,
 } from "@/features/onboarding/communityOnboarding";
 import { CommunityOnboardingFlow } from "@/features/onboarding/ui/CommunityOnboardingFlow";
-import {
-  MachineOnboardingFlow,
-  type MachineOnboardingPage,
-  type PostOnboardingNavigation,
-} from "@/features/onboarding/ui/MachineOnboardingFlow";
-import { OnboardingFlow } from "@/features/onboarding/ui/OnboardingFlow";
-import { PendingInviteGate } from "@/features/onboarding/ui/PendingInviteGate";
-import { KeyringLockedScreen } from "@/features/onboarding/ui/KeyringLockedScreen";
-import { RelaunchRequiredScreen } from "@/features/onboarding/ui/RelaunchRequiredScreen";
 import { ResetFailedScreen } from "@/features/onboarding/ui/ResetFailedScreen";
 import { useCommunityInit } from "@/features/communities/useCommunityInit";
 import { useNestNotifications } from "@/features/communities/useNestNotifications";
@@ -73,12 +64,12 @@ import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
 
 const LOADING_TEXT = "Setting up your community...";
 
-// Minimum time the cold-boot splash stays on screen. A real boot resolves the
-// community in well under 100ms, and the native window setup plus first paint
-// can take longer than that — without a hold, the bee is unmounted before it is
-// ever visible. The hold runs as an overlay above the already-mounted app, so
-// time-to-interactive is unchanged; only the reveal waits.
-const BOOT_SPLASH_MIN_VISIBLE_MS = 1_200;
+// Minimum time the cold-boot splash stays on screen. Upstream Buzz holds this
+// open for 1.2s purely so the bee mark is visible even on a real boot that
+// resolves the community in <100ms — pure ceremony with no functional value
+// for this local single-operator room stack. Set to 0 so the app shows real
+// content the instant it is ready instead of a fixed minimum delay.
+const BOOT_SPLASH_MIN_VISIBLE_MS = 0;
 const BOOT_SPLASH_FADE_MS = 200;
 const INITIAL_RENDER_READY_EVENT = "initial-render-ready";
 
@@ -248,25 +239,6 @@ function AppReady({
     return <ResetFailedScreen />;
   }
 
-  if (onboarding.stage === "keyring-locked") {
-    return <KeyringLockedScreen />;
-  }
-
-  if (onboarding.stage === "relaunch-required") {
-    return <RelaunchRequiredScreen />;
-  }
-
-  if (onboarding.stage === "onboarding") {
-    return (
-      <OnboardingFlow
-        actions={onboarding.flow.actions}
-        identityLost={onboarding.identityLost}
-        initialProfile={onboarding.flow.initialProfile}
-        key={onboarding.currentPubkey ?? "anonymous"}
-      />
-    );
-  }
-
   if (onboarding.stage === "blocking") {
     return isCommunitySwitch ? <CommunitySwitchGate /> : <AppLoadingGate />;
   }
@@ -289,11 +261,9 @@ function AppReady({
 
 function CommunityApp({
   currentPubkey,
-  onBackToMachineConfig,
   sharedIdentity,
 }: {
   currentPubkey: string | null;
-  onBackToMachineConfig: () => void;
   sharedIdentity: boolean;
 }) {
   const {
@@ -512,7 +482,9 @@ function CommunityApp({
       appContent = (
         <WelcomeSetup
           initialPage={resumeFirstCommunityPage ?? undefined}
-          onBack={onBackToMachineConfig}
+          // Single-machine local build has no machine-config wizard to return
+          // to anymore — this stays a no-op back stop instead of a real nav.
+          onBack={() => {}}
         />
       );
     } else if ("error" in community && community.error) {
@@ -596,50 +568,7 @@ function CommunityApp({
 function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
   const { activeCommunity } = useCommunities();
   const communityOnboarding = useCommunityOnboarding();
-  const machine = useMachineOnboardingState({
-    activeCommunityPubkey: activeCommunity
-      ? (activeCommunity.pubkey ?? null)
-      : undefined,
-    isSharedIdentity: sharedIdentity,
-  });
-  const [machineInitialPage, setMachineInitialPage] =
-    useState<MachineOnboardingPage>();
-  const [postOnboardingNav, setPostOnboardingNav] =
-    useState<PostOnboardingNavigation | null>(null);
-
-  const reopenMachineConfig = useCallback(() => {
-    setMachineInitialPage("config");
-    machine.reopen();
-  }, [machine.reopen]);
-
-  const completeMachineOnboarding = useCallback(
-    (pubkey?: string) => {
-      setMachineInitialPage(undefined);
-      machine.complete(pubkey);
-    },
-    [machine.complete],
-  );
-
-  const navigateAfterOnboarding = useCallback(
-    (nav: PostOnboardingNavigation) => {
-      setPostOnboardingNav(nav);
-    },
-    [],
-  );
-
-  // Execute the pending navigation once the RouterProvider is mounted (i.e.
-  // machine.stage transitions to "ready").  We wait for the ready stage rather
-  // than using setTimeout(0) so the router is guaranteed to exist before we call
-  // router.navigate().
-  useEffect(() => {
-    if (machine.stage === "ready" && postOnboardingNav) {
-      void router.navigate({
-        to: postOnboardingNav.to,
-        search: postOnboardingNav.search ?? {},
-      });
-      setPostOnboardingNav(null);
-    }
-  }, [machine.stage, postOnboardingNav]);
+  const machine = useMachineOnboardingState();
 
   const openAddCommunity = useCallback(
     (payload: AddCommunityDeepLinkPayload & { requestId: string }) =>
@@ -671,40 +600,13 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
   }, [acceptsCommunityDeepLinks, communityOnboarding.start, openAddCommunity]);
 
   if (machine.stage === "reset-failed") return <ResetFailedScreen />;
-  if (machine.stage === "keyring-locked") return <KeyringLockedScreen />;
-  if (machine.stage === "relaunch-required") return <RelaunchRequiredScreen />;
   if (machine.stage === "blocking") return <AppLoadingGate />;
-  if (machine.stage === "ready") {
-    return (
-      <CommunityApp
-        currentPubkey={machine.currentPubkey}
-        onBackToMachineConfig={reopenMachineConfig}
-        sharedIdentity={sharedIdentity}
-      />
-    );
-  }
-
-  // A community deep link that arrived before machine onboarding finished is
-  // persisted immediately and acknowledged here. Invite claiming waits until
-  // setup completes so it is signed only by the user's final identity.
-  const transaction = communityOnboarding.transaction;
-  const isDeepLink =
-    transaction?.source === "deep-link-join" ||
-    transaction?.source === "deep-link-connect";
-  const shouldAcknowledgeDeepLink = isDeepLink && !transaction.acknowledged;
 
   return (
-    <>
-      <MachineOnboardingFlow
-        complete={completeMachineOnboarding}
-        continueWithIdentity={machine.continueWithIdentity}
-        identityLost={machine.identityLost}
-        initialPage={machineInitialPage}
-        navigateAfterComplete={navigateAfterOnboarding}
-        queryClient={machine.queryClient}
-      />
-      {shouldAcknowledgeDeepLink ? <PendingInviteGate /> : null}
-    </>
+    <CommunityApp
+      currentPubkey={machine.currentPubkey}
+      sharedIdentity={sharedIdentity}
+    />
   );
 }
 

@@ -23,11 +23,10 @@ use buzz_db::Db;
 use buzz_media::MediaStorage;
 use buzz_pubsub::cache_invalidation::CacheInvalidation;
 use buzz_pubsub::conn_control::ConnControl;
-use buzz_pubsub::rate_limiter::RedisRateLimiter;
-use buzz_pubsub::{PubSubManager, RedisNip98ReplayGuard};
+use buzz_pubsub::rate_limiter::InMemoryRateLimiter;
+use buzz_pubsub::{InMemoryNip98ReplayGuard, PubSubManager};
 use buzz_search::SearchService;
 use buzz_workflow::WorkflowEngine;
-use deadpool_redis;
 
 use crate::audio::AudioRoomManager;
 use crate::config::Config;
@@ -490,8 +489,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     /// Database connection pool.
     pub db: Db,
-    /// Redis pool for readiness health checks.
-    pub redis_pool: deadpool_redis::Pool,
     /// Audit event service, absent when audit logging is disabled.
     pub audit: Option<Arc<AuditService>>,
     /// Pub/sub manager for broadcasting events to subscribers.
@@ -528,16 +525,16 @@ pub struct AppState {
     pub relay_keypair: nostr::Keys,
 
     /// Recently-published event IDs for local-echo deduplication, keyed by
-    /// `(community_id, event_id)`. Events fanned out in-process are added here;
-    /// the Redis subscriber consumer skips them to avoid double delivery.
+    /// `(community_id, event_id)`. Events fanned out in-process are added here
+    /// so the same connection's own broadcast doesn't double-deliver its echo.
     ///
     /// The community is part of the key because the same Nostr event id can
     /// legitimately exist in two communities (channel-less events, and
     /// same-channel-UUID/same-`h` events across tenants). Keying on the bare id
     /// would let a local publish in community A suppress delivery of a distinct
-    /// event with the same id arriving via Redis for community B — a
-    /// cross-community non-interference violation. Entries expire after 60
-    /// seconds via moka's TTL eviction — bounded regardless of subscriber health.
+    /// event with the same id in community B — a cross-community
+    /// non-interference violation. Entries expire after 60 seconds via moka's
+    /// TTL eviction.
     pub local_event_ids: Arc<moka::sync::Cache<(CommunityId, [u8; 32]), ()>>,
     /// Membership cache: (community_id, channel_id, pubkey_bytes) → is_member.
     /// Short TTL (10s) — membership changes are rare but must propagate.
@@ -573,15 +570,12 @@ pub struct AppState {
     pub shutting_down: Arc<AtomicBool>,
     /// Process start time — used by `/_status` endpoint.
     pub started_at: Instant,
-    /// Shared, community-scoped NIP-98 replay prevention.
-    ///
-    /// Correctness boundary for stateless workers: every pod must consult the
-    /// same Redis `SET NX EX` seen-set, keyed by resolved community. Do not
-    /// replace this with process-local caching; replay freshness must survive
-    /// cross-pod routing.
+    /// Shared, community-scoped NIP-98 replay prevention. In-process
+    /// seen-set, keyed by resolved community — correct for a single-instance
+    /// relay; a multi-instance deployment would need a shared store instead.
     pub nip98_replay: Arc<dyn Nip98ReplayGuard>,
-    /// Shared Redis-backed admission limits for ordinary HTTP and WebSocket work.
-    pub admission_rate_limiter: Arc<RedisRateLimiter>,
+    /// Shared in-process admission limits for ordinary HTTP and WebSocket work.
+    pub admission_rate_limiter: Arc<InMemoryRateLimiter>,
 
     /// Per-agent sliding-window rate limiter for observer frames (kind 24200).
     /// Key: (community_id, agent pubkey bytes). Value: (count, window_start).
@@ -637,7 +631,6 @@ impl AppState {
     pub fn new(
         config: Config,
         db: Db,
-        redis_pool: deadpool_redis::Pool,
         audit: impl Into<Option<AuditService>>,
         pubsub: Arc<PubSubManager>,
         auth: AuthService,
@@ -708,14 +701,12 @@ impl AppState {
             )
             .expect("git pack cache path must be available"),
         );
-        let nip98_replay: Arc<dyn Nip98ReplayGuard> =
-            Arc::new(RedisNip98ReplayGuard::new(redis_pool.clone()));
-        let admission_rate_limiter = Arc::new(RedisRateLimiter::new(redis_pool.clone()));
+        let nip98_replay: Arc<dyn Nip98ReplayGuard> = Arc::new(InMemoryNip98ReplayGuard::new());
+        let admission_rate_limiter = Arc::new(InMemoryRateLimiter::new());
         let audit_enabled = audit_arc.is_some();
         let state = Self {
             config: Arc::new(config),
             db,
-            redis_pool,
             audit: audit_arc,
             pubsub,
             auth: Arc::new(auth),
@@ -1258,17 +1249,9 @@ mod tests {
     async fn test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
-        config.redis_url = "redis://127.0.0.1:1".to_string();
-        let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        let pool = crate::test_support::sqlite_test_pool().await;
         let db = buzz_db::Db::from_pool(pool.clone());
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .expect("redis pool");
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .expect("pubsub manager"),
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -1280,7 +1263,6 @@ mod tests {
         let (state, _audit_shutdown) = AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,

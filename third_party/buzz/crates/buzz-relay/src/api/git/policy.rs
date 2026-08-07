@@ -820,29 +820,14 @@ printf '%s' "$HMAC_INPUT" | openssl dgst -sha256 -hmac "{secret}" -hex 2>/dev/nu
         );
     }
 
-    // ── hook_policy_check binding gate (requires Postgres) ──────────────
-
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
+    // ── hook_policy_check binding gate ───────────────────────────────────
 
     async fn policy_test_state() -> Arc<AppState> {
         let mut config = crate::config::Config::from_env().expect("default config loads");
         config.require_relay_membership = false;
-        config.redis_url = "redis://127.0.0.1:1".to_string();
-        config.database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| TEST_DB_URL.to_string());
-        let pool = sqlx::PgPool::connect(&config.database_url)
-            .await
-            .expect("connect test DB");
+        let pool = crate::test_support::sqlite_test_pool().await;
         let db = buzz_db::Db::from_pool(pool.clone());
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .expect("redis pool");
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .expect("pubsub manager"),
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -854,7 +839,6 @@ printf '%s' "$HMAC_INPUT" | openssl dgst -sha256 -hmac "{secret}" -hex 2>/dev/nu
         let (state, _audit_shutdown) = AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,
@@ -927,7 +911,6 @@ printf '%s' "$HMAC_INPUT" | openssl dgst -sha256 -hmac "{secret}" -hex 2>/dev/nu
     /// the owner a push path through a binding the read gate refuses to
     /// honor. The remediation token stays reserved for genuinely NotBound.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn push_gate_denies_owner_through_broken_binding() {
         use nostr::{Keys, Tag};
 

@@ -754,6 +754,7 @@ pub fn run() {
             reconcile_managed_agent_runtimes,
             put_managed_agent_runtime_lifecycle,
             create_managed_agent,
+            seed_room_agents,
             start_managed_agent,
             stop_managed_agent,
             set_agent_managed_profiles,

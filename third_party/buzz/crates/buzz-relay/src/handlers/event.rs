@@ -1649,106 +1649,6 @@ mod tests {
             );
         }
 
-        async fn redis_url_if_available() -> Option<String> {
-            let redis_url =
-                std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-            let pool = deadpool_redis::Config::from_url(&redis_url)
-                .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-                .ok()?;
-            let mut conn = pool.get().await.ok()?;
-            redis::cmd("PING")
-                .query_async::<String>(&mut conn)
-                .await
-                .ok()?;
-            Some(redis_url)
-        }
-
-        fn spawn_pubsub_fanout_loop(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-            let mut rx = state.pubsub.subscribe_local();
-            tokio::spawn(async move {
-                while let Ok(channel_event) = rx.recv().await {
-                    fan_out_pubsub_event(&state, channel_event).await;
-                }
-            })
-        }
-
-        #[tokio::test]
-        async fn redis_presence_publish_reaches_second_relay_and_suppresses_origin_echo() {
-            let Some(redis_url) = redis_url_if_available().await else {
-                eprintln!("skipping Redis round-trip presence fan-out test: Redis unavailable");
-                return;
-            };
-
-            let origin = super::fanout_access::test_state_with_redis_url(&redis_url).await;
-            let receiver = super::fanout_access::test_state_with_redis_url(&redis_url).await;
-
-            let origin_subscriber = tokio::spawn(origin.pubsub.clone().run_subscriber());
-            let receiver_subscriber = tokio::spawn(receiver.pubsub.clone().run_subscriber());
-            let origin_fanout = spawn_pubsub_fanout_loop(origin.clone());
-            let receiver_fanout = spawn_pubsub_fanout_loop(receiver.clone());
-
-            let (_origin_conn, mut origin_rx) = register_presence_sub(&origin, "origin-presence");
-            let (_receiver_conn, mut receiver_rx) =
-                register_presence_sub(&receiver, "receiver-presence");
-
-            // Under the community-scoped bus, Redis delivery is demand-driven:
-            // a relay only PSUBSCRIBEs `buzz:{community}:global` after it retains
-            // interest in that topic. Both relays share one explicit tenant and
-            // retain Global before publishing — origin too, so the echo-
-            // suppression assertion still exercises `mark_local_event` against a
-            // relay that *is* subscribed (the case that matters).
-            let tenant = buzz_core::tenant::TenantContext::resolved(
-                buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
-                "test",
-            );
-            origin
-                .pubsub
-                .retain_topic(&tenant, EventTopic::Global)
-                .await;
-            receiver
-                .pubsub
-                .retain_topic(&tenant, EventTopic::Global)
-                .await;
-
-            // Match buzz-pubsub's own Redis round-trip test: give PSUBSCRIBE a
-            // bounded moment to attach before publishing the single test event.
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-            let event = presence_event("online");
-            let event_id = event.id;
-            origin.mark_local_event(tenant.community(), &event.id);
-            origin
-                .pubsub
-                .publish_event(&tenant, EventTopic::Global, &event)
-                .await
-                .expect("publish presence through Redis");
-
-            let delivered =
-                tokio::time::timeout(std::time::Duration::from_secs(2), receiver_rx.recv())
-                    .await
-                    .expect("presence reached second relay")
-                    .expect("receiver connection still open");
-            let delivered = event_from_ws_message(delivered);
-            assert_eq!(delivered.id, event_id);
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(100), receiver_rx.recv())
-                    .await
-                    .is_err(),
-                "second relay receives the presence event exactly once"
-            );
-            assert!(
-                tokio::time::timeout(std::time::Duration::from_millis(250), origin_rx.recv())
-                    .await
-                    .is_err(),
-                "origin relay suppresses the Redis echo after local fan-out"
-            );
-
-            origin_subscriber.abort();
-            receiver_subscriber.abort();
-            origin_fanout.abort();
-            receiver_fanout.abort();
-        }
-
         /// Regression guard: the `EventCreated` audit entry must record the
         /// caller-resolved *actor*, not the stored event's claimed author. For
         /// relay-signed events (workflow posts, side-effect emits) the event
@@ -1764,7 +1664,7 @@ mod tests {
 
             let Some((state, audit_shutdown, pool)) = super::fanout_access::audit_state().await
             else {
-                eprintln!("skipping audit-actor provenance test: Postgres/Redis unavailable");
+                eprintln!("skipping audit-actor provenance test: Postgres unavailable");
                 return;
             };
 
@@ -1852,7 +1752,7 @@ mod tests {
 
             let Some((state, audit_shutdown, pool)) = super::fanout_access::audit_state().await
             else {
-                eprintln!("skipping audit isolation test: Postgres/Redis unavailable");
+                eprintln!("skipping audit isolation test: Postgres unavailable");
                 return;
             };
 
@@ -1997,23 +1897,14 @@ mod tests {
         pub(super) fn test_config() -> crate::config::Config {
             let mut config = crate::config::Config::from_env().expect("default config loads");
             config.require_relay_membership = false;
-            config.redis_url = "redis://127.0.0.1:1".to_string();
             config
         }
 
-        pub(super) async fn test_state_with_redis_url(redis_url: &str) -> Arc<AppState> {
-            let mut config = test_config();
-            config.redis_url = redis_url.to_string();
-            let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
+        pub(super) async fn test_state() -> Arc<AppState> {
+            let config = test_config();
+            let pool = crate::test_support::sqlite_test_pool().await;
             let db = buzz_db::Db::from_pool(pool.clone());
-            let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-                .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-                .expect("redis pool");
-            let pubsub = Arc::new(
-                buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                    .await
-                    .expect("pubsub manager"),
-            );
+            let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
             let audit = buzz_audit::AuditService::new(pool.clone());
             let auth = buzz_auth::AuthService::new(config.auth.clone());
             let search = buzz_search::SearchService::new(pool.clone());
@@ -2026,7 +1917,6 @@ mod tests {
             let (state, _audit_shutdown) = AppState::new(
                 config,
                 db,
-                redis_pool,
                 audit,
                 pubsub,
                 auth,
@@ -2038,35 +1928,17 @@ mod tests {
             Arc::new(state)
         }
 
-        pub(super) async fn test_state() -> Arc<AppState> {
-            test_state_with_redis_url("redis://127.0.0.1:1").await
-        }
-
-        /// Real-PG, real-Redis state that hands back the audit shutdown handle so
-        /// a test can drain queued audit entries before asserting on `audit_log`.
-        /// `None` when Postgres or Redis is unavailable (test skips).
+        /// State that hands back the audit shutdown handle so a test can
+        /// drain queued audit entries before asserting on `audit_log`.
         pub(super) async fn audit_state() -> Option<(
             Arc<AppState>,
             crate::state::AuditShutdownHandle,
-            sqlx::PgPool,
+            sqlx::SqlitePool,
         )> {
-            let mut config = test_config();
-            config.redis_url = "redis://127.0.0.1:6379".to_string();
-            let pool = sqlx::PgPool::connect(&config.database_url).await.ok()?;
-            // Require a real Redis so dispatch's publish_event doesn't error-log.
-            let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-                .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-                .ok()?;
-            redis::cmd("PING")
-                .query_async::<String>(&mut redis_pool.get().await.ok()?)
-                .await
-                .ok()?;
+            let config = test_config();
+            let pool = crate::test_support::sqlite_test_pool().await;
             let db = buzz_db::Db::from_pool(pool.clone());
-            let pubsub = Arc::new(
-                buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                    .await
-                    .ok()?,
-            );
+            let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
             let audit = buzz_audit::AuditService::new(pool.clone());
             let auth = buzz_auth::AuthService::new(config.auth.clone());
             let search = buzz_search::SearchService::new(pool.clone());
@@ -2078,7 +1950,6 @@ mod tests {
             let (state, audit_shutdown) = AppState::new(
                 config,
                 db,
-                redis_pool,
                 audit,
                 pubsub,
                 auth,

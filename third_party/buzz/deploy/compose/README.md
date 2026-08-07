@@ -36,13 +36,31 @@ keypair.
   `buzz-admin migrate` before starting the relay when bootstrapping a fresh
   database. Auto-migration requires an image that includes embedded SQLx
   migrations.
-- The stack uses Postgres, Redis, MinIO, and a git data volume because
-  those are real Buzz dependencies today. Minimal mode can simplify this later.
-- The bundled Compose stack fixes the relay endpoint to `http://minio:9000` and
-  `BUZZ_S3_ADDRESSING_STYLE=path`: Docker DNS resolves `minio`, not
-  `<bucket>.minio`. It is not configurable for an external S3 provider through
-  `.env`; use the Helm chart or a custom Compose configuration for providers
-  such as new Railway Storage Buckets that require `virtual` addressing.
+- The stack uses Postgres, Redis, a git data volume, and (optionally) MinIO
+  because Postgres/Redis/git storage are real Buzz dependencies today. Object
+  storage does not require the bundled MinIO — see below.
+- Bundled MinIO is opt-in via the `minio` Compose profile; it is not started
+  by a plain `./run.sh start`. Enable it with `COMPOSE_PROFILES=minio` in
+  `.env`, or run `docker compose --profile minio up -d`.
+
+### Using your own S3-compatible storage
+
+The relay never requires the bundled MinIO to start. Point it at any
+S3-compatible endpoint you already run or manage (self-hosted MinIO, AWS S3,
+Cloudflare R2, Backblaze B2, ...) by setting in `.env`:
+
+```bash
+BUZZ_S3_ENDPOINT=https://your-endpoint.example.com
+BUZZ_S3_ACCESS_KEY=...
+BUZZ_S3_SECRET_KEY=...
+BUZZ_S3_BUCKET=buzz-media
+# `path` (default) puts the bucket in the URL path; `virtual` puts it in the
+# hostname (required by e.g. AWS S3 and Railway Storage Buckets).
+BUZZ_S3_ADDRESSING_STYLE=path
+```
+
+Leave `COMPOSE_PROFILES` unset (or without `minio`) and `./run.sh start` will
+bring up only `relay`, `postgres`, and `redis` — no MinIO container.
 
 Run `./run.sh backup-hint` for the backup checklist.
 

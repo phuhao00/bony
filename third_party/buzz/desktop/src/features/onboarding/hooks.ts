@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useQueryClient, type QueryStatus } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
@@ -18,7 +18,8 @@ import {
 import { forceFreshOnboarding } from "@/features/onboarding/devFreshOnboarding";
 import { ensureWelcomeCanvas } from "@/features/onboarding/welcomeCanvas";
 import { ensureWelcomeTeam } from "@/features/onboarding/welcomeGuide";
-import { useProfileQuery } from "@/features/profile/hooks";
+import { useProfileQuery, useUpdateProfileMutation } from "@/features/profile/hooks";
+import { emojiAvatarDataUrl } from "@/features/profile/ui/ProfileAvatarEditor.utils";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import type { Channel } from "@/shared/api/types";
@@ -28,6 +29,7 @@ import {
   ensureStarterChannels as ensureStarterChannelsCommand,
   getChannelMembers,
   getChannels,
+  seedRoomAgents,
   updateChannel,
 } from "@/shared/api/tauri";
 
@@ -168,359 +170,112 @@ export async function initializeStarterChannels(
   }
 }
 
-async function refreshChannelsCache(
-  queryClient: ReturnType<typeof useQueryClient>,
-) {
-  try {
-    queryClient.setQueryData(channelsQueryKey, await getChannels());
-  } catch {
-    // The next mounted channels query can still retry; this cache refresh is
-    // only here to avoid a blank Home flash after first-run setup.
-  }
+type AppOnboardingStage = "blocking" | "ready" | "reset-failed";
 
-  await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
-}
+const DEFAULT_PROFILE_DISPLAY_NAME = "Local";
+const DEFAULT_PROFILE_AVATAR_EMOJI = "🐝";
+const DEFAULT_PROFILE_AVATAR_COLOR = "#FFB84D";
 
-const ONBOARDING_COMPLETION_STORAGE_KEY = "buzz-onboarding-complete.v1";
-type OnboardingGateStage = "blocking" | "onboarding" | "ready";
+// Per-pubkey guard so the silent default-profile write below fires at most
+// once per identity per app session, even across effect re-runs / remounts.
+const defaultProfileWriteAttempted = new Set<string>();
 
-type UseFirstRunOnboardingGateOptions = {
-  currentPubkey: string | null;
-  identityIsFetching: boolean;
-  identityLost: boolean;
-  identityStatus: QueryStatus;
-  isSharedIdentity: boolean;
-  profileHasEvent: boolean | undefined;
-  profileIsFetching: boolean;
-  profileStatus: QueryStatus;
-};
+// Per-pubkey guard mirroring `defaultProfileWriteAttempted` for the native
+// room-agent seed below — at most one `seed_room_agents` call per identity
+// per app session.
+const roomAgentsSeedAttempted = new Set<string>();
 
-type OnboardingGateState = {
-  currentPubkey: string | null;
-  hasCompletedCurrentPubkey: boolean;
-  hasSettledCurrentPubkey: boolean;
-  isOpen: boolean;
-};
-
-function onboardingCompletionStorageKey(pubkey: string) {
-  return `${ONBOARDING_COMPLETION_STORAGE_KEY}:${pubkey}`;
-}
-
-function readOnboardingCompletion(pubkey: string | null) {
-  if (forceFreshOnboarding) {
-    return false;
-  }
-  if (typeof window === "undefined" || !pubkey) {
-    return false;
-  }
-
-  return (
-    window.localStorage.getItem(onboardingCompletionStorageKey(pubkey)) ===
-    "true"
-  );
-}
-
-function createOnboardingGateState(pubkey: string | null): OnboardingGateState {
-  const hasCompletedCurrentPubkey = readOnboardingCompletion(pubkey);
-
-  return {
-    currentPubkey: pubkey,
-    hasCompletedCurrentPubkey,
-    hasSettledCurrentPubkey: hasCompletedCurrentPubkey,
-    isOpen: false,
-  };
-}
-
-function resolveActiveGateState(
-  gateState: OnboardingGateState,
-  currentPubkey: string | null,
-) {
-  return gateState.currentPubkey === currentPubkey
-    ? gateState
-    : createOnboardingGateState(currentPubkey);
-}
-
-function updateActiveGateState(
-  gateState: OnboardingGateState,
-  currentPubkey: string | null,
-  update: (activeGateState: OnboardingGateState) => OnboardingGateState,
-) {
-  return update(resolveActiveGateState(gateState, currentPubkey));
-}
-
-function isSettledQueryStatus(status: QueryStatus) {
-  return status === "success" || status === "error";
-}
-
-function resolveOnboardingGateStage({
-  currentPubkey,
-  gateState,
-  identityIsFetching,
-  identityStatus,
-}: {
-  currentPubkey: string | null;
-  gateState: OnboardingGateState;
-  identityIsFetching: boolean;
-  identityStatus: QueryStatus;
-}): OnboardingGateStage {
-  const isBlockingCurrentPubkey =
-    currentPubkey !== null &&
-    !gateState.hasCompletedCurrentPubkey &&
-    (gateState.isOpen || !gateState.hasSettledCurrentPubkey);
-
-  if (gateState.isOpen) {
-    return "onboarding";
-  }
-
-  if (
-    identityIsFetching ||
-    !isSettledQueryStatus(identityStatus) ||
-    isBlockingCurrentPubkey
-  ) {
-    return "blocking";
-  }
-
-  return "ready";
-}
-
-export function useFirstRunOnboardingGate({
-  currentPubkey,
-  identityIsFetching,
-  identityLost,
-  identityStatus,
-  isSharedIdentity,
-  profileHasEvent,
-  profileIsFetching,
-  profileStatus,
-}: UseFirstRunOnboardingGateOptions) {
-  const [gateState, setGateState] = React.useState<OnboardingGateState>(() =>
-    createOnboardingGateState(currentPubkey),
-  );
-  const activeGateState = resolveActiveGateState(gateState, currentPubkey);
-  const { hasCompletedCurrentPubkey, hasSettledCurrentPubkey } =
-    activeGateState;
-
-  React.useEffect(() => {
-    setGateState((current) =>
-      current.currentPubkey === currentPubkey
-        ? current
-        : createOnboardingGateState(currentPubkey),
-    );
-  }, [currentPubkey]);
-
-  // When the backend signals "identity lost" (keyring was cleared after a
-  // successful migration), force onboarding open immediately so the user can
-  // re-import their nsec. This runs once, after identity settles.
-  React.useEffect(() => {
-    if (!identityLost || !currentPubkey || identityStatus !== "success") {
-      return;
-    }
-    setGateState((current) =>
-      updateActiveGateState(current, currentPubkey, (activeGateState) => ({
-        ...activeGateState,
-        hasCompletedCurrentPubkey: false,
-        hasSettledCurrentPubkey: true,
-        isOpen: true,
-      })),
-    );
-  }, [currentPubkey, identityLost, identityStatus]);
-
-  React.useEffect(() => {
-    // Fast-path: shared identity worktrees have already onboarded in the
-    // main checkout. Skip unconditionally without waiting for the relay
-    // profile query. Guarded by !hasCompletedCurrentPubkey so it fires once.
-    if (
-      !forceFreshOnboarding &&
-      isSharedIdentity &&
-      currentPubkey &&
-      identityStatus === "success" &&
-      !hasCompletedCurrentPubkey
-    ) {
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(
-          onboardingCompletionStorageKey(currentPubkey),
-          "true",
-        );
-      }
-      setGateState((current) =>
-        updateActiveGateState(current, currentPubkey, (activeGateState) => ({
-          ...activeGateState,
-          hasCompletedCurrentPubkey: true,
-          hasSettledCurrentPubkey: true,
-          isOpen: false,
-        })),
-      );
-      return;
-    }
-
-    // Original guard — restored to simple form.
-    if (hasSettledCurrentPubkey || !currentPubkey) {
-      return;
-    }
-
-    if (identityStatus === "error") {
-      setGateState((current) =>
-        updateActiveGateState(current, currentPubkey, (activeGateState) => ({
-          ...activeGateState,
-          hasSettledCurrentPubkey: true,
-        })),
-      );
-      return;
-    }
-
-    if (identityStatus !== "success") {
-      return;
-    }
-
-    if (!isSettledQueryStatus(profileStatus) || profileIsFetching) {
-      return;
-    }
-
-    // If the relay has a real kind:0 metadata event for this pubkey, the user
-    // has previously completed onboarding (possibly on another machine or app
-    // data directory). Skip the onboarding flow and mark as complete so they
-    // go straight to the app.
-    //
-    // We gate on `hasProfileEvent` — a flag set by the Tauri backend when a
-    // real kind:0 event was found — rather than any field value. This correctly
-    // handles the case where a returning user's display_name is empty: the event
-    // still exists, so onboarding is skipped. A missing event (new user, or no
-    // kind:0 on the relay) always shows onboarding regardless of display_name.
-    const hasExistingProfile =
-      !forceFreshOnboarding &&
-      profileStatus === "success" &&
-      profileHasEvent === true;
-
-    setGateState((current) =>
-      updateActiveGateState(current, currentPubkey, (activeGateState) => {
-        // Re-read localStorage here to handle the webkit2gtk WAL race: the
-        // synchronous useState initializer may have run before the WAL was
-        // merged into the main SQLite file, returning null for a flag that is
-        // actually present. By the time this effect fires (identity + profile
-        // settled), the WAL has had time to merge and the read is reliable.
-        const hasCompletedAfterRecheck =
-          readOnboardingCompletion(currentPubkey);
-        const alreadyOnboarded =
-          activeGateState.hasCompletedCurrentPubkey ||
-          hasCompletedAfterRecheck ||
-          hasExistingProfile;
-        if (alreadyOnboarded && typeof window !== "undefined") {
-          window.localStorage.setItem(
-            onboardingCompletionStorageKey(currentPubkey),
-            "true",
-          );
-        }
-        return {
-          ...activeGateState,
-          hasCompletedCurrentPubkey: alreadyOnboarded,
-          hasSettledCurrentPubkey: true,
-          isOpen: !alreadyOnboarded,
-        };
-      }),
-    );
-  }, [
-    currentPubkey,
-    hasCompletedCurrentPubkey,
-    hasSettledCurrentPubkey,
-    identityStatus,
-    isSharedIdentity,
-    profileHasEvent,
-    profileIsFetching,
-    profileStatus,
-  ]);
-
-  const skipForNow = React.useCallback(() => {
-    setGateState((current) =>
-      updateActiveGateState(current, currentPubkey, (activeGateState) => ({
-        ...activeGateState,
-        hasSettledCurrentPubkey: true,
-        isOpen: false,
-      })),
-    );
-  }, [currentPubkey]);
-
-  const complete = React.useCallback(() => {
-    if (typeof window !== "undefined" && currentPubkey) {
-      window.localStorage.setItem(
-        onboardingCompletionStorageKey(currentPubkey),
-        "true",
-      );
-    }
-
-    setGateState({
-      currentPubkey,
-      hasCompletedCurrentPubkey: true,
-      hasSettledCurrentPubkey: true,
-      isOpen: false,
-    });
-  }, [currentPubkey]);
-
-  return {
-    complete,
-    skipForNow,
-    stage: resolveOnboardingGateStage({
-      currentPubkey,
-      gateState: activeGateState,
-      identityIsFetching,
-      identityStatus,
-    }),
-  };
-}
-
+/**
+ * Single-machine local build: there is no "set up your profile" wizard
+ * anymore. If the relay has no kind:0 event for the current identity yet
+ * (first-ever launch, or a fresh identity), silently write a default display
+ * name + emoji avatar and move straight into the app. Settings → Profile
+ * remains the entry point for anyone who wants to change it.
+ */
 export function useAppOnboardingState(isSharedIdentity: boolean) {
   const queryClient = useQueryClient();
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
   const identity = identityQuery.data;
   const currentPubkey = identity?.pubkey ?? null;
+  const identityResetFailed = identity?.resetFailed === true;
   const starterChannelsCommunityScope = activeCommunity?.relayUrl ?? null;
   const starterChannelsInitPromisesRef = React.useRef(
     new Map<string, Promise<ChannelInitResult>>(),
   );
-  const [isCompletingStarterSetup, setIsCompletingStarterSetup] =
-    React.useState(false);
-  const identityLost = identity?.lost === true;
-  // Keyring unreachable at boot — the real key is still in the OS keyring but
-  // the session cannot access it. No in-app recovery is possible; the user
-  // must unlock the keyring externally and relaunch. Mutually exclusive with lost.
-  const identityLocked = identity?.locked === true;
-  // Boot-time Phase 2 reset failed — wipe was attempted but verification failed.
-  // The sentinel is preserved so the next relaunch retries automatically.
-  const identityResetFailed = identity?.resetFailed === true;
-
-  // Sticky boot fact: once identity was lost at boot, this remains true for the
-  // entire session. Per-component state in OnboardingFlow cannot carry this
-  // because the flow remounts when pubkey changes after recovery.
-  const [bootedLost, setBootedLost] = React.useState(false);
-  React.useEffect(() => {
-    if (identityLost) setBootedLost(true);
-  }, [identityLost]);
-
-  // Sticky boot fact: once identity was locked at boot, this remains true for
-  // the entire session. After import_identity clears the locked flag, the
-  // relaunchRequired derivation uses this to force the relaunch screen.
-  const [bootedLocked, setBootedLocked] = React.useState(false);
-  React.useEffect(() => {
-    if (identityLocked) setBootedLocked(true);
-  }, [identityLocked]);
-
-  const profileQuery = useProfileQuery(
-    !identityLost && !identityLocked && identityQuery.status === "success",
-  );
-  const onboardingGate = useFirstRunOnboardingGate({
-    currentPubkey,
-    identityIsFetching: identityQuery.fetchStatus === "fetching",
-    identityLost,
-    identityStatus: identityQuery.status,
-    isSharedIdentity,
-    profileHasEvent: profileQuery.data?.hasProfileEvent,
-    profileIsFetching: profileQuery.fetchStatus === "fetching",
-    profileStatus: profileQuery.status,
-  });
-  const gateComplete = onboardingGate.complete;
   const starterChannelsFocusIntentRef = React.useRef(
     new Map<string, boolean>(),
   );
+
+  const profileQuery = useProfileQuery(identityQuery.status === "success");
+  const updateProfileMutation = useUpdateProfileMutation();
+  const [isWritingDefaultProfile, setIsWritingDefaultProfile] =
+    React.useState(false);
+
+  React.useEffect(() => {
+    if (
+      !currentPubkey ||
+      profileQuery.status !== "success" ||
+      profileQuery.data?.hasProfileEvent !== false ||
+      defaultProfileWriteAttempted.has(currentPubkey)
+    ) {
+      return;
+    }
+    defaultProfileWriteAttempted.add(currentPubkey);
+    setIsWritingDefaultProfile(true);
+    void updateProfileMutation
+      .mutateAsync({
+        avatarUrl: emojiAvatarDataUrl(
+          DEFAULT_PROFILE_AVATAR_EMOJI,
+          DEFAULT_PROFILE_AVATAR_COLOR,
+        ),
+        displayName: DEFAULT_PROFILE_DISPLAY_NAME,
+      })
+      .catch((error) => {
+        console.warn("Failed to write the default local profile.", error);
+      })
+      .finally(() => setIsWritingDefaultProfile(false));
+  }, [
+    currentPubkey,
+    profileQuery.data?.hasProfileEvent,
+    profileQuery.status,
+    updateProfileMutation,
+  ]);
+
+  // Single-machine local build: the five room agents (Grok, ZeroClaw, Unity,
+  // OpenMontage, DocSmith) and their shared "Local Room" channel used to be
+  // provisioned by an external PowerShell script chain before Desktop even
+  // launched. `seed_room_agents` is native, idempotent Rust — call it once
+  // per identity, right after identity is ready, and let Desktop's own
+  // managed-agent lifecycle (start/stop with the app) take it from there.
+  React.useEffect(() => {
+    if (
+      identityQuery.status !== "success" ||
+      identityResetFailed ||
+      !currentPubkey ||
+      roomAgentsSeedAttempted.has(currentPubkey)
+    ) {
+      return;
+    }
+    roomAgentsSeedAttempted.add(currentPubkey);
+    void seedRoomAgents()
+      .then((result) => {
+        if (result.errors.length > 0) {
+          console.warn("seed_room_agents reported errors:", result.errors);
+        }
+        if (result.createdAgents.length > 0 || result.createdChannel) {
+          void Promise.all([
+            queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey }),
+            queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey }),
+            queryClient.invalidateQueries({ queryKey: channelsQueryKey }),
+          ]);
+        }
+      })
+      .catch((error) => {
+        console.warn("Failed to seed local room agents.", error);
+      });
+  }, [currentPubkey, identityQuery.status, identityResetFailed, queryClient]);
+
   const requestStarterChannels = React.useCallback(
     (focus: boolean): Promise<ChannelInitResult> => {
       if (!currentPubkey || !starterChannelsCommunityScope) {
@@ -575,25 +330,6 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
     [currentPubkey, queryClient, starterChannelsCommunityScope],
   );
 
-  React.useEffect(() => {
-    if (
-      onboardingGate.stage !== "ready" ||
-      !currentPubkey ||
-      !starterChannelsCommunityScope ||
-      !readOnboardingCompletion(currentPubkey) ||
-      hasEnsuredWelcomeChannel(currentPubkey, starterChannelsCommunityScope)
-    ) {
-      return;
-    }
-
-    void requestStarterChannels(false);
-  }, [
-    currentPubkey,
-    onboardingGate.stage,
-    requestStarterChannels,
-    starterChannelsCommunityScope,
-  ]);
-
   const showStarterRetryToast = React.useCallback(
     (reason: string) => {
       toast.error("Couldn't set up starter channels", {
@@ -622,61 +358,46 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
     [requestStarterChannels],
   );
 
-  const completeAndShowWelcome = React.useCallback(() => {
-    setIsCompletingStarterSetup(true);
-    void requestStarterChannels(true).then(async (starterResult) => {
-      await refreshChannelsCache(queryClient);
-      gateComplete();
-      setIsCompletingStarterSetup(false);
-      if (starterResult.focusChannelId) {
-        window.location.hash = `/channels/${encodeURIComponent(
-          starterResult.focusChannelId,
-        )}`;
-      }
-      if (!starterResult.ok) {
-        showStarterRetryToast(starterResult.reason);
+  const identityReady = identityQuery.status === "success" && !identityResetFailed;
+  const profileSettled =
+    profileQuery.status === "success" || profileQuery.status === "error";
+
+  React.useEffect(() => {
+    if (
+      !identityReady ||
+      !profileSettled ||
+      isWritingDefaultProfile ||
+      !currentPubkey ||
+      !starterChannelsCommunityScope ||
+      hasEnsuredWelcomeChannel(currentPubkey, starterChannelsCommunityScope)
+    ) {
+      return;
+    }
+
+    void requestStarterChannels(false).then((result) => {
+      if (!result.ok) {
+        showStarterRetryToast(result.reason);
       }
     });
   }, [
-    gateComplete,
-    queryClient,
+    currentPubkey,
+    identityReady,
+    isSharedIdentity,
+    isWritingDefaultProfile,
+    profileSettled,
     requestStarterChannels,
     showStarterRetryToast,
+    starterChannelsCommunityScope,
   ]);
-  const flow = {
-    actions: {
-      complete: completeAndShowWelcome,
-      skipForNow: onboardingGate.skipForNow,
-    },
-    initialProfile: {
-      profile: profileQuery.data,
-    },
-  };
 
-  // Recovery completed this boot: force a relaunch screen regardless of any
-  // other gate state. Backend startup routines (event sync, agent restore,
-  // pending-event flush) were skipped for the ephemeral key and cannot restart
-  // in-process, so nothing else can proceed until the app restarts.
-  const relaunchRequired =
-    ((bootedLost && !identityLost) || (bootedLocked && !identityLocked)) &&
-    identityQuery.status === "success";
+  const stage: AppOnboardingStage = identityResetFailed
+    ? "reset-failed"
+    : identityReady && profileSettled && !isWritingDefaultProfile
+      ? "ready"
+      : "blocking";
 
   return {
     currentPubkey,
-    flow,
-    identityLost,
-    // reset-failed is the highest-precedence stage: a failed boot-time reset
-    // means identity resolution was skipped entirely. Nothing can proceed until
-    // the user relaunches and the wipe retries.
-    stage:
-      identityResetFailed && identityQuery.status === "success"
-        ? ("reset-failed" as const)
-        : identityLocked && identityQuery.status === "success"
-          ? ("keyring-locked" as const)
-          : relaunchRequired
-            ? ("relaunch-required" as const)
-            : isCompletingStarterSetup
-              ? ("blocking" as const)
-              : onboardingGate.stage,
+    stage,
   };
 }

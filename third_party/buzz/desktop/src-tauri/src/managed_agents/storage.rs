@@ -19,11 +19,24 @@ fn agent_keyring_name(pubkey: &str) -> String {
     format!("agent:{pubkey}")
 }
 
-/// The agent secret store. `None` when the build has no keyring backend, in
-/// which case agent keys stay inline in the `0o600` JSON file. Uses
-/// `SecretStore::shared` so identity and agent callers share one instance —
-/// and therefore one in-memory cache and one mutex — preventing last-writer-wins
-/// races on concurrent blob writes.
+/// Whether agent nsecs should be *written* / stripped into the OS keyring.
+///
+/// Windows Credential Manager caps a single Generic credential password at
+/// **2560 UTF-16** characters. Identity + many `agent:<pubkey>` entries in one
+/// JSON blob overflows after room seats re-mint, every save then spams
+/// "password encoded as UTF-16 is longer than platform limit" and keys fall
+/// back to inline anyway. On Windows we **keep agent nsecs only in**
+/// `managed-agents.json` (0o600) and never push them into the keyring — human
+/// `identity` still uses the keyring normally. Other platforms keep the
+/// keyring-backed path.
+fn agent_keyring_persist_enabled() -> bool {
+    cfg!(all(feature = "system-keyring", not(windows)))
+}
+
+/// The agent secret store. `None` when the build has no keyring backend.
+/// On Windows still resolves a store so load paths can **read** orphaned
+/// keyring entries written before the inline-only policy (one-shot hydrate),
+/// but see [`agent_keyring_persist_enabled`] — writes never go there.
 fn agent_secret_store() -> Option<&'static SecretStore> {
     if cfg!(feature = "system-keyring") {
         Some(SecretStore::shared(keyring_service()))
@@ -275,6 +288,23 @@ pub(crate) fn load_agent_definitions(app: &AppHandle) -> Result<Vec<ManagedAgent
     Ok(records)
 }
 
+/// `(name, pubkey)` for every keyed instance, skipping key hydration — spawn
+/// uses this to build the cross-agent mention map (`BUZZ_ACP_MENTION_MAP`),
+/// which needs identity only, never secrets. A dedicated reader (rather than
+/// [`load_managed_agents`]) avoids touching the keyring on every spawn just
+/// to throw the key away.
+pub fn load_agent_name_pubkey_pairs(app: &AppHandle) -> Vec<(String, String)> {
+    load_agent_store(app)
+        .map(|records| {
+            records
+                .into_iter()
+                .filter(|record| !record.pubkey.is_empty())
+                .map(|record| (record.name, record.pubkey))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Preserve a malformed store file as `<name>.invalid` before the error path
 /// unwinds. Copy, not rename: the original stays in place so repeated boots
 /// keep failing loudly (rename would make the next launch look like a fresh
@@ -292,16 +322,9 @@ pub(crate) fn backup_invalid_store(path: &Path) {
     }
 }
 
-/// Fill in each record's in-memory `private_key_nsec` from the keyring, and
-/// opportunistically re-migrate any key that is still inline.
-///
-/// - Empty key → fetch it from the keyring (the normal keyring-backed case).
-/// - Non-empty key → the JSON carried it inline because the keyring was
-///   unreachable at its last save. Re-migrate it now ([`migrate_inline_key`]):
-///   if the keyring is reachable this boot, write-verify-strip so the next save
-///   writes clean JSON and plaintext stops lingering on disk; if still
-///   unreachable, leave it inline. This makes the strip deterministic on the
-///   next reachable boot rather than waiting for a non-deterministic save.
+/// Fill in each record's in-memory `private_key_nsec` from the keyring when
+/// JSON is empty; on platforms that still use keyring writes, also re-migrate
+/// any inline residue. Windows keeps agent nsecs inline only (no migrate).
 fn hydrate_keys(records: &mut [ManagedAgentRecord]) {
     let Some(store) = agent_secret_store() else {
         return;
@@ -344,12 +367,10 @@ fn hydrate_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) 
                     );
                 }
             }
-        } else {
-            // Inline residue from a prior keyring-unreachable save. Lift it
-            // into the keyring now (side effect) but KEEP it in memory — the
-            // returned record must carry the key for readers. The next save
-            // then strips it from JSON. Outcome is intentionally ignored:
-            // on failure the key simply stays inline until a later boot.
+        } else if agent_keyring_persist_enabled() {
+            // Non-Windows only: lift inline residue into the keyring so the
+            // next save can strip it from JSON. On Windows we leave keys in
+            // the 0o600 file — never touch the 2560-capped credential blob.
             let _ = migrate_inline_key(store, record);
         }
     }
@@ -373,9 +394,8 @@ pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> R
             .then_with(|| left.pubkey.cmp(&right.pubkey))
     });
 
-    // Persist each key to the keyring; on success blank the inline copy so it
-    // is skipped from JSON (`skip_serializing_if = "String::is_empty"`). If the
-    // keyring is unreachable, the key stays inline.
+    // Non-Windows: lift keys into the keyring and strip JSON on success.
+    // Windows: leave nsecs inline in the 0o600 store (see agent_keyring_persist_enabled).
     persist_agent_keys(&mut sorted);
 
     write_agent_store(app, definitions, sorted)
@@ -434,7 +454,13 @@ fn write_agent_store(
 /// on success. Keys that cannot be persisted (keyring unreachable) stay inline
 /// in the JSON. Mutates `records` (a save-local clone) — the caller's in-memory
 /// records keep their keys.
+///
+/// No-op on Windows ([`agent_keyring_persist_enabled`]): agent nsecs remain in
+/// `managed-agents.json` so we never hit the 2560 UTF-16 credential cap.
 fn persist_agent_keys(records: &mut [ManagedAgentRecord]) {
+    if !agent_keyring_persist_enabled() {
+        return;
+    }
     let Some(store) = agent_secret_store() else {
         // No keyring backend: keys stay inline.
         return;

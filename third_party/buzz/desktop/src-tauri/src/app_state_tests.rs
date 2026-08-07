@@ -403,16 +403,13 @@ fn valid_keyring_is_used_and_matching_leftover_file_cleaned_up() {
 }
 
 #[test]
-fn unreachable_post_migration_boots_keyring_locked_recovery() {
-    // After a migration the file is gone and the marker exists. A later boot
-    // with the keyring unreachable must NOT generate a fresh key (that would
-    // silently rotate the identity), but must also allow the app to open
-    // instead of hard-aborting. The result is a keyring-locked recovery boot:
-    // ephemeral key held in memory only, nothing persisted anywhere.
-    //
-    // Fail-closed semantics are preserved: no identity is ever written to disk
-    // or the keyring under the ephemeral key, so no silent rotation occurs.
-    // The abort is replaced by a graceful recovery screen.
+fn unreachable_post_migration_falls_back_to_file_silently() {
+    // After a migration the file is gone and the marker exists. Single
+    // -machine build: a later boot with the keyring unreachable must NOT
+    // block on a recovery screen — it silently falls back to generating a
+    // fresh key into the `0o600` file for this boot, exactly like a
+    // keyring-down first launch. The keyring is never contacted (it is
+    // unreachable).
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
@@ -421,10 +418,10 @@ fn unreachable_post_migration_boots_keyring_locked_recovery() {
     let store = FakeIdentityStore::unreachable();
     let resolved = resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap();
 
-    // KeyringLocked recovery: ephemeral key returned, nothing persisted.
-    assert_eq!(resolved.recovery, RecoveryState::KeyringLocked);
-    // No identity.key was written.
-    assert!(!legacy_path.exists());
+    assert_eq!(resolved.recovery, RecoveryState::None);
+    // A fresh key was generated and persisted to the file (keyring is down).
+    let from_file = load_key_file(&legacy_path).unwrap();
+    assert_key_eq(&resolved.keys, &from_file);
     // Keyring store was never called (it is unreachable).
     assert!(store.slot.borrow().is_empty());
     assert!(store.deleted.borrow().is_empty());
@@ -497,11 +494,13 @@ fn fresh_keyring_generate_writes_marker() {
 }
 
 #[test]
-fn fresh_keyring_generate_then_unreachable_boots_locked_recovery() {
-    // End-to-end guard for Fix 1: after a fresh keyring-created identity
-    // (marker written, no file), a later boot with the keyring unreachable
-    // must NOT generate a new key and rotate identity. Instead it boots
-    // keyring-locked recovery — the real key is still in the keyring.
+fn fresh_keyring_generate_then_unreachable_falls_back_to_new_file_key() {
+    // After a fresh keyring-created identity (marker written, no file), a
+    // later boot with the keyring unreachable silently falls back to the
+    // file rather than blocking on a recovery screen. Single-machine build:
+    // this boot's identity diverges from the keyring copy until the keyring
+    // is reachable again and the mismatched-file adoption path reconciles
+    // them — an acceptable trade-off for never showing a recovery UI.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
 
@@ -511,17 +510,18 @@ fn fresh_keyring_generate_then_unreachable_boots_locked_recovery() {
     assert!(!legacy_path.exists());
     assert!(migration_marker_path(dir.path()).exists());
 
-    // Second boot: keyring is down. No file + marker present → locked recovery.
+    // Second boot: keyring is down. No file + marker present → silent file
+    // fallback, not a blocking recovery state.
     let unreachable = FakeIdentityStore::unreachable();
     let resolved = resolve_identity_with_store(&unreachable, &legacy_path, dir.path()).unwrap();
 
     assert_eq!(
         resolved.recovery,
-        RecoveryState::KeyringLocked,
-        "second boot must boot keyring-locked, not generate a fresh key"
+        RecoveryState::None,
+        "second boot must silently fall back to a file key, not block on recovery"
     );
-    // No identity.key was written — nothing new persisted.
-    assert!(!legacy_path.exists());
+    // A new identity.key was written for this boot.
+    assert!(legacy_path.exists());
 }
 
 #[test]
@@ -738,15 +738,13 @@ fn present_keyring_with_mismatched_file_adopts_file_key_marker_failure_keeps_fil
 }
 
 #[test]
-fn reachable_but_empty_with_marker_and_no_file_returns_lost() {
-    // (d) ReachableButEmpty + marker + no file → "lost" state, NO new key
-    // generated into the keyring.
-    //
-    // The marker says a key was once stored in the keyring. If the keyring
-    // is now empty (entry deleted externally, new OS login session cleared
-    // it, etc.) and there is no file fallback, the user's key is truly
-    // gone. Resolution must NOT silently generate a new identity; it must
-    // surface a "lost" state so the frontend can prompt re-import.
+fn reachable_but_empty_with_marker_and_no_file_generates_fresh_silently() {
+    // (d) ReachableButEmpty + marker + no file → the keyring is reachable but
+    // empty despite the marker (entry deleted externally, new OS login
+    // session cleared it, etc.) and there is no file fallback. Single
+    // -machine build: resolution silently generates a fresh identity and
+    // persists it into the (reachable) keyring, rather than blocking on a
+    // "lost, please re-import" recovery screen.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     // Write the migration marker — a key was once in the keyring.
@@ -756,21 +754,23 @@ fn reachable_but_empty_with_marker_and_no_file_returns_lost() {
     let store = FakeIdentityStore::reachable_but_empty();
     let resolved = resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap();
 
-    // The "lost" flag is set — the frontend must prompt re-import.
     assert_eq!(
         resolved.recovery,
-        RecoveryState::Lost,
-        "identity lost state must be surfaced"
+        RecoveryState::None,
+        "identity resolution must never block on a lost-recovery state"
     );
 
-    // No key was persisted to the keyring — the ephemeral key is in-memory
-    // only and must not overwrite the user's actual (externally lost) key.
-    assert!(
-        store.slot.borrow().is_empty(),
-        "no key must be written to keyring when identity is lost"
-    );
+    // The fresh key was persisted into the (reachable) keyring.
+    let stored_nsec = store
+        .slot
+        .borrow()
+        .get(IDENTITY_KEY_NAME)
+        .cloned()
+        .expect("fresh key must be written to the reachable keyring");
+    let keyring_keys = Keys::parse(&stored_nsec).expect("keyring value must be a valid nsec");
+    assert_key_eq(&resolved.keys, &keyring_keys);
 
-    // No identity.key written either — the ephemeral key is transient.
+    // No identity.key written — the key lives in the keyring.
     assert!(!legacy_path.exists());
 }
 
@@ -883,10 +883,12 @@ fn present_keyring_same_pubkey_file_no_marker_writes_marker_before_cleanup() {
 }
 
 #[test]
-fn reachable_but_empty_with_marker_and_no_file_returns_lost_ephemeral_not_persisted() {
-    // Extension of reachable_but_empty_with_marker_and_no_file_returns_lost:
-    // also verifies that the ephemeral key returned in lost state is NOT
-    // persisted to the keyring — it must remain in-memory only.
+fn reachable_but_empty_marker_no_file_second_boot_loads_persisted_key() {
+    // Extension of reachable_but_empty_with_marker_and_no_file_generates_fresh_silently:
+    // once the first boot's fresh key is persisted, a second boot with a
+    // fresh `Present` store seeded from that keyring value must resolve to
+    // the SAME key — the silent fallback is a one-time generation, not a
+    // new identity on every boot.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
@@ -894,25 +896,21 @@ fn reachable_but_empty_with_marker_and_no_file_returns_lost_ephemeral_not_persis
 
     let store = FakeIdentityStore::reachable_but_empty();
     let resolved = resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap();
+    assert_eq!(resolved.recovery, RecoveryState::None);
 
-    assert_eq!(resolved.recovery, RecoveryState::Lost);
-    // The ephemeral key must NOT be written to the keyring.
-    assert!(
-        store.slot.borrow().is_empty(),
-        "ephemeral lost key must not be written to keyring"
-    );
-    // No identity.key written either.
-    assert!(!legacy_path.exists());
-    // The ephemeral pubkey is distinct on every call (sanity check).
-    let store2 = FakeIdentityStore::reachable_but_empty();
+    let persisted_nsec = store
+        .slot
+        .borrow()
+        .get(IDENTITY_KEY_NAME)
+        .cloned()
+        .expect("first boot must persist a key into the keyring");
+
+    // Second boot: fresh store seeded with the persisted nsec (simulates the
+    // keyring now holding the value written by the first boot).
+    let store2 = FakeIdentityStore::present_with(&persisted_nsec);
     let resolved2 = resolve_identity_with_store(&store2, &legacy_path, dir.path()).unwrap();
-    assert_eq!(resolved2.recovery, RecoveryState::Lost);
-    // Two ephemeral keys are different (probabilistic — collision probability is negligible).
-    assert_ne!(
-        resolved.keys.public_key().to_hex(),
-        resolved2.keys.public_key().to_hex(),
-        "each lost-state boot produces a distinct ephemeral key"
-    );
+    assert_eq!(resolved2.recovery, RecoveryState::None);
+    assert_key_eq(&resolved.keys, &resolved2.keys);
 }
 
 // ── signing_keys() gate tests ─────────────────────────────────────────────
@@ -998,13 +996,13 @@ fn signing_keys_identity_lost_takes_priority_over_keyring_locked() {
     );
 }
 
-// ── Keyring-locked recovery mode tests ───────────────────────────────────
+// ── Keyring-unreachable silent file fallback tests ────────────────────────
 
 #[test]
-fn keyring_locked_recovery_ephemeral_never_persisted() {
-    // Unreachable + marker + no file → KeyringLocked recovery. The ephemeral
-    // key is held in memory only; no identity.key is created, no keyring
-    // slot is touched. Fail-closed semantics: no identity is ever rotated.
+fn keyring_unreachable_marker_no_file_persists_fresh_key_to_file() {
+    // Unreachable + marker + no file → silent file fallback (no blocking
+    // recovery state). The fresh key IS persisted this time, to the local
+    // file, since that is the only reachable backend this boot.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
@@ -1013,18 +1011,22 @@ fn keyring_locked_recovery_ephemeral_never_persisted() {
     let store = FakeIdentityStore::unreachable();
     let resolved = resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap();
 
-    assert_eq!(resolved.recovery, RecoveryState::KeyringLocked);
-    // Nothing written to disk — ephemeral key is transient.
-    assert!(!legacy_path.exists());
+    assert_eq!(resolved.recovery, RecoveryState::None);
+    // Persisted to the file.
+    assert!(legacy_path.exists());
+    let from_file = load_key_file(&legacy_path).unwrap();
+    assert_key_eq(&resolved.keys, &from_file);
     // Keyring was never contacted (it is unreachable).
     assert!(store.slot.borrow().is_empty());
     assert!(store.deleted.borrow().is_empty());
 }
 
 #[test]
-fn keyring_locked_recovery_distinct_ephemeral_per_boot() {
-    // Each locked-state boot produces a distinct ephemeral key and persists
-    // nothing — mirroring the lost-state guarantee.
+fn keyring_unreachable_second_boot_reuses_persisted_file_key() {
+    // Once the file fallback has run once, a second boot with the keyring
+    // still unreachable must load the SAME file key rather than generating
+    // yet another one — the fallback is stable across boots, not a new
+    // identity every time.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
@@ -1032,20 +1034,13 @@ fn keyring_locked_recovery_distinct_ephemeral_per_boot() {
 
     let store1 = FakeIdentityStore::unreachable();
     let resolved1 = resolve_identity_with_store(&store1, &legacy_path, dir.path()).unwrap();
-    assert_eq!(resolved1.recovery, RecoveryState::KeyringLocked);
+    assert_eq!(resolved1.recovery, RecoveryState::None);
 
     let store2 = FakeIdentityStore::unreachable();
     let resolved2 = resolve_identity_with_store(&store2, &legacy_path, dir.path()).unwrap();
-    assert_eq!(resolved2.recovery, RecoveryState::KeyringLocked);
+    assert_eq!(resolved2.recovery, RecoveryState::None);
 
-    // Two ephemeral keys are different (probabilistic — collision negligible).
-    assert_ne!(
-        resolved1.keys.public_key().to_hex(),
-        resolved2.keys.public_key().to_hex(),
-        "each locked-state boot produces a distinct ephemeral key"
-    );
-    // Neither boot persisted anything.
-    assert!(!legacy_path.exists());
+    assert_key_eq(&resolved1.keys, &resolved2.keys);
 }
 
 // ── B1: read-back corruption ──────────────────────────────────────────────
@@ -1363,13 +1358,14 @@ fn verify_fails_store_does_not_write_marker_or_delete_file() {
     );
 }
 
-// ── I2: corrupt keyring + marker = Lost recovery ──────────────────────────
+// ── I2: corrupt keyring + marker = silent fresh generation ────────────────
 
 #[test]
-fn corrupt_keyring_marker_present_no_file_is_lost() {
+fn corrupt_keyring_marker_present_no_file_generates_fresh_silently() {
     // I2: Present(corrupt) + migration marker + no identity.key → the prior
     // identity was migrated into the keyring and is now unrecoverable (corrupt
-    // AND no file backup). Must enter Lost recovery, NOT generate a fresh key.
+    // AND no file backup). Single-machine build: silently generate and
+    // persist a fresh identity rather than blocking on a lost-recovery screen.
     let dir = tempfile::tempdir().unwrap();
     let legacy_path = dir.path().join("identity.key");
     write_migration_marker(&migration_marker_path(dir.path())).unwrap();
@@ -1378,15 +1374,20 @@ fn corrupt_keyring_marker_present_no_file_is_lost() {
     let store = FakeIdentityStore::present_with("not-a-valid-nsec");
     let resolved = resolve_identity_with_store(&store, &legacy_path, dir.path()).unwrap();
 
-    // Must enter Lost recovery — a prior identity existed and is now unrecoverable.
     assert_eq!(
         resolved.recovery,
-        RecoveryState::Lost,
-        "corrupt keyring + marker + no file must return Lost recovery, not a fresh key"
+        RecoveryState::None,
+        "corrupt keyring + marker + no file must generate a fresh key, not block on recovery"
     );
-
-    // No identity.key written — the ephemeral key is in-memory only.
-    assert!(!legacy_path.exists());
+    // The corrupt keyring entry was cleared and replaced by a fresh valid key.
+    assert!(store
+        .deleted
+        .borrow()
+        .contains(&IDENTITY_KEY_NAME.to_string()));
+    assert!(
+        store.slot.borrow().contains_key(IDENTITY_KEY_NAME) || legacy_path.exists(),
+        "a fresh key must be stored in the keyring or the file"
+    );
 }
 
 #[test]

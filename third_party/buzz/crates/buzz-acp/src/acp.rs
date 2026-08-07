@@ -1977,6 +1977,11 @@ impl AcpClient {
     ///
     /// The request `id` is stored as `serde_json::Value` to support both numeric
     /// and string IDs per JSON-RPC 2.0.
+    ///
+    /// Exception: if the tool this permission covers matches an entry in
+    /// `BUZZ_ACP_DENY_TOOLS` (see [`is_denied_tool_call`]), auto-reject instead —
+    /// e.g. a research specialist whose underlying CLI has a native
+    /// `file_write`/`deliver_file` tool it should never use for a text handoff.
     async fn handle_permission_request(&mut self, msg: &serde_json::Value) -> Result<(), AcpError> {
         // Extract id as a Value — JSON-RPC 2.0 allows both numeric and string IDs.
         let id = msg
@@ -1999,10 +2004,16 @@ impl AcpClient {
             options.len()
         );
 
+        let denied = is_denied_tool_call(&msg["params"]["toolCall"]);
+
         // Find allow_once by kind — NEVER hardcode optionId.
-        let allow_once = options
-            .iter()
-            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
+        let allow_once = if denied {
+            None
+        } else {
+            options
+                .iter()
+                .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"))
+        };
 
         let response = if let Some(opt) = allow_once {
             let option_id = opt["optionId"]
@@ -2014,11 +2025,18 @@ impl AcpClient {
             );
             permission_response_selected(&id, option_id)
         } else {
-            // No allow_once — fall back to reject_once.
-            tracing::warn!(
-                target: "acp::permission",
-                "no allow_once option found in permission request id={id}, falling back to reject_once"
-            );
+            if denied {
+                tracing::warn!(
+                    target: "acp::permission",
+                    "auto-rejecting permission id={id}: tool call matches BUZZ_ACP_DENY_TOOLS"
+                );
+            } else {
+                // No allow_once — fall back to reject_once.
+                tracing::warn!(
+                    target: "acp::permission",
+                    "no allow_once option found in permission request id={id}, falling back to reject_once"
+                );
+            }
             let reject = options
                 .iter()
                 .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
@@ -2124,6 +2142,57 @@ fn steer_prompt_blocks(prompt_blocks: &[&str]) -> Vec<serde_json::Value> {
         .iter()
         .map(|text| serde_json::json!({ "type": "text", "text": text }))
         .collect()
+}
+
+/// Tool-name substrings this agent must never be allowed to execute, from
+/// `BUZZ_ACP_DENY_TOOLS` (comma-separated, case-insensitive substring match
+/// against the tool call's `title`/`kind`/`toolCallId`). Empty when unset —
+/// the common case, so most agents pay zero cost for this check.
+///
+/// Use case: some underlying agent CLIs (e.g. a research specialist backed
+/// by a coding-agent binary) ship a native `file_write`/`deliver_file` tool
+/// pair that the model can reach for on its own even when the system prompt
+/// says "paste the text inline" — the harness can't edit that binary's tool
+/// list, but it *can* refuse the permission request for it, which forces the
+/// model back onto a plain-text reply instead of a phantom local attachment
+/// no other agent can resolve.
+fn denied_tool_name_tokens() -> Vec<String> {
+    std::env::var("BUZZ_ACP_DENY_TOOLS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Whether a `session/request_permission` request's `toolCall` object matches
+/// one of the [`denied_tool_name_tokens`]. Checks `title`, `kind`, and
+/// `toolCallId` — whichever field actually carries the tool's name depends on
+/// the upstream agent's ACP implementation, so all three are checked as a
+/// case-insensitive substring match rather than assuming one exact field.
+fn is_denied_tool_call(tool_call: &serde_json::Value) -> bool {
+    tool_call_matches_denylist(tool_call, &denied_tool_name_tokens())
+}
+
+/// Pure matcher behind [`is_denied_tool_call`], split out so tests can check
+/// the substring logic without mutating the process-global `BUZZ_ACP_DENY_TOOLS`
+/// env var (Rust tests run in parallel; env mutation across threads is racy).
+fn tool_call_matches_denylist(tool_call: &serde_json::Value, denied: &[String]) -> bool {
+    if denied.is_empty() {
+        return false;
+    }
+    let haystack = [
+        tool_call.get("title").and_then(|v| v.as_str()),
+        tool_call.get("kind").and_then(|v| v.as_str()),
+        tool_call.get("toolCallId").and_then(|v| v.as_str()),
+        tool_call.get("name").and_then(|v| v.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase();
+    denied.iter().any(|token| haystack.contains(token.as_str()))
 }
 
 /// Build a JSON-RPC permission response with `outcome: "selected"`.
@@ -2419,6 +2488,41 @@ mod tests {
         // Found by kind, not by hardcoded optionId
         assert_eq!(opt["kind"].as_str(), Some("allow_once"));
         assert_eq!(opt["optionId"].as_str(), Some("opt-allow-99"));
+    }
+
+    #[test]
+    fn tool_call_matches_denylist_by_title() {
+        let denied = vec!["deliver_file".to_string(), "file_write".to_string()];
+        let tool_call: serde_json::Value =
+            serde_json::from_str(r#"{"toolCallId": "call_1", "title": "deliver_file", "kind": "other"}"#)
+                .unwrap();
+        assert!(tool_call_matches_denylist(&tool_call, &denied));
+    }
+
+    #[test]
+    fn tool_call_matches_denylist_is_case_insensitive() {
+        let denied = vec!["deliver_file".to_string()];
+        let tool_call: serde_json::Value =
+            serde_json::from_str(r#"{"toolCallId": "call_1", "title": "Deliver_File", "kind": "other"}"#)
+                .unwrap();
+        assert!(tool_call_matches_denylist(&tool_call, &denied));
+    }
+
+    #[test]
+    fn tool_call_does_not_match_unrelated_tool() {
+        let denied = vec!["deliver_file".to_string(), "file_write".to_string()];
+        let tool_call: serde_json::Value =
+            serde_json::from_str(r#"{"toolCallId": "call_2", "title": "web_search_tool", "kind": "other"}"#)
+                .unwrap();
+        assert!(!tool_call_matches_denylist(&tool_call, &denied));
+    }
+
+    #[test]
+    fn empty_denylist_never_matches() {
+        let tool_call: serde_json::Value =
+            serde_json::from_str(r#"{"toolCallId": "call_3", "title": "deliver_file", "kind": "other"}"#)
+                .unwrap();
+        assert!(!tool_call_matches_denylist(&tool_call, &[]));
     }
 
     #[test]

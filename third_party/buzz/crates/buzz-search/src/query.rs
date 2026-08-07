@@ -1,4 +1,4 @@
-//! NIP-50 search query against Postgres FTS, community-scoped.
+//! NIP-50 search query against SQLite FTS5, community-scoped.
 //!
 //! The relay never trusts a hit by itself: this layer returns canonical event
 //! ids ordered by relevance, the relay refetches `StoredEvent`s through
@@ -9,7 +9,7 @@
 //! See conformance row 50.
 
 use buzz_core::CommunityId;
-use sqlx::{PgPool, QueryBuilder, Row};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::SearchError;
@@ -34,10 +34,9 @@ use crate::error::SearchError;
 /// type level.
 ///
 /// Empty-vec edge cases are intentionally not special-cased:
-/// `Channels(vec![])` emits `channel_id = ANY('{}')` which Postgres
-/// evaluates as false-for-all-rows (zero hits), and
-/// `ChannelsOrChannelLess(vec![])` emits `(channel_id = ANY('{}') OR
-/// channel_id IS NULL)` which is equivalent to `ChannelLessOnly`.
+/// `Channels(vec![])` emits `channel_id IN ()` which is false-for-all-rows
+/// (zero hits), and `ChannelsOrChannelLess(vec![])` emits `(channel_id IN ()
+/// OR channel_id IS NULL)` which is equivalent to `ChannelLessOnly`.
 #[derive(Debug, Clone)]
 pub enum ChannelScope {
     /// No channel constraint. Matches every event in the community.
@@ -55,13 +54,16 @@ pub enum ChannelScope {
 /// Search matching semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
-    /// Standard NIP-50-ish word/lexeme search using `websearch_to_tsquery`.
+    /// Standard NIP-50-ish word/lexeme search: every whitespace-delimited
+    /// token in the query must appear in the document (AND semantics),
+    /// matching the old `websearch_to_tsquery` behavior for plain (no
+    /// operator) input.
     FullText,
     /// Prefix-match the trailing normalized query token (`pro` matches `project`).
     ///
     /// Intended for bounded typeahead surfaces such as the desktop topbar. The
     /// relay still refetches and re-authorizes every hit; this mode changes only
-    /// the candidate tsquery, not the access boundary.
+    /// the candidate FTS5 query, not the access boundary.
     Prefix,
 }
 
@@ -113,7 +115,8 @@ pub struct SearchHit {
     pub channel_id: Option<Uuid>,
     /// Unix seconds.
     pub created_at: i64,
-    /// `ts_rank_cd` relevance score (higher = better).
+    /// Relevance score, higher = better (negated FTS5 `bm25()`, whose raw
+    /// sign convention is the opposite — see `search()` below).
     pub rank: f32,
 }
 
@@ -128,54 +131,101 @@ pub struct SearchResult {
 
 const PER_PAGE_MAX: u32 = 500;
 const PER_PAGE_DEFAULT: u32 = 100;
-/// Hard cap on search text handed to Postgres text-search parsers. This keeps a
-/// single request from spending unbounded parser CPU/memory while still allowing
-/// far longer queries than the desktop UI normally emits.
+/// Hard cap on search text handed to the FTS5 tokenizer. This keeps a single
+/// request from spending unbounded parser CPU/memory while still allowing far
+/// longer queries than the desktop UI normally emits.
 const SEARCH_TEXT_MAX_CHARS: usize = 4096;
 /// Search pages are currently server-generated (WS uses 1..=MAX_SEARCH_PAGES,
 /// bridge uses page 1), but clamp here too so a future caller cannot accidentally
 /// wire untrusted input into a multi-trillion-row OFFSET.
 const PAGE_MAX: u32 = 1000;
 
-fn push_tsquery(qb: &mut QueryBuilder<sqlx::Postgres>, mode: SearchMode, search_text: &str) {
+/// Escapes a single token as an FTS5 string literal (double-quoted): doubles
+/// embedded `"` the way SQL string literals double embedded `'`. Wrapping
+/// every token in quotes means FTS5's query-syntax operators (`AND`, `OR`,
+/// `NOT`, `NEAR`, `col:`, `^`, `*`) inside raw user input are treated as
+/// literal text, never parsed as operators — this is the injection boundary,
+/// not a convenience.
+fn quote_fts5_token(token: &str) -> String {
+    let mut out = String::with_capacity(token.len() + 2);
+    out.push('"');
+    for ch in token.chars() {
+        if ch == '"' {
+            out.push('"');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
+}
+
+/// A whitespace-delimited token carries no signal for the `unicode61`
+/// tokenizer (and no signal for Postgres `to_tsquery`/`websearch_to_tsquery`
+/// either) unless it contains at least one letter or digit. Quoting a
+/// punctuation-only token (e.g. a lone `'` or `&`) still produces a
+/// syntactically valid FTS5 phrase, but the tokenizer reduces it to zero
+/// tokens, so an `AND`-ed chain that includes it can never match anything —
+/// this must be filtered out here rather than sent to FTS5, mirroring the
+/// old Postgres text-search parser silently dropping non-lexeme "words".
+fn has_tokenizable_char(token: &str) -> bool {
+    token.chars().any(|c| c.is_alphanumeric())
+}
+
+/// Builds the FTS5 `MATCH` query string for the search text, per [`SearchMode`].
+///
+/// `FullText` ANDs every whitespace-delimited token that carries at least one
+/// letter/digit (quoted, so punctuation and FTS5 operators in the input are
+/// literal — see [`has_tokenizable_char`] for why punctuation-only tokens are
+/// dropped instead of quoted). `Prefix` keeps every completed token an exact
+/// (quoted) match and turns only the trailing token into a prefix match —
+/// FTS5 prefix syntax (`term*`) does not accept a quoted operand, so the
+/// trailing token is restricted to word characters instead of being quoted.
+fn build_match_query(mode: SearchMode, search_text: &str) -> Option<String> {
+    let tokens: Vec<&str> = search_text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
     match mode {
         SearchMode::FullText => {
-            qb.push("websearch_to_tsquery('simple', ");
-            qb.push_bind(search_text);
-            qb.push(")");
+            let parts: Vec<String> = tokens
+                .iter()
+                .filter(|t| has_tokenizable_char(t))
+                .map(|t| quote_fts5_token(t))
+                .collect();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" AND "))
+            }
         }
         SearchMode::Prefix => {
-            // Prefix mode is for typeahead: completed whitespace-delimited tokens
-            // are exact, and only the trailing token is suffixed with `:*`.
-            // Each raw token still goes through Postgres' `simple` parser before
-            // tsquery construction so query-side normalization matches the
-            // `search_tsv` generated column. `quote_literal` prevents tsquery
-            // syntax injection from punctuation/operators in the raw topbar input.
-            qb.push(
-                "(SELECT COALESCE(\
-                 string_agg(\
-                   quote_literal(lexeme) || CASE WHEN token_ord = max_token_ord THEN ':*' ELSE '' END, \
-                   ' & ' ORDER BY token_ord, lex_ord\
-                 ), \
-                 ''\
-                 )::tsquery \
-                 FROM (\
-                   SELECT raw_token.token_ord, normalized.lexeme, normalized.lex_ord, raw_token.max_token_ord \
-                   FROM (\
-                     SELECT token, token_ord, max(token_ord) OVER () AS max_token_ord \
-                     FROM regexp_split_to_table(",
-            );
-            qb.push_bind(search_text);
-            qb.push(
-                ", '\\s+') WITH ORDINALITY AS split(token, token_ord)\
-                   ) AS raw_token \
-                   CROSS JOIN LATERAL unnest(tsvector_to_array(to_tsvector('simple', raw_token.token))) \
-                     WITH ORDINALITY AS normalized(lexeme, lex_ord)\
-                 ) AS prefix_terms)",
-            );
+            let mut parts: Vec<String> = tokens[..tokens.len() - 1]
+                .iter()
+                .filter(|t| has_tokenizable_char(t))
+                .map(|t| quote_fts5_token(t))
+                .collect();
+            let last = tokens[tokens.len() - 1];
+            let prefix: String = last
+                .chars()
+                .filter(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if prefix.is_empty() {
+                if parts.is_empty() {
+                    return None;
+                }
+            } else {
+                parts.push(format!("{prefix}*"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" AND "))
+            }
         }
     }
 }
+
 fn normalized_search_text(q: &str) -> Option<String> {
     let trimmed = q.trim();
     if trimmed.is_empty() {
@@ -195,26 +245,44 @@ fn normalized_search_text(q: &str) -> Option<String> {
     }
 }
 
+fn push_hex_in_list(qb: &mut QueryBuilder<Sqlite>, values: &[Vec<u8>]) {
+    qb.push("(");
+    let mut sep = qb.separated(", ");
+    for v in values {
+        sep.push_bind(hex::encode(v));
+    }
+    sep.push_unseparated(")");
+}
+
 /// Execute a community-scoped FTS query.
 ///
 /// SQL shape (always):
 /// ```sql
-/// SELECT id, kind, pubkey, channel_id, EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s,
-///        ts_rank_cd(search_tsv, query) AS rank
-/// FROM events,
-///      <mode-specific tsquery> AS query
-/// WHERE community_id = $ctx
-///   AND deleted_at IS NULL
-///   AND search_tsv @@ query
+/// SELECT event_id, kind, pubkey, channel_id, created_at, bm25(events_fts) AS rank
+/// FROM events_fts
+/// WHERE events_fts MATCH <mode-specific query>
+///   AND community_id = $ctx
 ///   [+ channel scope, kinds, authors, since, until]
-/// ORDER BY rank DESC, created_at DESC, id
+/// ORDER BY rank ASC, created_at DESC, event_id
 /// LIMIT $per_page OFFSET (($page - 1) * $per_page)
 /// ```
 ///
-/// `community_id = $ctx` is the first predicate and is non-negotiable. There
-/// is no code path through this function that omits it.
-pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, SearchError> {
+/// `community_id = $ctx` is a plain (UNINDEXED-column) predicate ANDed onto
+/// the FTS5 `MATCH` — it is never expressible through the search text itself,
+/// so there is no code path through this function that omits it.
+///
+/// `bm25()` returns a *smaller* (more negative) value for a *better* match;
+/// [`SearchHit::rank`] negates it so callers keep the "higher = better"
+/// convention the previous Postgres `ts_rank_cd`-based implementation used.
+pub async fn search(pool: &SqlitePool, query: &SearchQuery) -> Result<SearchResult, SearchError> {
     let Some(search_text) = normalized_search_text(&query.q) else {
+        return Ok(SearchResult {
+            hits: Vec::new(),
+            page: query.page.clamp(1, PAGE_MAX),
+        });
+    };
+
+    let Some(match_query) = build_match_query(query.mode, &search_text) else {
         return Ok(SearchResult {
             hits: Vec::new(),
             page: query.page.clamp(1, PAGE_MAX),
@@ -230,21 +298,18 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
     let page = query.page.clamp(1, PAGE_MAX);
     let offset = ((page - 1) as i64) * (per_page_actual as i64);
 
-    let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
-        "SELECT id, kind, pubkey, channel_id, \
-         EXTRACT(EPOCH FROM created_at)::bigint AS created_at_s, \
-         ts_rank_cd(search_tsv, search_query.query) AS rank \
-         FROM events CROSS JOIN LATERAL (SELECT ",
+    let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
+        "SELECT event_id, kind, pubkey, channel_id, created_at, bm25(events_fts) AS rank \
+         FROM events_fts WHERE events_fts MATCH ",
     );
-    push_tsquery(&mut qb, query.mode, &search_text);
-    qb.push(" AS query) AS search_query WHERE community_id = ");
-    qb.push_bind(*query.community.as_uuid());
-    qb.push(" AND deleted_at IS NULL AND search_tsv @@ search_query.query");
+    qb.push_bind(match_query);
+    qb.push(" AND community_id = ");
+    qb.push_bind(query.community.as_uuid().to_string());
 
     // Channel scope — see `ChannelScope` doc for the four-case mapping. The
-    // emitted SQL fragments are identical to the legacy 2x2 tuple for the
-    // three carry-over cases; `ChannelLessOnly` is the new fence that the
-    // old shape could not express.
+    // emitted SQL fragments are the SQLite `IN (...)` equivalents of the
+    // legacy Postgres `= ANY(...)` shapes for the three carry-over cases;
+    // `ChannelLessOnly` is the fence the old 2-tuple shape could not express.
     match &query.channel_scope {
         ChannelScope::Any => {
             // No channel constraint.
@@ -253,46 +318,52 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
             qb.push(" AND channel_id IS NULL");
         }
         ChannelScope::Channels(ids) => {
-            qb.push(" AND channel_id = ANY(");
-            qb.push_bind(ids.clone());
-            qb.push(")");
+            qb.push(" AND channel_id IN (");
+            let mut sep = qb.separated(", ");
+            for id in ids {
+                sep.push_bind(id.to_string());
+            }
+            sep.push_unseparated(")");
         }
         ChannelScope::ChannelsOrChannelLess(ids) => {
-            qb.push(" AND (channel_id = ANY(");
-            qb.push_bind(ids.clone());
-            qb.push(") OR channel_id IS NULL)");
+            qb.push(" AND (channel_id IN (");
+            let mut sep = qb.separated(", ");
+            for id in ids {
+                sep.push_bind(id.to_string());
+            }
+            sep.push_unseparated(") OR channel_id IS NULL)");
         }
     }
 
     if let Some(ref kinds) = query.kinds {
         if !kinds.is_empty() {
-            qb.push(" AND kind = ANY(");
-            qb.push_bind(kinds.clone());
-            qb.push(")");
+            qb.push(" AND kind IN (");
+            let mut sep = qb.separated(", ");
+            for k in kinds {
+                sep.push_bind(*k);
+            }
+            sep.push_unseparated(")");
         }
     }
 
     if let Some(ref authors) = query.authors {
         if !authors.is_empty() {
-            qb.push(" AND pubkey = ANY(");
-            qb.push_bind(authors.clone());
-            qb.push(")");
+            qb.push(" AND pubkey IN ");
+            push_hex_in_list(&mut qb, authors);
         }
     }
 
     if let Some(since) = query.since {
-        qb.push(" AND created_at >= to_timestamp(");
-        qb.push_bind(since);
-        qb.push(")");
+        qb.push(" AND created_at >= ");
+        qb.push_bind(unix_seconds_to_rfc3339(since));
     }
 
     if let Some(until) = query.until {
-        qb.push(" AND created_at <= to_timestamp(");
-        qb.push_bind(until);
-        qb.push(")");
+        qb.push(" AND created_at <= ");
+        qb.push_bind(unix_seconds_to_rfc3339(until));
     }
 
-    qb.push(" ORDER BY rank DESC, created_at DESC, id LIMIT ");
+    qb.push(" ORDER BY rank ASC, created_at DESC, event_id LIMIT ");
     qb.push_bind(per_page_actual as i64);
     qb.push(" OFFSET ");
     qb.push_bind(offset);
@@ -301,25 +372,51 @@ pub async fn search(pool: &PgPool, query: &SearchQuery) -> Result<SearchResult, 
 
     let mut hits = Vec::with_capacity(rows.len());
     for row in rows {
-        let id_bytes: Vec<u8> = row.try_get("id")?;
-        let pk_bytes: Vec<u8> = row.try_get("pubkey")?;
-        let id: [u8; 32] = id_bytes.try_into().map_err(|v: Vec<u8>| {
-            sqlx::Error::Decode(format!("event id column is {} bytes, expected 32", v.len()).into())
-        })?;
-        let pubkey: [u8; 32] = pk_bytes.try_into().map_err(|v: Vec<u8>| {
-            sqlx::Error::Decode(format!("pubkey column is {} bytes, expected 32", v.len()).into())
-        })?;
+        let id_hex: String = row.try_get("event_id")?;
+        let pk_hex: String = row.try_get("pubkey")?;
+        let id = decode_hex_32(&id_hex, "event_id")?;
+        let pubkey = decode_hex_32(&pk_hex, "pubkey")?;
+        let channel_id: Option<String> = row.try_get("channel_id")?;
+        let channel_id = channel_id
+            .map(|s| {
+                Uuid::parse_str(&s).map_err(|e| {
+                    sqlx::Error::Decode(format!("channel_id column is not a UUID: {e}").into())
+                })
+            })
+            .transpose()?;
+        let created_at_str: String = row.try_get("created_at")?;
+        let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+            .map_err(|e| {
+                sqlx::Error::Decode(format!("created_at column is not RFC3339: {e}").into())
+            })?
+            .timestamp();
+        let bm25_rank: f64 = row.try_get("rank")?;
+
         hits.push(SearchHit {
             event_id: id,
             kind: row.try_get("kind")?,
             pubkey,
-            channel_id: row.try_get("channel_id")?,
-            created_at: row.try_get("created_at_s")?,
-            rank: row.try_get("rank")?,
+            channel_id,
+            created_at,
+            rank: -bm25_rank as f32,
         });
     }
 
     Ok(SearchResult { hits, page })
+}
+
+fn decode_hex_32(s: &str, column: &str) -> Result<[u8; 32], sqlx::Error> {
+    let bytes = hex::decode(s)
+        .map_err(|e| sqlx::Error::Decode(format!("{column} column is not hex: {e}").into()))?;
+    bytes.try_into().map_err(|v: Vec<u8>| {
+        sqlx::Error::Decode(format!("{column} column is {} bytes, expected 32", v.len()).into())
+    })
+}
+
+fn unix_seconds_to_rfc3339(secs: i64) -> String {
+    chrono::DateTime::from_timestamp(secs, 0)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(test)]
@@ -348,5 +445,420 @@ mod tests {
         let long = "x".repeat(SEARCH_TEXT_MAX_CHARS + 10);
         let cleaned = normalized_search_text(&long).expect("non-empty");
         assert_eq!(cleaned.chars().count(), SEARCH_TEXT_MAX_CHARS);
+    }
+
+    #[test]
+    fn quote_fts5_token_escapes_embedded_quotes() {
+        assert_eq!(quote_fts5_token("hello"), "\"hello\"");
+        assert_eq!(quote_fts5_token("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn build_match_query_full_text_ands_quoted_tokens() {
+        let q = build_match_query(SearchMode::FullText, "hello world").unwrap();
+        assert_eq!(q, "\"hello\" AND \"world\"");
+    }
+
+    #[test]
+    fn build_match_query_full_text_neutralizes_operators_in_input() {
+        // A raw `OR`/`NOT`/`NEAR`/column-filter token must stay literal text,
+        // not be parsed as an FTS5 query operator.
+        let q = build_match_query(SearchMode::FullText, "foo OR bar").unwrap();
+        assert_eq!(q, "\"foo\" AND \"OR\" AND \"bar\"");
+    }
+
+    #[test]
+    fn build_match_query_prefix_only_suffixes_trailing_token() {
+        let q = build_match_query(SearchMode::Prefix, "hello wor").unwrap();
+        assert_eq!(q, "\"hello\" AND wor*");
+    }
+
+    #[test]
+    fn build_match_query_prefix_strips_punctuation_from_trailing_token() {
+        let q = build_match_query(SearchMode::Prefix, "wor!!").unwrap();
+        assert_eq!(q, "wor*");
+    }
+
+    #[test]
+    fn build_match_query_rejects_all_whitespace() {
+        assert!(build_match_query(SearchMode::FullText, "   ").is_none());
+    }
+
+    #[test]
+    fn build_match_query_full_text_drops_punctuation_only_tokens() {
+        // Punctuation-only tokens tokenize to nothing under `unicode61`; an
+        // AND-chain that included them as quoted phrases could never match.
+        let q = build_match_query(SearchMode::FullText, "alpha ' : & beta").unwrap();
+        assert_eq!(q, "\"alpha\" AND \"beta\"");
+    }
+
+    #[test]
+    fn build_match_query_rejects_all_punctuation() {
+        assert!(build_match_query(SearchMode::FullText, "' : & | ( ) !").is_none());
+    }
+
+    #[test]
+    fn build_match_query_prefix_drops_punctuation_only_middle_tokens() {
+        let q = build_match_query(SearchMode::Prefix, "alpha ' beta be").unwrap();
+        assert_eq!(q, "\"alpha\" AND \"beta\" AND be*");
+    }
+
+    // ── Integration tests against a real in-memory SQLite DB ────────────────
+    // These exercise the actual `events_fts` triggers from `buzz-db`'s
+    // migration, not just the query-builder logic above.
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite pool");
+        buzz_db::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn insert_community(pool: &SqlitePool, id: Uuid, host: &str) {
+        sqlx::query("INSERT INTO communities (id, host) VALUES (?, ?)")
+            .bind(id.to_string())
+            .bind(host)
+            .execute(pool)
+            .await
+            .expect("insert community");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_event(
+        pool: &SqlitePool,
+        community_id: Uuid,
+        event_id: [u8; 32],
+        pubkey: [u8; 32],
+        kind: i32,
+        content: &str,
+        channel_id: Option<Uuid>,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        sqlx::query(
+            "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
+             VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
+        )
+        .bind(community_id.to_string())
+        .bind(event_id.to_vec())
+        .bind(pubkey.to_vec())
+        .bind(created_at)
+        .bind(kind)
+        .bind(content)
+        .bind(vec![0u8; 64])
+        .bind(channel_id.map(|c| c.to_string()))
+        .execute(pool)
+        .await
+        .expect("insert event");
+    }
+
+    fn id32(byte: u8) -> [u8; 32] {
+        let mut a = [0u8; 32];
+        a[0] = byte;
+        a
+    }
+
+    #[tokio::test]
+    async fn search_finds_inserted_event_by_content() {
+        let pool = test_pool().await;
+        let community = Uuid::new_v4();
+        insert_community(&pool, community, "example.test").await;
+        insert_event(
+            &pool,
+            community,
+            id32(1),
+            id32(0xAA),
+            1,
+            "hello from the buzz relay",
+            None,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        let result = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "buzz relay".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].event_id, id32(1));
+        assert_eq!(result.hits[0].pubkey, id32(0xAA));
+    }
+
+    #[tokio::test]
+    async fn search_is_scoped_to_community() {
+        let pool = test_pool().await;
+        let community_a = Uuid::new_v4();
+        let community_b = Uuid::new_v4();
+        insert_community(&pool, community_a, "a.test").await;
+        insert_community(&pool, community_b, "b.test").await;
+        insert_event(
+            &pool,
+            community_b,
+            id32(2),
+            id32(0xBB),
+            1,
+            "secret content in community b",
+            None,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        let result = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community_a),
+                q: "secret".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+
+        assert!(
+            result.hits.is_empty(),
+            "search text matching another community's content must not leak across communities"
+        );
+    }
+
+    #[tokio::test]
+    async fn soft_deleted_events_drop_out_of_search() {
+        let pool = test_pool().await;
+        let community = Uuid::new_v4();
+        insert_community(&pool, community, "example.test").await;
+        insert_event(
+            &pool,
+            community,
+            id32(3),
+            id32(0xCC),
+            1,
+            "ephemeral note about widgets",
+            None,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        sqlx::query("UPDATE events SET deleted_at = ? WHERE id = ?")
+            .bind(chrono::Utc::now())
+            .bind(id32(3).to_vec())
+            .execute(&pool)
+            .await
+            .expect("soft delete");
+
+        let result = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "widgets".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+
+        assert!(result.hits.is_empty(), "soft-deleted events must not be searchable");
+    }
+
+    #[tokio::test]
+    async fn prefix_mode_matches_typeahead_token() {
+        let pool = test_pool().await;
+        let community = Uuid::new_v4();
+        insert_community(&pool, community, "example.test").await;
+        insert_event(
+            &pool,
+            community,
+            id32(4),
+            id32(0xDD),
+            1,
+            "project kickoff notes",
+            None,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        let result = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "proj".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::Prefix,
+            },
+        )
+        .await
+        .expect("search succeeds");
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].event_id, id32(4));
+    }
+
+    #[tokio::test]
+    async fn channel_scope_filters_hits() {
+        let pool = test_pool().await;
+        let community = Uuid::new_v4();
+        insert_community(&pool, community, "example.test").await;
+        let channel_a = Uuid::new_v4();
+        let channel_b = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, 'a', ?)",
+        )
+        .bind(community.to_string())
+        .bind(channel_a.to_string())
+        .bind(id32(0xEE).to_vec())
+        .execute(&pool)
+        .await
+        .expect("insert channel a");
+        sqlx::query(
+            "INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, 'b', ?)",
+        )
+        .bind(community.to_string())
+        .bind(channel_b.to_string())
+        .bind(id32(0xEE).to_vec())
+        .execute(&pool)
+        .await
+        .expect("insert channel b");
+
+        insert_event(
+            &pool,
+            community,
+            id32(5),
+            id32(0xEE),
+            1,
+            "message in channel a about rockets",
+            Some(channel_a),
+            chrono::Utc::now(),
+        )
+        .await;
+        insert_event(
+            &pool,
+            community,
+            id32(6),
+            id32(0xEE),
+            1,
+            "message in channel b about rockets",
+            Some(channel_b),
+            chrono::Utc::now(),
+        )
+        .await;
+
+        let result = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "rockets".to_string(),
+                channel_scope: ChannelScope::Channels(vec![channel_a]),
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].event_id, id32(5));
+    }
+
+    #[tokio::test]
+    async fn moderation_content_edit_updates_search_index() {
+        let pool = test_pool().await;
+        let community = Uuid::new_v4();
+        insert_community(&pool, community, "example.test").await;
+        insert_event(
+            &pool,
+            community,
+            id32(7),
+            id32(0xFF),
+            1,
+            "original wording here",
+            None,
+            chrono::Utc::now(),
+        )
+        .await;
+
+        sqlx::query("UPDATE events SET content = ? WHERE id = ?")
+            .bind("redacted placeholder text")
+            .bind(id32(7).to_vec())
+            .execute(&pool)
+            .await
+            .expect("content update");
+
+        let stale = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "original wording".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+        assert!(stale.hits.is_empty(), "old content must no longer match");
+
+        let fresh = search(
+            &pool,
+            &SearchQuery {
+                community: CommunityId::from_uuid(community),
+                q: "redacted placeholder".to_string(),
+                channel_scope: ChannelScope::Any,
+                kinds: None,
+                authors: None,
+                since: None,
+                until: None,
+                page: 1,
+                per_page: 10,
+                mode: SearchMode::FullText,
+            },
+        )
+        .await
+        .expect("search succeeds");
+        assert_eq!(fresh.hits.len(), 1);
+        assert_eq!(fresh.hits[0].event_id, id32(7));
     }
 }

@@ -1,0 +1,24 @@
+---
+description: 强制全仓库统一 UTF-8，禁止 PowerShell 默认编码写文件导致内容损坏
+alwaysApply: true
+---
+
+# 编码：全仓库统一 UTF-8
+
+## 背景（真实事故，别再犯）
+
+`buzz-relay/src/event.rs` 曾被 PowerShell `Set-Content` 写坏中文/UTF-8 内容，最终靠 `git checkout` 从历史还原才修复。Windows PowerShell（尤其 5.1）默认输出/写文件编码是系统 ANSI 代码页（中文系统即 GBK），不是 UTF-8，任何经过它的文件写入、重定向、管道都有隐性乱码风险，且往往当下不报错，等下次读取/编译才炸。
+
+## 硬性规则
+
+| 场景 | 正确做法 | 禁止 |
+|---|---|---|
+| 创建/编辑任意文件内容（含中文的 `.rs`/`.sql`/`.md`/`.toml`/`.mdc` 等） | 只用 Write / StrReplace / EditNotebook 工具落内容 | `Set-Content`/`Out-File`/`Add-Content`/`echo >`/heredoc 等 shell 方式写文件正文 |
+| 确需 shell 产出文件（如工具自身生成的产物，非本 agent 手写内容） | 显式指定 `-Encoding utf8NoBOM`（Rust/SQL 源文件不要带 BOM，`rustc`/`sqlite3` CLI 对 BOM 处理不一致，见过因 BOM 导致迁移文件加载异常） | 依赖 PowerShell 默认编码，或用会带 BOM 的 `-Encoding utf8` |
+| PowerShell 会话里显示/传递中文（日志 grep、commit message、脚本参数） | 会话内先 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`；必要时 `chcp 65001` | 放任默认代码页读写中文后再事后修乱码 |
+| Git commit message 含中文 | 直接 `git commit -m "中文内容"` 即可，现代 git 默认按 UTF-8 处理；乱码时先查 `git config i18n.commitEncoding` | 不要手动转码成其它编码再提交 |
+| 新建文件的物理编码 | 统一 UTF-8 无 BOM | 混用 GBK / UTF-8-BOM / ANSI，仓库内编码不统一 |
+
+## 原则
+
+**一切文件读写只走 Write/StrReplace/Read 工具，不走 shell 重定向或 `Set-Content` 写正文**——这本身就规避了 PowerShell 编码坑；`Shell` 工具只用来跑真正的系统命令（`git`/`cargo`/`docker`/`sqlite3` 等），不用来生成或改写带中文的文件内容。

@@ -5,7 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 use uuid::Uuid;
 
 use crate::{error::Result, CommunityId};
@@ -57,7 +57,7 @@ pub struct ProductFeedbackRecord {
 /// changing its source community; callers intentionally receive the same
 /// successful acknowledgment in both cases.
 pub async fn insert(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     feedback: NewProductFeedback<'_>,
 ) -> Result<Uuid> {
@@ -86,7 +86,7 @@ pub async fn insert(
 }
 
 /// List feedback across all communities, newest received first.
-pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<ProductFeedbackRecord>> {
+pub async fn list(pool: &SqlitePool, limit: i64) -> Result<Vec<ProductFeedbackRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT id, community_id, event_id, submitter_pubkey, category, body,
@@ -122,12 +122,12 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires migrated Postgres"]
+    #[ignore = "requires migrated Sqlite"]
     async fn duplicate_event_keeps_first_community_provenance() {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .expect("BUZZ_TEST_DATABASE_URL or DATABASE_URL");
-        let pool = PgPool::connect(&database_url)
+        let pool = SqlitePool::connect(&database_url)
             .await
             .expect("connect test DB");
         let first = Uuid::new_v4();
@@ -179,8 +179,9 @@ mod tests {
             .execute(&pool)
             .await
             .expect("delete feedback");
-        sqlx::query("DELETE FROM communities WHERE id = ANY($1)")
-            .bind(vec![first, second])
+        let mut qb = sqlx::QueryBuilder::new("DELETE FROM communities WHERE id IN ");
+        crate::push_in_list(&mut qb, vec![first, second]);
+        qb.build()
             .execute(&pool)
             .await
             .expect("delete communities");

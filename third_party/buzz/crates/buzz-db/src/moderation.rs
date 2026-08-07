@@ -1,4 +1,4 @@
-//! Community moderation persistence (Phase 1 contract).
+﻿//! Community moderation persistence (Phase 1 contract).
 //!
 //! Backs the NIP-56 report queue (`moderation_reports`), ban/timeout state
 //! (`community_bans`), and the moderation audit trail (`moderation_actions`)
@@ -15,7 +15,7 @@
 //! through the integration thread.
 
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 use uuid::Uuid;
 
 use crate::error::Result;
@@ -85,11 +85,11 @@ pub struct BanRecord {
     pub pubkey: Vec<u8>,
     /// Whether the member is currently banned (check `ban_expires_at`).
     pub banned: bool,
-    /// Ban expiry; `None` while `banned` ⇒ permanent.
+    /// Ban expiry; `None` while `banned` ? permanent.
     pub ban_expires_at: Option<DateTime<Utc>>,
     /// Moderator-supplied ban reason (private).
     pub ban_reason: Option<String>,
-    /// Write-block until this timestamp; `None` or past ⇒ not timed out.
+    /// Write-block until this timestamp; `None` or past ? not timed out.
     pub muted_until: Option<DateTime<Utc>>,
     /// Moderator-supplied timeout reason (private).
     pub mute_reason: Option<String>,
@@ -170,7 +170,7 @@ pub struct ActionRecord {
 /// Insert a new report row. Idempotent on `(community, report_event_id)`:
 /// re-ingesting the same signed report is a no-op returning the existing id.
 pub async fn insert_report(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     report: NewReport<'_>,
 ) -> Result<Uuid> {
@@ -180,19 +180,25 @@ pub async fn insert_report(
         ReportTarget::Blob(sha256) => ("blob", None, None, Some(sha256.as_slice())),
     };
 
+    // `id` has no DB-side default (SQLite has no server-side random-UUID
+    // generator): generate it in Rust. On a same-`report_event_id` reingest
+    // the `ON CONFLICT` branch leaves the existing row's `id` untouched, so
+    // `RETURNING id` still yields the original id, not this fresh one.
+    let new_id = Uuid::new_v4();
     let row = sqlx::query(
         r#"
         INSERT INTO moderation_reports (
-            community_id, report_event_id, reporter_pubkey, target_kind,
+            community_id, id, report_event_id, reporter_pubkey, target_kind,
             target_event_id, target_pubkey, target_blob_sha256, channel_id,
             report_type, note
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (community_id, report_event_id) DO UPDATE SET
             report_event_id = EXCLUDED.report_event_id
         RETURNING id
         "#,
     )
     .bind(community.as_uuid())
+    .bind(new_id)
     .bind(report.report_event_id)
     .bind(report.reporter_pubkey)
     .bind(target_kind)
@@ -211,7 +217,7 @@ pub async fn insert_report(
 /// List reports for the moderation queue, newest first.
 /// `status = None` lists all; `Some("open")` etc. filters.
 pub async fn list_reports(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     status: Option<&str>,
     limit: i64,
@@ -222,7 +228,7 @@ pub async fn list_reports(
                target_pubkey, target_blob_sha256, channel_id, report_type, note,
                status, resolved_by, resolved_at, action_id, created_at
         FROM moderation_reports
-        WHERE community_id = $1 AND ($2::text IS NULL OR status = $2)
+        WHERE community_id = $1 AND ($2 IS NULL OR status = $2)
         ORDER BY created_at DESC
         LIMIT $3
         "#,
@@ -238,7 +244,7 @@ pub async fn list_reports(
 
 /// Fetch one report by row id.
 pub async fn get_report(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     report_id: Uuid,
 ) -> Result<Option<ReportRecord>> {
@@ -261,7 +267,7 @@ pub async fn get_report(
 
 /// Fetch one report by signed NIP-56 report event id.
 pub async fn get_report_by_event(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     report_event_id: &[u8],
 ) -> Result<Option<ReportRecord>> {
@@ -285,7 +291,7 @@ pub async fn get_report_by_event(
 /// Mark a report resolved/dismissed/escalated, linking the audit action.
 /// Returns `false` if the report was not found or already closed.
 pub async fn resolve_report(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     report_id: Uuid,
     status: &str,
@@ -295,7 +301,7 @@ pub async fn resolve_report(
     let result = sqlx::query(
         r#"
         UPDATE moderation_reports
-        SET status = $3, resolved_by = $4, resolved_at = now(), action_id = $5
+        SET status = $3, resolved_by = $4, resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), action_id = $5
         WHERE community_id = $1 AND id = $2 AND status = 'open'
         "#,
     )
@@ -312,7 +318,7 @@ pub async fn resolve_report(
 
 /// Upsert a ban: sets `banned = true` with optional expiry + reason.
 pub async fn ban_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
     actor: &[u8],
@@ -329,7 +335,7 @@ pub async fn ban_member(
             ban_expires_at = EXCLUDED.ban_expires_at,
             ban_reason = EXCLUDED.ban_reason,
             actor_pubkey = EXCLUDED.actor_pubkey,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         "#,
     )
     .bind(community.as_uuid())
@@ -345,7 +351,7 @@ pub async fn ban_member(
 
 /// Lift a ban. Returns `false` if the member was not banned.
 pub async fn unban_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
     actor: &[u8],
@@ -354,7 +360,7 @@ pub async fn unban_member(
         r#"
         UPDATE community_bans
         SET banned = false, ban_expires_at = NULL, ban_reason = NULL,
-            actor_pubkey = $3, updated_at = now()
+            actor_pubkey = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE community_id = $1 AND pubkey = $2 AND banned = true
         "#,
     )
@@ -369,7 +375,7 @@ pub async fn unban_member(
 
 /// Upsert a timeout: sets `muted_until` + reason.
 pub async fn timeout_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
     actor: &[u8],
@@ -385,7 +391,7 @@ pub async fn timeout_member(
             muted_until = EXCLUDED.muted_until,
             mute_reason = EXCLUDED.mute_reason,
             actor_pubkey = EXCLUDED.actor_pubkey,
-            updated_at = now()
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         "#,
     )
     .bind(community.as_uuid())
@@ -401,7 +407,7 @@ pub async fn timeout_member(
 
 /// Clear a timeout early. Returns `false` if the member was not timed out.
 pub async fn untimeout_member(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
     actor: &[u8],
@@ -410,8 +416,8 @@ pub async fn untimeout_member(
         r#"
         UPDATE community_bans
         SET muted_until = NULL, mute_reason = NULL,
-            actor_pubkey = $3, updated_at = now()
-        WHERE community_id = $1 AND pubkey = $2 AND muted_until > now()
+            actor_pubkey = $3, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE community_id = $1 AND pubkey = $2 AND muted_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')
         "#,
     )
     .bind(community.as_uuid())
@@ -437,17 +443,17 @@ pub struct RestrictionState {
 }
 
 /// Fetch the current restriction state for a pubkey in one community.
-/// Missing row ⇒ `RestrictionState::default()` (unrestricted).
+/// Missing row ? `RestrictionState::default()` (unrestricted).
 pub async fn restriction_state(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
 ) -> Result<RestrictionState> {
     let row = sqlx::query(
         r#"
         SELECT
-            (banned AND (ban_expires_at IS NULL OR ban_expires_at > now())) AS banned,
-            CASE WHEN muted_until > now() THEN muted_until ELSE NULL END AS muted_until
+            (banned AND (ban_expires_at IS NULL OR ban_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS banned,
+            CASE WHEN muted_until > strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN muted_until ELSE NULL END AS muted_until
         FROM community_bans
         WHERE community_id = $1 AND pubkey = $2
         "#,
@@ -468,14 +474,14 @@ pub async fn restriction_state(
 
 /// Fetch the full ban/timeout row (moderation queue / audit views).
 pub async fn get_ban(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     pubkey: &[u8],
 ) -> Result<Option<BanRecord>> {
     let row = sqlx::query(
         r#"
         SELECT pubkey,
-               (banned AND (ban_expires_at IS NULL OR ban_expires_at > now())) AS banned,
+               (banned AND (ban_expires_at IS NULL OR ban_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS banned,
                ban_expires_at, ban_reason, muted_until,
                mute_reason, actor_pubkey, updated_at
         FROM community_bans
@@ -491,18 +497,18 @@ pub async fn get_ban(
 }
 
 /// List currently-restricted members (active ban or timeout) for the queue.
-pub async fn list_restricted(pool: &PgPool, community: CommunityId) -> Result<Vec<BanRecord>> {
+pub async fn list_restricted(pool: &SqlitePool, community: CommunityId) -> Result<Vec<BanRecord>> {
     let rows = sqlx::query(
         r#"
         SELECT pubkey,
-               (banned AND (ban_expires_at IS NULL OR ban_expires_at > now())) AS banned,
+               (banned AND (ban_expires_at IS NULL OR ban_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now'))) AS banned,
                ban_expires_at, ban_reason, muted_until,
                mute_reason, actor_pubkey, updated_at
         FROM community_bans
         WHERE community_id = $1
           AND (
-              (banned AND (ban_expires_at IS NULL OR ban_expires_at > now()))
-              OR muted_until > now()
+              (banned AND (ban_expires_at IS NULL OR ban_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')))
+              OR muted_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')
           )
         ORDER BY updated_at DESC
         "#,
@@ -516,7 +522,7 @@ pub async fn list_restricted(pool: &PgPool, community: CommunityId) -> Result<Ve
 
 /// Insert a moderation audit row, returning its id.
 pub async fn insert_action(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     action: NewAction<'_>,
 ) -> Result<Uuid> {
@@ -547,7 +553,7 @@ pub async fn insert_action(
 
 /// List audit rows, newest first (`buzz moderation audit`).
 pub async fn list_actions(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community: CommunityId,
     limit: i64,
 ) -> Result<Vec<ActionRecord>> {
@@ -569,7 +575,7 @@ pub async fn list_actions(
     rows.into_iter().map(row_to_action).collect()
 }
 
-fn row_to_report(row: sqlx::postgres::PgRow) -> Result<ReportRecord> {
+fn row_to_report(row: sqlx::sqlite::SqliteRow) -> Result<ReportRecord> {
     let target_kind: String = row.try_get("target_kind")?;
     let target = match target_kind.as_str() {
         "event" => ReportTarget::Event(row.try_get("target_event_id")?),
@@ -598,7 +604,7 @@ fn row_to_report(row: sqlx::postgres::PgRow) -> Result<ReportRecord> {
     })
 }
 
-fn row_to_ban(row: sqlx::postgres::PgRow) -> Result<BanRecord> {
+fn row_to_ban(row: sqlx::sqlite::SqliteRow) -> Result<BanRecord> {
     Ok(BanRecord {
         pubkey: row.try_get("pubkey")?,
         banned: row.try_get("banned")?,
@@ -611,7 +617,7 @@ fn row_to_ban(row: sqlx::postgres::PgRow) -> Result<BanRecord> {
     })
 }
 
-fn row_to_action(row: sqlx::postgres::PgRow) -> Result<ActionRecord> {
+fn row_to_action(row: sqlx::sqlite::SqliteRow) -> Result<ActionRecord> {
     Ok(ActionRecord {
         id: row.try_get("id")?,
         actor_pubkey: row.try_get("actor_pubkey")?,
@@ -633,18 +639,24 @@ mod tests {
     use chrono::Duration;
     use uuid::Uuid;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
+    async fn setup_pool() -> SqlitePool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
             .unwrap_or_else(|_| TEST_DB_URL.to_owned());
-        PgPool::connect(&database_url)
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_test_community(pool: &PgPool) -> CommunityId {
+    async fn make_test_community(pool: &SqlitePool) -> CommunityId {
         let id = Uuid::new_v4();
         let host = format!("moderation-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -680,11 +692,10 @@ mod tests {
     }
 
     /// Community moderation restrictions are tenant-scoped. This guards the same
-    /// mutation class as the TLA⁺ tenant-fence invariant: a ban in community A
+    /// mutation class as the TLA? tenant-fence invariant: a ban in community A
     /// must not restrict the same pubkey in community B, through either the hot
     /// `restriction_state` read or the queue-facing `list_restricted` read.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn restrictions_are_confined_to_their_community() {
         let pool = setup_pool().await;
         let community_a = make_test_community(&pool).await;
@@ -737,7 +748,6 @@ mod tests {
     /// the member restricted for writes. This protects the one-row/two-restriction
     /// shape used by L4's auth and ingest gates.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn expired_ban_does_not_hide_active_timeout() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -804,7 +814,6 @@ mod tests {
     /// Re-ingesting the same signed report is idempotent by event id and must not
     /// reopen or otherwise reset a report that a moderator already resolved.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn report_reingest_returns_same_id_and_preserves_resolution() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;
@@ -861,7 +870,6 @@ mod tests {
     /// `resolve_report` is a guarded transition out of `open`; a second resolve
     /// on a closed report must be a no-op and return `false`.
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn resolve_report_returns_false_after_report_is_closed() {
         let pool = setup_pool().await;
         let community = make_test_community(&pool).await;

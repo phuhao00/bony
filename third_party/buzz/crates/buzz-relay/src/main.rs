@@ -18,7 +18,6 @@ use buzz_pubsub::PubSubManager;
 use buzz_search::SearchService;
 
 use buzz_relay::config::Config;
-use buzz_relay::metrics as relay_metrics;
 use buzz_relay::router::{build_health_router, build_router};
 use buzz_relay::state::AppState;
 use buzz_relay::storage_sweep;
@@ -147,43 +146,24 @@ async fn main() -> anyhow::Result<()> {
         bind_addr = %config.bind_addr,
         relay_url = %config.relay_url,
         health_port = config.health_port,
-        metrics_port = config.metrics_port,
         max_frame_bytes = config.max_frame_bytes,
         audit_enabled = config.audit_enabled,
         "Config loaded"
     );
 
     let usage_interval_secs = usage_metrics_interval_secs();
-    let usage_idle_timeout_secs = usage_metrics_idle_timeout_secs(usage_interval_secs);
-    relay_metrics::install(config.metrics_port, usage_idle_timeout_secs);
     metrics::gauge!("buzz_audit_enabled").set(if config.audit_enabled { 1.0 } else { 0.0 });
-    info!(
-        port = config.metrics_port,
-        idle_timeout_secs = usage_idle_timeout_secs,
-        "Prometheus metrics exporter started"
-    );
 
     let db_config = DbConfig {
         database_url: config.database_url.clone(),
-        read_database_url: config.read_database_url.clone(),
-        replica_read_max_age_ms: config.replica_read_max_age_ms,
         max_connections: config.db_pool_size,
-        read_max_connections: config.db_read_pool_size,
         ..DbConfig::default()
     };
     let db = Db::new(&db_config).await.map_err(|e| {
-        error!("Failed to connect to Postgres: {e}");
+        error!("Failed to connect to database: {e}");
         anyhow::anyhow!("DB connection failed: {e}")
     })?;
-    if db.has_read_pool() {
-        info!("Postgres connected (writer + lazy read replica pool)");
-        // Reader-down at boot must not crash or block the relay; this warn-only
-        // ping is the sole boot-time visibility that the replica is unreachable
-        // (the lazy pool with min_connections=0 dials nothing until first use).
-        db.spawn_read_pool_boot_ping();
-    } else {
-        info!("Postgres connected");
-    }
+    info!("SQLite database connected");
 
     let auto_migrate =
         buzz_auto_migrate_enabled(std::env::var("BUZZ_AUTO_MIGRATE").ok().as_deref());
@@ -195,30 +175,6 @@ async fn main() -> anyhow::Result<()> {
         info!("Database migrations complete");
     } else {
         info!("Skipping database migrations because BUZZ_AUTO_MIGRATE is not enabled");
-    }
-
-    if let Err(e) = db.ensure_future_partitions(3).await {
-        error!("Failed to ensure partitions: {e}");
-    }
-
-    // Freshness fence probe: cursor pages route to the replica only for
-    // history the probe has verified as fully replayed. Deliberately AFTER
-    // the migration decision: spawn_fence_probe first verifies the
-    // commit-time floor guard (catalog shape + observed behavior through the
-    // armed pool) against the live schema, so a relay running with
-    // BUZZ_AUTO_MIGRATE off and migration 0021 unapplied can never open the
-    // fence over an unenforced floor. Verification failure is loud but
-    // non-fatal: the fence stays closed and every cursor page routes to the
-    // writer.
-    match db.spawn_fence_probe().await {
-        Ok(true) => info!("Replica fence probe started (floor guard verified)"),
-        Ok(false) => {}
-        Err(e) => {
-            error!(
-                "Replica fence disabled — floor guard verification failed: {e}. \
-                 All cursor reads stay on the writer."
-            );
-        }
     }
 
     // NIP-43: if membership enforcement is on, a valid owner pubkey is required.
@@ -347,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let audit = if config.audit_enabled {
-        let audit_pool = sqlx::postgres::PgPoolOptions::new()
+        let audit_pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(5)
             .min_connections(1)
             .connect(&config.database_url)
@@ -360,58 +316,21 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let redis_pool = {
-        let mut cfg = deadpool_redis::Config::from_url(&config.redis_url);
-        cfg.pool = Some(deadpool_redis::PoolConfig::new(config.redis_pool_size));
-        cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .map_err(|e| anyhow::anyhow!("Redis pool creation failed: {e}"))?
-    };
-    let redis_health_pool = redis_pool.clone(); // cheap Arc clone — shared with readiness handler
-    let pubsub = Arc::new(
-        PubSubManager::new(&config.redis_url, redis_pool)
-            .await
-            .map_err(|e| anyhow::anyhow!("PubSub init failed: {e}"))?,
-    );
-    info!("Redis pub/sub connected");
-
-    // Spawn Redis pub/sub subscriber for multi-node fan-out.
-    // Events published by other relay instances are received here and
-    // fanned out to local WebSocket subscribers.
-    let pubsub_for_sub = Arc::clone(&pubsub);
-    tokio::spawn(async move { pubsub_for_sub.run_subscriber().await });
-
-    // Spawn Redis pub/sub subscriber for cross-pod cache-key invalidation.
-    // Membership / visibility changes on other pods are received here and the
-    // matching local moka caches are dropped (via the consumer loop below).
-    let pubsub_for_cache = Arc::clone(&pubsub);
-    tokio::spawn(async move { pubsub_for_cache.run_cache_invalidation_subscriber().await });
-
-    // Spawn Redis pub/sub subscriber for cross-pod connection-control commands.
-    // Bans recorded on other pods are received here and applied to any local
-    // sockets (via the consumer loop below), enforcing live disconnect fan-out.
-    let pubsub_for_conn_ctrl = Arc::clone(&pubsub);
-    tokio::spawn(async move { pubsub_for_conn_ctrl.run_conn_control_subscriber().await });
+    let pubsub = Arc::new(PubSubManager::new());
+    info!("In-process pub/sub ready");
 
     let auth = AuthService::new(config.auth.clone());
 
-    // Postgres FTS: the searchable row IS the persisted event row (its
-    // `tsvector` column is populated by the `insert_event` write), so there is
-    // no external collection to provision — the search service just queries the
-    // same Postgres over its own pool. Search is lag-tolerant, so it prefers
-    // the read replica when one is configured.
-    let search_db_url = config
-        .read_database_url
-        .as_deref()
-        .unwrap_or(&config.database_url);
-    let search_pool = sqlx::postgres::PgPoolOptions::new()
-        .connect(search_db_url)
+    // SQLite FTS5: the searchable row lives in `events_fts`, kept in sync by
+    // triggers on `events` (see `buzz-db`'s migration), so there is no
+    // external collection to provision — the search service just queries the
+    // same SQLite database over its own pool.
+    let search_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect(&config.database_url)
         .await
         .map_err(|e| anyhow::anyhow!("Search DB connection failed: {e}"))?;
     let search = SearchService::new(search_pool);
-    info!(
-        replica = config.read_database_url.is_some(),
-        "Search service ready (Postgres FTS)"
-    );
+    info!("Search service ready (SQLite FTS5)");
 
     let workflow_config = buzz_workflow::WorkflowConfig::default();
     let workflow_engine = Arc::new(WorkflowEngine::new(db.clone(), workflow_config));
@@ -450,7 +369,6 @@ async fn main() -> anyhow::Result<()> {
     let (app_state, audit_shutdown) = AppState::new(
         config.clone(),
         db,
-        redis_health_pool,
         audit,
         pubsub,
         auth,
@@ -463,12 +381,21 @@ async fn main() -> anyhow::Result<()> {
 
     // Inter-relay mesh (BUZZ_MESH seam). `boot_mesh` returns None when the
     // kill switch is off — nothing is bound, published, or spawned, so the
-    // relay behaves byte-identically to a build without the mesh. When
-    // enabled, a misconfigured mesh is fatal here (bind/Redis failure): an
-    // operator who asked for the mesh gets it or gets told why not.
+    // relay behaves byte-identically to a single-instance build without the
+    // mesh. Only the mesh path needs Redis (its cross-runtime session
+    // directory); the pool is constructed here, lazily, so a single-instance
+    // deployment never dials Redis. When mesh is enabled, a misconfigured
+    // mesh is fatal here (bind/Redis failure): an operator who asked for the
+    // mesh gets it or gets told why not.
+    let mesh_redis_pool = {
+        let mut cfg = deadpool_redis::Config::from_url(&config.redis_url);
+        cfg.pool = Some(deadpool_redis::PoolConfig::new(config.redis_pool_size));
+        cfg.create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .map_err(|e| anyhow::anyhow!("mesh Redis pool creation failed: {e}"))?
+    };
     if let Some(handle) = buzz_relay::mesh_boot::boot_mesh(
         &state.config,
-        state.redis_pool.clone(),
+        mesh_redis_pool,
         &state.relay_keypair,
         Arc::clone(&state.shutting_down),
     )
@@ -984,40 +911,6 @@ async fn main() -> anyhow::Result<()> {
                 metrics::gauge!("buzz_db_pool_idle").set(db_stats.idle as f64);
                 metrics::gauge!("buzz_db_pool_active").set(active as f64);
                 metrics::gauge!("buzz_db_pool_max").set(db_stats.max as f64);
-
-                if let Some(read_stats) = pool_state.db.read_pool_stats() {
-                    let read_active = read_stats.size.saturating_sub(read_stats.idle);
-                    metrics::gauge!("buzz_db_read_pool_size").set(read_stats.size as f64);
-                    metrics::gauge!("buzz_db_read_pool_idle").set(read_stats.idle as f64);
-                    metrics::gauge!("buzz_db_read_pool_active").set(read_active as f64);
-                    metrics::gauge!("buzz_db_read_pool_max").set(read_stats.max as f64);
-
-                    // Fence observability: 1 when replica routing is
-                    // eligible, and the verified-freshness lag in seconds.
-                    // Closed/stale fence reports open=0 with lag untouched.
-                    match pool_state.db.fence().verified_through() {
-                        Some(fence_ts) => {
-                            let lag = (chrono::Utc::now() - fence_ts).num_seconds();
-                            metrics::gauge!("buzz_db_replica_fence_open").set(1.0);
-                            metrics::gauge!("buzz_db_replica_fence_lag_seconds").set(lag as f64);
-                        }
-                        None => {
-                            metrics::gauge!("buzz_db_replica_fence_open").set(0.0);
-                        }
-                    }
-                    // Probe liveness, ungated by staleness: how long since
-                    // the probe last committed a heartbeat token.
-                    if let Some(age) = pool_state.db.fence().heartbeat_age() {
-                        metrics::gauge!("buzz_db_replica_heartbeat_age_seconds")
-                            .set(age.as_secs_f64());
-                    }
-                }
-
-                let rs = pool_state.redis_pool.status();
-                metrics::gauge!("buzz_redis_pool_available").set(rs.available as f64);
-                metrics::gauge!("buzz_redis_pool_size").set(rs.size as f64);
-                metrics::gauge!("buzz_redis_pool_max").set(rs.max_size as f64);
-                metrics::gauge!("buzz_redis_pool_waiting").set(rs.waiting as f64);
             }
         });
     }
@@ -1339,20 +1232,6 @@ fn usage_metrics_interval_secs() -> u64 {
         .and_then(|value| value.parse().ok())
         .unwrap_or(300)
         .max(5)
-}
-
-/// Return a gauge lifetime that always outlives several usage-poller ticks.
-fn usage_metrics_idle_timeout_secs(interval_secs: u64) -> u64 {
-    let configured = std::env::var("BUZZ_USAGE_METRICS_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|value| value.parse().ok());
-    idle_timeout_secs(configured, interval_secs)
-}
-
-fn idle_timeout_secs(configured: Option<u64>, interval_secs: u64) -> u64 {
-    configured
-        .unwrap_or(900)
-        .max(interval_secs.saturating_mul(3))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1908,9 +1787,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        buzz_auto_migrate_enabled, dropped_in_memory_keys, idle_timeout_secs,
-        refresh_legacy_active_gauge_recency, run_periodic_until_cancelled, EmissionScope,
-        InMemoryMetricKey,
+        buzz_auto_migrate_enabled, dropped_in_memory_keys, refresh_legacy_active_gauge_recency,
+        run_periodic_until_cancelled, EmissionScope, InMemoryMetricKey,
     };
     use metrics::GaugeFn;
     use metrics_util::{
@@ -2023,11 +1901,5 @@ mod tests {
         gauge.increment(0.0);
 
         assert!(gauge.get_generation() > generation_before);
-    }
-
-    #[test]
-    fn test_idle_timeout_is_at_least_three_usage_intervals() {
-        assert_eq!(idle_timeout_secs(None, 300), 900);
-        assert_eq!(idle_timeout_secs(Some(10), 1_000), 3_000);
     }
 }

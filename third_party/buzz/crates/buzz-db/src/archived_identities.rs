@@ -7,7 +7,7 @@
 
 use buzz_core::CommunityId;
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row as _};
+use sqlx::{SqlitePool, Row as _};
 
 use crate::error::Result;
 
@@ -31,7 +31,7 @@ pub struct ArchivedIdentity {
 }
 
 /// Returns `true` if `pubkey` (64-char hex) is archived in `community_id`.
-pub async fn is_archived(pool: &PgPool, community_id: CommunityId, pubkey: &str) -> Result<bool> {
+pub async fn is_archived(pool: &SqlitePool, community_id: CommunityId, pubkey: &str) -> Result<bool> {
     let row =
         sqlx::query("SELECT 1 FROM archived_identities WHERE community_id = $1 AND pubkey = $2")
             .bind(community_id.as_uuid())
@@ -48,7 +48,7 @@ pub async fn is_archived(pool: &PgPool, community_id: CommunityId, pubkey: &str)
 /// the existing row.
 #[allow(clippy::too_many_arguments)]
 pub async fn archive(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
     pubkey: &str,
     consent_path: &str,
@@ -80,7 +80,7 @@ pub async fn archive(
 ///
 /// Returns `true` if a row was deleted, `false` if the identity was not archived
 /// in that community.
-pub async fn unarchive(pool: &PgPool, community_id: CommunityId, pubkey: &str) -> Result<bool> {
+pub async fn unarchive(pool: &SqlitePool, community_id: CommunityId, pubkey: &str) -> Result<bool> {
     let result =
         sqlx::query("DELETE FROM archived_identities WHERE community_id = $1 AND pubkey = $2")
             .bind(community_id.as_uuid())
@@ -93,7 +93,7 @@ pub async fn unarchive(pool: &PgPool, community_id: CommunityId, pubkey: &str) -
 
 /// Returns all identities archived in `community_id`, ordered by archive time ascending.
 pub async fn list_archived(
-    pool: &PgPool,
+    pool: &SqlitePool,
     community_id: CommunityId,
 ) -> Result<Vec<ArchivedIdentity>> {
     let rows = sqlx::query(
@@ -111,7 +111,7 @@ pub async fn list_archived(
 }
 
 fn row_to_archived_identity(
-    row: sqlx::postgres::PgRow,
+    row: sqlx::sqlite::SqliteRow,
 ) -> std::result::Result<ArchivedIdentity, sqlx::Error> {
     Ok(ArchivedIdentity {
         pubkey: row.try_get("pubkey")?,
@@ -128,15 +128,21 @@ fn row_to_archived_identity(
 mod tests {
     use super::*;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
+    const TEST_DB_URL: &str = "sqlite::memory:";
 
-    async fn setup_pool() -> PgPool {
-        PgPool::connect(TEST_DB_URL)
+    async fn setup_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(TEST_DB_URL)
             .await
-            .expect("connect to test DB")
+            .expect("connect to test DB");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("run migrations on test DB");
+        pool
     }
 
-    async fn make_community(pool: &PgPool) -> CommunityId {
+    async fn make_community(pool: &SqlitePool) -> CommunityId {
         let id = uuid::Uuid::new_v4();
         let host = format!("archive-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
@@ -149,7 +155,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn archived_identity_state_is_community_scoped() {
         let pool = setup_pool().await;
         let community_a = make_community(&pool).await;

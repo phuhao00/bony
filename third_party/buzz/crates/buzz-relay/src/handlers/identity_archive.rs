@@ -435,23 +435,14 @@ mod tests {
         assert!(enforce_request_auth_time_bounds(&auth.to_string(), 200).is_err());
     }
 
-    async fn test_pool() -> Option<sqlx::PgPool> {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into());
-        sqlx::PgPool::connect(&url).await.ok()
+    async fn test_pool() -> Option<sqlx::SqlitePool> {
+        Some(crate::test_support::sqlite_test_pool().await)
     }
 
-    async fn test_state(pool: sqlx::PgPool) -> Option<Arc<AppState>> {
+    async fn test_state(pool: sqlx::SqlitePool) -> Option<Arc<AppState>> {
         let db = buzz_db::Db::from_pool(pool.clone());
         let config = crate::config::Config::from_env().ok()?;
-        let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
-            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
-            .ok()?;
-        let pubsub = Arc::new(
-            buzz_pubsub::PubSubManager::new(&config.redis_url, redis_pool.clone())
-                .await
-                .ok()?,
-        );
+        let pubsub = Arc::new(buzz_pubsub::PubSubManager::new());
         let audit = buzz_audit::AuditService::new(pool.clone());
         let auth = buzz_auth::AuthService::new(config.auth.clone());
         let search = buzz_search::SearchService::new(pool.clone());
@@ -463,7 +454,6 @@ mod tests {
         let (state, _audit_shutdown) = crate::state::AppState::new(
             config,
             db,
-            redis_pool,
             audit,
             pubsub,
             auth,
@@ -500,11 +490,11 @@ mod tests {
             .expect("sign archive request")
     }
 
-    async fn seed_test_community(pool: &sqlx::PgPool) -> buzz_core::tenant::TenantContext {
+    async fn seed_test_community(pool: &sqlx::SqlitePool) -> buzz_core::tenant::TenantContext {
         let id = uuid::Uuid::new_v4();
         let host = format!("ident-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
-            .bind(id)
+            .bind(id.to_string())
             .bind(&host)
             .execute(pool)
             .await
