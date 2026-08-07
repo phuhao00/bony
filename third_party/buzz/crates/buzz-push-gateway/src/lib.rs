@@ -7,7 +7,7 @@ pub mod grant;
 pub mod http;
 pub mod metrics;
 pub mod model;
-pub mod postgres;
+pub mod sqlite;
 pub(crate) mod strict_json;
 pub mod token;
 pub use http::{router, AppState};

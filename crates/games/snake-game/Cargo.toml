@@ -1,0 +1,18 @@
+[package]
+name = "snake-game"
+version = "0.1.0"
+edition = "2024"
+description = "A simple snake game built with Rust and Crossterm"
+license = "Apache-2.0"
+
+[dependencies]
+crossterm = "0.28"
+rand = "0.9"
+time = "0.3"
+anyhow = { version = "1", features = ["backtrace"] }
+
+
+[[bin]]
+name = "snake-game"
+path = "src/main.rs"
+

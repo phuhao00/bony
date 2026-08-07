@@ -4,8 +4,8 @@ use buzz_push_gateway::{
     authority::AuthorityStore,
     config::Config,
     grant::{GrantKey, GrantKeyring},
-    postgres::PostgresAuthorityStore,
     router,
+    sqlite::SqliteAuthorityStore,
     token::{TokenKey, TokenKeyring},
     AppState,
 };
@@ -25,12 +25,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     if std::env::args().nth(1).as_deref() == Some("--migrate-only") {
         let database_url = std::env::var("DATABASE_URL")?;
-        let pool = sqlx::postgres::PgPoolOptions::new()
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&database_url)
             .await?;
-        let runtime_role = std::env::var("BUZZ_PUSH_RUNTIME_DATABASE_ROLE")?;
-        PostgresAuthorityStore::apply_migrations_and_grants(&pool, &runtime_role).await?;
+        SqliteAuthorityStore::apply_migrations(&pool).await?;
         return Ok(());
     }
     let c = Config::from_env()?;
@@ -52,11 +51,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|key| TokenKey::new(&key.id, &key.key))
             .collect::<Result<_, _>>()?,
     )?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(20)
-        .connect(&c.database_url)
+        .connect_with(
+            c.database_url
+                .parse::<sqlx::sqlite::SqliteConnectOptions>()?
+                .create_if_missing(true)
+                .busy_timeout(std::time::Duration::from_secs(30)),
+        )
         .await?;
-    let authority = Arc::new(PostgresAuthorityStore::new(pool));
+    SqliteAuthorityStore::apply_migrations(&pool).await?;
+    let authority = Arc::new(SqliteAuthorityStore::new(pool));
     authority
         .reap_expired(chrono::Utc::now().timestamp())
         .await?;
