@@ -47,3 +47,4 @@ uuid = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+tempfile = { workspace = true }

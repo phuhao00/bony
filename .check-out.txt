@@ -1,0 +1,1749 @@
+﻿rtk : error[E0432]: unresolved import `sqlx::sqlite::PgRow`
+所在位置 C:\Users\Administrator\AppData\Local\Temp\ps-script-d9e66616-86cc-49d2-82fd-52baf726f1fc.ps1:112 字符: 39
++ ... ers\Administrator\bony-build; rtk cargo check -p buzz-db 2>&1 | Out-F ...
++                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (error[E0432]: u...:sqlite::PgRow`:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  --> third_party\buzz\crates\buzz-db\src\feed.rs:32:5
+   |
+32 | use sqlx::sqlite::PgRow;
+   |     ^^^^^^^^^^^^^^^^^^^ no `PgRow` in the root
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\admin_moderation.rs:206:37
+    |
+206 | fn row_to_report(row: sqlx::sqlite::PgRow) -> Result<AdminReport> {
+    |                                     ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\admin_moderation.rs:272:39
+    |
+272 | fn row_to_feedback(row: sqlx::sqlite::PgRow) -> Result<AdminFeedback> {
+    |                                       ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\archived_identities.rs:114:24
+    |
+114 |     row: sqlx::sqlite::PgRow,
+    |                        ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\channel.rs:1084:45
+     |
+1084 | fn row_to_channel_record(row: sqlx::sqlite::PgRow) -> Result<ChannelRecord> {
+     |                                             ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\channel.rs:1125:44
+     |
+1125 | fn row_to_member_record(row: sqlx::sqlite::PgRow) -> Result<MemberRecord> {
+     |                                            ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\dm.rs:487:45
+    |
+487 | fn row_to_channel_record(row: sqlx::sqlite::PgRow) -> Result<ChannelRecord> {
+    |                                             ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\event.rs:575:54
+    |
+575 | pub(crate) fn row_to_stored_event(row: sqlx::sqlite::PgRow) -> Result<Option<StoredEvent>> {
+    |                                                      ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\moderation.rs:572:37
+    |
+572 | fn row_to_report(row: sqlx::sqlite::PgRow) -> Result<ReportRecord> {
+    |                                     ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\moderation.rs:601:34
+    |
+601 | fn row_to_ban(row: sqlx::sqlite::PgRow) -> Result<BanRecord> {
+    |                                  ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\moderation.rs:614:37
+    |
+614 | fn row_to_action(row: sqlx::sqlite::PgRow) -> Result<ActionRecord> {
+    |                                     ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\push.rs:1245:43
+     |
+1245 | fn row_to_claimed_wake(row: sqlx::sqlite::PgRow) -> Result<ClaimedWake> {
+     |                                           ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgQueryResult` in crate `sqlx::sqlite`
+   --> third_party\buzz\crates\buzz-db\src\replica_fence.rs:375:55
+    |
+375 |     let expect_violation = |res: Result<sqlx::sqlite::PgQueryResult, sqlx::Error>,
+    |                                                       ^^^^^^^^^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\workflow.rs:1126:46
+     |
+1126 | fn row_to_workflow_record(row: sqlx::sqlite::PgRow) -> Result<WorkflowRecord> {
+     |                                              ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\workflow.rs:1152:41
+     |
+1152 | fn row_to_run_record(row: sqlx::sqlite::PgRow) -> Result<WorkflowRunRecord> {
+     |                                         ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\workflow.rs:1176:46
+     |
+1176 | fn row_to_approval_record(row: sqlx::sqlite::PgRow) -> Result<ApprovalRecord> {
+     |                                              ^^^^^ not found in `sqlx::sqlite`
+error[E0425]: cannot find type `PgRow` in crate `sqlx::sqlite`
+    --> third_party\buzz\crates\buzz-db\src\lib.rs:5053:43
+     |
+5053 | fn parse_api_token_row(row: sqlx::sqlite::PgRow) -> Result<ApiTokenRecord> {
+     |                                           ^^^^^ not found in `sqlx::sqlite`
+error[E0277]: the trait bound `[Uuid]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:677:11
+    |
+677 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Uuid]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:677:11
+    |
+677 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `&[Uuid]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:677:11
+    |
+677 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `Sized` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:678:11
+    |
+678 |     .bind(pubkeys)
+    |      ---- ^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:678:11
+    |
+678 |     .bind(pubkeys)
+    |      ---- ^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `&[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:678:11
+    |
+678 |     .bind(pubkeys)
+    |      ---- ^^^^^^^ the trait `Sized` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Uuid]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:736:11
+    |
+736 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Uuid]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:736:11
+    |
+736 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `&[Uuid]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\channel.rs:736:11
+    |
+736 |     .bind(channel_ids)
+    |      ---- ^^^^^^^^^^^ the trait `Sized` is not implemented for `[Uuid]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:268:11
+    |
+268 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+268 |     .bind(&author[..])
+    |           +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:268:11
+    |
+268 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:296:11
+    |
+296 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+296 |     .bind(&author[..])
+    |           +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:296:11
+    |
+296 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:305:15
+    |
+305 |         .bind(author)
+    |          ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `QueryScalar::<'q, DB, O, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query_scalar.rs:
+52:25
+    |
+ 52 |     pub fn bind<T: 'q + Encode<'q, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                         ^^^^^^^^^^^^^^ required by this bound in `QueryScalar::<'q, DB, O, <DB as Database>::Argu
+ments>::bind`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+305 |         .bind(&author[..])
+    |               +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:305:15
+    |
+305 |         .bind(author)
+    |          ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `QueryScalar::<'q, DB, O, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query_scalar.rs:
+52:42
+    |
+ 52 |     pub fn bind<T: 'q + Encode<'q, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                          ^^^^^^^^ required by this bound in `QueryScalar::<'q, DB, O, <DB as Data
+base>::Arguments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:316:15
+    |
+316 |         .bind(author)
+    |          ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `QueryScalar::<'q, DB, O, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query_scalar.rs:
+52:25
+    |
+ 52 |     pub fn bind<T: 'q + Encode<'q, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                         ^^^^^^^^^^^^^^ required by this bound in `QueryScalar::<'q, DB, O, <DB as Database>::Argu
+ments>::bind`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+316 |         .bind(&author[..])
+    |               +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:316:15
+    |
+316 |         .bind(author)
+    |          ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `QueryScalar::<'q, DB, O, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query_scalar.rs:
+52:42
+    |
+ 52 |     pub fn bind<T: 'q + Encode<'q, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                          ^^^^^^^^ required by this bound in `QueryScalar::<'q, DB, O, <DB as Data
+base>::Arguments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:331:11
+    |
+331 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+331 |     .bind(&author[..])
+    |           +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:331:11
+    |
+331 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:342:11
+    |
+342 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+342 |     .bind(&author[..])
+    |           +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:342:11
+    |
+342 |     .bind(author)
+    |      ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:379:37
+    |
+379 |     .bind(community.as_uuid()).bind(author).bind(installation_id)
+    |                                ---- ^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |                                |
+    |                                required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+379 |     .bind(community.as_uuid()).bind(&author[..]).bind(installation_id)
+    |                                     +      ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:379:37
+    |
+379 |     .bind(community.as_uuid()).bind(author).bind(installation_id)
+    |                                ---- ^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |                                |
+    |                                required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:654:12
+    |
+654 |     .bind(&lock_authors)
+    |      ----  ^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:654:12
+    |
+654 |     .bind(&lock_authors)
+    |      ----  ^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:655:12
+    |
+655 |     .bind(&lock_installs)
+    |      ----  ^^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&str>`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:655:12
+    |
+655 |     .bind(&lock_installs)
+    |      ----  ^^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&str>`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:722:16
+    |
+722 |         .bind(&ins_authors)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:722:16
+    |
+722 |         .bind(&ins_authors)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:723:16
+    |
+723 |         .bind(&ins_installs)
+    |          ----  ^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&str>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:723:16
+    |
+723 |         .bind(&ins_installs)
+    |          ----  ^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&str>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<i64>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:724:16
+    |
+724 |         .bind(&ins_generations)
+    |          ----  ^^^^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<i64>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<i64>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<i64>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:724:16
+    |
+724 |         .bind(&ins_generations)
+    |          ----  ^^^^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<i64>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<i64>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:725:16
+    |
+725 |         .bind(&ins_endpoints)
+    |          ----  ^^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:725:16
+    |
+725 |         .bind(&ins_endpoints)
+    |          ----  ^^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:726:16
+    |
+726 |         .bind(&ins_events)
+    |          ----  ^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:726:16
+    |
+726 |         .bind(&ins_events)
+    |          ----  ^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:727:16
+    |
+727 |         .bind(&ins_classes)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&str>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&str>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:727:16
+    |
+727 |         .bind(&ins_classes)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&str>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&str>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<i64>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:728:16
+    |
+728 |         .bind(&ins_expires)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<i64>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<i64>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<i64>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:728:16
+    |
+728 |         .bind(&ins_expires)
+    |          ----  ^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<i64>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<i64>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:750:20
+    |
+750 |             .bind(&ins_endpoints)
+    |              ----  ^^^^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |              |
+    |              required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:750:20
+    |
+750 |             .bind(&ins_endpoints)
+    |              ----  ^^^^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |              |
+    |              required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:751:20
+    |
+751 |             .bind(&ins_events)
+    |              ----  ^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<&[u8]>`
+    |              |
+    |              required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<&[u8]>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:751:20
+    |
+751 |             .bind(&ins_events)
+    |              ----  ^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<&[u8]>`
+    |              |
+    |              required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<&[u8]>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<Vec<u8>>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:913:16
+    |
+913 |         .bind(&gone)
+    |          ----  ^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<Vec<u8>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<Vec<u8>>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<Vec<u8>>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:913:16
+    |
+913 |         .bind(&gone)
+    |          ----  ^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<Vec<u8>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<Vec<u8>>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:985:11
+    |
+985 |     .bind(event_ids)
+    |      ---- ^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:985:11
+    |
+985 |     .bind(event_ids)
+    |      ---- ^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `&[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\push.rs:985:11
+    |
+985 |     .bind(event_ids)
+    |      ---- ^^^^^^^^^ the trait `Sized` is not implemented for `[Vec<u8>]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\push.rs:1010:11
+     |
+1010 |     .bind(event_ids)
+     |      ---- ^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[Vec<u8>]`
+     |      |
+     |      required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:23:1
+     |
+  23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:17:1
+     |
+  17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+     = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::b
+ind`
+error[E0277]: the trait bound `[Vec<u8>]: sqlx::Type<Sqlite>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\push.rs:1010:11
+     |
+1010 |     .bind(event_ids)
+     |      ---- ^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[Vec<u8>]`
+     |      |
+     |      required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Type<DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:13:1
+     |
+  13 | impl Type<Sqlite> for [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:9:1
+     |
+   9 | impl Type<Any> for [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+     = note: required for `&[Vec<u8>]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Ar
+guments>::bind`
+error[E0277]: the trait bound `&[Vec<u8>]: sqlx::Encode<'_, Sqlite>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\push.rs:1010:11
+     |
+1010 |     .bind(event_ids)
+     |      ---- ^^^^^^^^^ the trait `Sized` is not implemented for `[Vec<u8>]`
+     |      |
+     |      required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:23:1
+     |
+  23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:17:1
+     |
+  17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+     = note: required for `&[Vec<u8>]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::b
+ind`
+error[E0277]: the trait bound `[u8; 32]: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\relay_invite.rs:218:11
+    |
+218 |     .bind(token_hash)
+    |      ---- ^^^^^^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:23:1
+    |
+ 23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:17:1
+    |
+ 17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+help: convert the array to a `&'q [u8]` slice instead
+    |
+218 |     .bind(&token_hash[..])
+    |           +          ++++
+error[E0277]: the trait bound `[u8; 32]: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\relay_invite.rs:218:11
+    |
+218 |     .bind(token_hash)
+    |      ---- ^^^^^^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `[u8; 32]`
+    |      |
+    |      required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:13:1
+    |
+ 13 | impl Type<Sqlite> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:9:1
+    |
+  9 | impl Type<Any> for [u8] {
+    | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&[u8; 32]` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `Vec<Vec<u8>>: sqlx::Encode<'_, Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\thread.rs:773:16
+    |
+773 |         .bind(&roots)
+    |          ----  ^^^^^ the trait `sqlx::Encode<'_, Sqlite>` is not implemented for `Vec<Vec<u8>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:61:1
+    |
+ 61 | impl Encode<'_, Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:42:1
+    |
+ 42 | impl Encode<'_, Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Encode<'_, sqlx::Any>`
+    = note: required for `&Vec<Vec<u8>>` to implement `sqlx::Encode<'_, Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::bi
+nd`
+error[E0277]: the trait bound `Vec<Vec<u8>>: sqlx::Type<Sqlite>` is not satisfied
+   --> third_party\buzz\crates\buzz-db\src\thread.rs:773:16
+    |
+773 |         .bind(&roots)
+    |          ----  ^^^^^ the trait `sqlx::Type<Sqlite>` is not implemented for `Vec<Vec<u8>>`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the following other types implement trait `sqlx::Type<DB>`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.rs
+:51:1
+    |
+ 51 | impl Type<Sqlite> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<Sqlite>`
+    |
+   ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.r
+s:36:1
+    |
+ 36 | impl Type<Any> for Vec<u8> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `Vec<u8>` implements `sqlx::Type<sqlx::Any>`
+    = note: required for `&Vec<Vec<u8>>` to implement `sqlx::Type<Sqlite>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+   --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+    |
+ 87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+    |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arg
+uments>::bind`
+error[E0277]: the trait bound `[Uuid]: sqlx::Encode<'_, _>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\lib.rs:1604:15
+     |
+1604 |         .bind(channel_ids)
+     |          ---- ^^^^^^^^^^^ the trait `sqlx::Encode<'_, _>` is not implemented for `[Uuid]`
+     |          |
+     |          required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:23:1
+     |
+  23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:17:1
+     |
+  17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+     = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, _>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::b
+ind`
+error[E0277]: the trait bound `[Uuid]: sqlx::Type<_>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\lib.rs:1604:15
+     |
+1604 |         .bind(channel_ids)
+     |          ---- ^^^^^^^^^^^ the trait `sqlx::Type<_>` is not implemented for `[Uuid]`
+     |          |
+     |          required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Type<DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:13:1
+     |
+  13 | impl Type<Sqlite> for [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:9:1
+     |
+   9 | impl Type<Any> for [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^ `[u8]` implements `sqlx::Type<sqlx::Any>`
+     = note: required for `&[Uuid]` to implement `sqlx::Type<_>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:41
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                                         ^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Ar
+guments>::bind`
+error[E0277]: the trait bound `&[Uuid]: sqlx::Encode<'_, _>` is not satisfied
+    --> third_party\buzz\crates\buzz-db\src\lib.rs:1604:15
+     |
+1604 |         .bind(channel_ids)
+     |          ---- ^^^^^^^^^^^ the trait `Sized` is not implemented for `[Uuid]`
+     |          |
+     |          required by a bound introduced by this call
+     |
+help: the following other types implement trait `sqlx::Encode<'q, DB>`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-sqlite-0.9.0\src\types\bytes.r
+s:23:1
+     |
+  23 | impl Encode<'_, Sqlite> for &'_ [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, Sqlite>`
+     |
+    ::: C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\any\types\blob.
+rs:17:1
+     |
+  17 | impl<'q> Encode<'q, Any> for &'q [u8] {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `&[u8]` implements `sqlx::Encode<'_, sqlx::Any>`
+     = note: required for `&[Uuid]` to implement `sqlx::Encode<'_, _>`
+note: required by a bound in `Query::<'_, DB, <DB as sqlx::Database>::Arguments>::bind`
+    --> C:\Users\Administrator\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\sqlx-core-0.9.0\src\query.rs:87:24
+     |
+  87 |     pub fn bind<'t, T: Encode<'t, DB> + Type<DB>>(mut self, value: T) -> Self {
+     |                        ^^^^^^^^^^^^^^ required by this bound in `Query::<'_, DB, <DB as Database>::Arguments>::b
+ind`
+cargo build: 77 errors, 0 warnings (1 crates)
+[full output: ~/AppData\Local\rtk\tee\1786092354_cargo_check.log]
