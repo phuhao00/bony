@@ -2,7 +2,7 @@
 
 # Bony Build
 
-**原生桌面 AI 编程助手** — 对话改代码、任务隔离 worktree、详情面板版本管理、会话级插件（Unity / Bevy）。
+**原生桌面 AI 编程助手 + 本地多 Agent 协作房间** — 对话改代码、任务隔离 worktree、详情面板版本管理、会话级插件（Unity / Bevy）；内置 [Buzz](third_party/buzz) 房间，Grok 协调 ZeroClaw / Unity / OpenMontage / DocSmith 等专员协作，纯 Rust + SQLite，无需 Docker。
 
 **语言:** **中文** · [English](README.en.md)
 
@@ -26,7 +26,10 @@
 
 ## 这是什么
 
-**Bony Build** 是原生桌面客户端（Rust / egui，当前 `v0.1.3`）：通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
+本仓库是两块拼在一起的东西，共用一个 Rust workspace：
+
+1. **Bony Build**：原生桌面客户端（Rust / egui，当前 `v0.1.3`）。通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
+2. **Buzz 本地协作房间**：内置的多 Agent 群聊后端（详见 [Buzz 本地协作房间](#buzz-本地协作房间)）。Grok 当协调员，ZeroClaw / Unity / OpenMontage / DocSmith 等专员按 `@` 交接分工；后端已单机化重构成纯 Rust + SQLite，不依赖 Docker / Postgres / Redis。
 
 适合：
 
@@ -35,8 +38,9 @@
 - 右侧 **详情面板**查看工作副本改动、按文件看 diff、浏览提交历史（Fork 风格）
 - Unity / Bevy 等本地扩展：Unity 走 **本机 CLI 闭环**（探测、Play、Pipeline），不经 Agent 挂死安装
 - 用本地 **Web 监控**看架构分层与每次提交对功能的影响
+- 需要多个专精 Agent 分工协作时，用 **Buzz 房间**里 `@` 交接，而不是一个 Agent 全包
 
-常见用法：解释仓库结构、排查近期改动、补测试、总结认证 / 架构。任务权限：只读 / 询问 / 允许编辑 / 完全控制；也可用 `--ask-permissions` 全局要求人工批准。
+常见用法：解释仓库结构、排查近期改动、补测试、总结认证 / 架构；或在 Buzz 房间里让 ZeroClaw 检索、Unity 操作引擎、DocSmith 出文档。任务权限：只读 / 询问 / 允许编辑 / 完全控制；也可用 `--ask-permissions` 全局要求人工批准。
 
 **产品品牌与桌面壳为 Bony Build**；agent / TUI 运行时对齐开源上游 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（见 [与上游关系](#与上游关系)）。仓库：[`phuhao00/bony`](https://github.com/phuhao00/bony)。
 
