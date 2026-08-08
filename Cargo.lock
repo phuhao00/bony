@@ -2174,22 +2174,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bony-monitor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bony-room-tools-mcp"
 version = "0.1.0"
 dependencies = [

@@ -31,7 +31,6 @@ git remote add upstream https://github.com/xai-org/grok-build.git
 |------|-----|
 | `third_party/buzz/desktop/**` | sole Tauri desktop shell, Coding Workspace, local integration |
 | `third_party/buzz/crates/buzz-acp/**` | shared ACP pool and coding-agent sessions |
-| `crates/codegen/bony-monitor/**` | local impact / architecture web |
 | `crates/codegen/bony-room-tools-mcp/**` | room helpers MCP |
 | `crates/codegen/bony-docs-tools-mcp/**` | DocSmith tool MCP |
 | `scripts/buzz-room/start-desktop.ps1` | product launch only |
@@ -127,7 +126,6 @@ git rebase --abort
 3. Preserve check (paths must exist):
 
 ```text
-crates/codegen/bony-monitor/src/main.rs
 third_party/buzz/desktop/src-tauri/src/commands/coding_workspace.rs
 third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx
 third_party/buzz/crates/buzz-acp/src/pool.rs
@@ -141,7 +139,7 @@ docs/buzz-room-collab.md
 
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
-cargo check -p buzz-desktop -p bony-monitor -p buzz-relay -p buzz-db
+cargo check -p buzz-desktop -p buzz-relay -p buzz-db
 ```
 
 5. Optional smoke: room stack start only if user wants; do not invent extra scripts.
@@ -187,7 +185,7 @@ Report template:
 | OpenMontage | install root | … | pull skill tree |
 
 ## 保留项自检清单（若 rebase）
-- Buzz Desktop / bony-monitor / buzz room SQLite 栈
+- Buzz Desktop / buzz room SQLite 栈
 - 启动白名单 scripts/buzz-room/start-*
 - 不恢复 Docker/Postgres/Redis 为默认依赖
 ```
