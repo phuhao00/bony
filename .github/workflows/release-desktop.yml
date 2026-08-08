@@ -46,8 +46,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          # Match rust-toolchain.toml; pin only major.minor path can lag behind
+          # component/target availability on arm64 runners for x86_64-apple-darwin.
+          toolchain: "1.94.0"
           targets: ${{ matrix.target }}
+
+      - name: Ensure rustc target installed
+        run: rustup target add ${{ matrix.target }}
 
       - name: Build bony-build (release-dist)
         run: cargo build -p bony-build --profile release-dist --target ${{ matrix.target }}
