@@ -14,7 +14,6 @@ alwaysApply: true
 | Buzz 协议/ACP/池 | `third_party/buzz/crates/*` |
 | Desktop 本机命令/seed | `third_party/buzz/desktop/src-tauri`（Rust） |
 | 房间协作策略文档 | `docs/buzz-room-*.md`、`scripts/buzz-room/prompts/*.md` |
-| 监控 | `crates/codegen/bony-monitor` |
 
 Buzz 在 **`third_party/buzz` 普通目录**（非 submodule），是根 workspace 成员。
 
