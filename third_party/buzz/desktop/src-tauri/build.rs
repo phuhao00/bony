@@ -5,6 +5,19 @@ include!("src/commands/reconnect_hook_config.rs");
 use base64::Engine as _;
 
 fn main() {
+    // `tauri-build` embeds these platform icons but does not register them as
+    // Cargo inputs. Track them explicitly so an icon-only change refreshes the
+    // executable resource instead of reusing a stale incremental build.
+    for icon in [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico",
+    ] {
+        println!("cargo:rerun-if-changed={icon}");
+    }
+
     println!("cargo:rerun-if-env-changed=BUZZ_RELAY_URL");
     println!("cargo:rerun-if-env-changed=BUZZ_RELAY_HTTP");
     println!("cargo:rerun-if-env-changed=BUZZ_UPDATER_PUBLIC_KEY");

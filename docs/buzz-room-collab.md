@@ -3,7 +3,7 @@
 > **项目强制规范**（终止目标 / 只用 Rust / 除启动外禁止脚本 / 极致性能与最短协作）：  
 > [`docs/PROJECT_STANDARDS.md`](./PROJECT_STANDARDS.md) · 仓库根 [`AGENTS.md`](../AGENTS.md) · `.cursor/rules/`
 
-Grok is the **room lead**. Buzz is the **shared office**. Specialists: ZeroClaw, Unity, OpenMontage, DocSmith.
+Grok is the initial **room lead**. Buzz is the **shared office**. ZeroClaw, Unity, OpenMontage, and DocSmith are built-in starting specialists, not a closed agent list; user-created agents may join through the same managed-agent/persona/catalog model.
 
 ![Buzz room: Grok hands weather to ZeroClaw in Welcome](buzz-room-welcome-handoff.png)
 
@@ -58,13 +58,22 @@ Notes:
 
 仅在用户明确要求时处理：手动删 PDB/增量产物，**禁止**无确认 `cargo clean`。不跑清理类脚本做默认流程。
 
-## 让 Desktop 能「看到」Grok / ZeroClaw / Unity / OpenMontage / DocSmith
+## 让 Desktop 发现内置与用户自建 Agent
 
-它们是 **外部 `buzz-acp` + 本机密钥 / seed**，不是侧边栏写死入口。列表读本地 `managed-agents` + relay **kind:10100**。
+Agent 是 **定义/persona + managed instance + ACP runtime + 本机密钥**，不是侧边栏写死入口。列表读本地 `managed-agents` 与 relay 投影；内置 Agent 走 seed，用户 Agent 走现有创建、catalog、team 或 snapshot 流程。
 
 **正确路径（Rust / 应用内 seed）**：通过 Desktop Tauri 命令、`room_seed` 或后续专门的 Rust 二进制完成 mint/注册/入座；**禁止**依赖 `mint-agent-keys` / `register-room-agents` 等脚本。
 
 频道成员栏要看到 agent 徽章，需加入 `Local Room`（社区 `ws://localhost:3000`）。
+
+### 动态 Agent 原则
+
+- `AgentDefinition` / `ManagedAgentRecord` 是现有权威模型；不要另建平行角色清单。
+- 自动路由按 stable capability ID、权限、readiness 和用户偏好选择；display name 与 prompt 文本不参与授权。
+- 用户新建 Agent 默认 `subscribe=mentions`、`respond_to=owner-only`、非 coordinator、最小工具权限。
+- capability 声明不是权限授予；真正权限由用户授权、ACP allow/deny、运行时能力和房间策略共同决定。
+- 没有 capability 的旧 Agent 保持显式 mention 可用；只有兼容映射或完整声明后才进入自动路由。
+- 一个房间只激活一个 `subscribe=all` coordinator，避免多个主脑互相唤醒形成环。
 
 ### DocSmith（文档）与重编码桌面窗
 
@@ -72,7 +81,7 @@ Notes:
 |------|------|
 | **今天资讯 / 新闻 / 实时** + PDF/PPT/Word | **串行两跳**：Grok **只** `@ZeroClaw`（同一帖禁止再写 `@DocSmith`，否则双 p-tag 会同时叫醒）→ ZeroClaw `web_search` → 再 **单** `@DocSmith` + 完整 body → `pdf_create`。禁止 DocSmith 先 list_dir |
 | 已有正文 / 路径整理成文档 | `@DocSmith` → `bony-docs-tools-mcp`（`pdf_*` / `docx_*` / `xlsx_*` / `pptx_*`） |
-| 重编码 | Grok 调 `open_coding_task`（Rust/应用入口）→ 新开 `bony-build --seed-prompt-file` 窗口 |
+| 重编码 | 从 Buzz **Coding Workspace** 选择本地项目与已授权 Coding Agent（`coding-workspace-v1`）→ ACP `session/new` 以所选工程作为真实 `cwd`，在当前 Buzz 工作区内直接编辑/测试；不再启动独立 Grok/Bony Build UI |
 | 代码分析 | Grok 自用工具 + 可选 `code-graph`，不交给 DocSmith |
 
 ### Grok 禁止事项（真实发生过的回归，别再犯）
@@ -105,12 +114,15 @@ $env:BUZZ_ACP_DENY_TOOLS = "deliver_file,file_write"
 ## Agent 约束
 
 - 总规范：`docs/PROJECT_STANDARDS.md`
+- 开发 Agent 协作：`docs/AGENT_COLLABORATION.md`
 - 编译/启动闸门：`.cursor/skills/buzz-room-build-gate/SKILL.md`
+- 房间角色契约：`.cursor/skills/buzz-agent-contracts/SKILL.md`
 - **启动脚本白名单**：`start-room-stack` / `start-desktop` / `stop-room-stack`；**编译只用** `cargo -p …`
 - 禁止第二套 `target`、禁止无确认 `cargo clean`、禁止新增业务脚本或非 Rust 胶水
 
 ## Policy
 
-- Grok: `subscribe=all`
-- Specialists (ZeroClaw / Unity / OpenMontage / DocSmith): `subscribe=mentions`
-- Permission: `accept-edits`
+- Coordinator: exactly one active `subscribe=all`（当前默认 Grok，替换需 owner 显式选择）
+- Built-in specialists and user-created agents: `subscribe=mentions`
+- User-created default inbound gate: `respond_to=owner-only`
+- Permission: least privilege; capability never bypasses ACP allow/deny

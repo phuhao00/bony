@@ -20,3 +20,19 @@ Cursor 规则：`.cursor/rules/`（始终生效）
 ## 房间协作
 
 见 `docs/buzz-room-collab.md`、`docs/buzz-room-agent-orchestration-plan.md`。
+
+## 开发 Agent 协作
+
+完整职责、并行边界与交接格式：[`docs/AGENT_COLLABORATION.md`](docs/AGENT_COLLABORATION.md)。
+
+| 任务 | 必用 Skill |
+|------|------------|
+| Rust 实现 / 修复 / 重构 | `.cursor/skills/rust-change-delivery/SKILL.md` |
+| 只诊断根因 | `.cursor/skills/rust-failure-diagnosis/SKILL.md` |
+| 性能优化 | `.cursor/skills/rust-performance-optimization/SKILL.md` |
+| 代码评审 | `.cursor/skills/rust-change-review/SKILL.md` |
+| Buzz Agent / Prompt / 动态能力注册 | `.cursor/skills/buzz-agent-contracts/SKILL.md` |
+
+- 一个文件 / 权威实现点同时只允许一个写入者；共享契约先串行固定，再并行独立模块。
+- 调查、实现、评审、验证职责分离；交接必须带实际证据，禁止让下一 Agent 从零重查。
+- 同一根 `target/` 不并行跑多个 Cargo 验证任务；不主动 commit/push。

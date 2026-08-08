@@ -1,6 +1,6 @@
 # bony-monitor
 
-Bony Build 的本地 Web 监控：架构总览 + **怎么工作**（一次提问的端到端流程）+ Git 改动影响时间线 + 功能矩阵。
+Bony Build 的本地 Web 监控：Buzz Desktop / Agent 运行时架构总览 + **怎么工作**（一次提问的端到端流程）+ Git 改动影响时间线 + 功能矩阵。
 
 顶部页签：
 
@@ -16,7 +16,7 @@ API：`GET /api/workflow`（含 `charts`、`code_map`，模块数随扫描热更
 
 | 时机 | 行为 |
 |------|------|
-| 启动前 | `run-monitor.ps1` 调用 `sync-monitor-catalog.ps1` 扫描模块 → `catalog/discovered.json` |
+| 启动时 | 扫描 Buzz Desktop Rust 本机层与监控自身模块，不落盘生成缓存 |
 | 运行中 | 每次 API 检查 `features.toml` / 源码目录 mtime，热重载规则并重扫模块；`git log` 每次现拉 |
 | 前端 | 约 12 秒轮询，看板开着改代码也能看到新 commit / `auto-*` 模块 |
 
@@ -24,14 +24,8 @@ API：`GET /api/workflow`（含 `charts`、`code_map`，模块数随扫描热更
 
 ```powershell
 # 仓库根目录
-powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1
+cargo run -p bony-monitor -- --bind 127.0.0.1:8787
 # 打开 http://127.0.0.1:8787
-```
-
-仅同步目录：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\sync-monitor-catalog.ps1
 ```
 
 可选在 commit message 中标注：

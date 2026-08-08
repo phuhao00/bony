@@ -2,7 +2,7 @@
 
 > 目标：人在房间里提一个问题/需求 → 相关 agent 先短促讨论「怎么分工、谁来做、什么顺序」→ 按顺序把每一步交给**最擅长**的那个 agent 执行 → 做完之后把结果**总结写回记忆** → 下一次遇到类似请求时，把这段记忆「卷」进新一轮的讨论/分工里，让房间越用越懂这个用户。
 
-这份文档是给 Grok / ZeroClaw / DocSmith / Unity / OpenMontage 的 prompt 以及未来任何新 specialist 参考的**架构基线**，不是一次性脚本；后续每次改 prompt/加角色，先看这里是否需要同步。
+这份文档是所有内置与用户自建 Agent 的**架构基线**，不是固定角色名单或一次性脚本。Grok / ZeroClaw / DocSmith / Unity / OpenMontage 只是当前默认实现；后续新增 Agent 应通过能力声明与 registry 自动适配，不要求不断扩写名称分支。
 
 ## 1. 现状（已实现，Phase 0）
 
@@ -11,12 +11,15 @@
 - **防串戏**：`buzz-acp`（`third_party/buzz/crates/buzz-acp/src/pool.rs::should_suppress_meta_channel_post`）在发布前过滤掉「自我介绍/等待/角色说明」类空话，只保留真正的交付内容。
 - **已知回归**（记录以防再犯）：Grok 曾经绕过 ZeroClaw/DocSmith，自己 `read_file`/`list_dir`/`run_terminal_command`（甚至调 `pandoc`）去拼文档，或者把 `docs/` 里昨天的旧 PDF 当成「今天」的答案。修复方式是在 `grok-coordinator.md` 里显式列出禁止清单（工具名 + 场景），而不是只讲原则。**结论：对这类模型，规则要具体到「禁止调用哪个工具、在哪种请求下」，抽象的「别越权」不够用。**
 
-限制：目前**没有**讨论阶段、**没有**持久记忆——每次请求都是从零开始路由，Grok 靠 prompt 里的静态规则表决定分工，不会参考「上次类似请求做得好/不好」的经验。这正是本次要补的部分。
+限制：目前**没有**讨论阶段、**没有**持久记忆，路由也主要依赖 prompt 里的静态角色表。现有 Desktop 已支持自定义 persona、managed agent、custom harness、team、catalog 和 snapshot，但尚未形成统一 capability registry；这三点是后续演进重点。
 
 ## 2. 目标架构（Phase 1+）
 
 ```
 人提问
+  │
+  ▼
+⓪ Registry 快照 ── active/readiness/权限/capability/版本/用户显式选择
   │
   ▼
 ① 记忆检索（卷积核）── 从 memory/task-log 里捞和本次主题相关的过去条目
@@ -28,11 +31,11 @@
   │   简单请求（天气、单文件转格式）跳过讨论，直接进④
   ▼
 ③ 指派（一次一跳，仍然遵守"最多一个 @Agent"规则）
-  │   按①②确定的顺序逐跳 handoff，每跳只做自己最擅长的事
+  │   按 capability、授权、健康、质量和负载选择具体 Agent；逐跳 handoff
   ▼
 ④ 执行
   │   ZeroClaw 检索 / DocSmith 出文档 / Unity 建场景 / OpenMontage 出视频 /
-  │   Grok 写代码或开 open_coding_task
+  │   Coding Workspace 中显式选择的 Agent 在所选工程 cwd 内写代码；不再外开独立编码 UI
   ▼
 ⑤ 记忆写回
   │   任务链最后一个 agent（或 Grok）写一条结构化总结到 memory/task-log.jsonl：
@@ -43,22 +46,37 @@
 
 「像卷积函数」的落地方式：**不是**训练模型权重，而是每次任务结束都往一个轻量记忆库追加一条摘要；下次讨论阶段先检索相关摘要，当作这次讨论的「先验/kernel」叠加进当前请求的上下文——层层任务的摘要滑动叠加，房间对同一个用户的偏好会越来越准，但实现始终是"读文件 + 拼 prompt"，没有黑箱。
 
-## 3. 分工总表（"让做得最好的那个人做"）
+## 3. Capability 路由与策略 Pin
 
-| 任务类型 | 负责人 | 说明 |
+| 任务类型 | Capability / 策略 | 当前默认实现 |
 |---|---|---|
-| 天气 / 实时信息检索 | ZeroClaw | `web_search` / `weather_*`，唯一入口 |
-| 今天资讯 + 出 PDF/PPT/Word | ZeroClaw → DocSmith（严格两跳，见上） | ZeroClaw 只管拿料，DocSmith 只管排版出文件 |
-| 已有正文 → 转文档 | DocSmith | `bony-docs-tools-mcp`：`pdf_*`/`docx_*`/`xlsx_*`/`pptx_*` |
-| 3D/场景/Unity 相关 | Unity | — |
-| 视频生成/剪辑 | OpenMontage | — |
-| 代码分析/小改动 | Grok 自己 | 不外包，Grok 是房间里唯一有 repo 工具权限的角色 |
-| 重编码/大改动 | Grok → `open_coding_task` | 开新 Bony Build 桌面窗处理，不占房间频道 |
-| 跨域组合请求（如"做个介绍我们项目的视频脚本 PDF"） | Grok 先出①②讨论清单，再逐跳指派 | 触发"分工讨论"，见下 |
+| 天气 / 实时信息 | `research.web` / `weather.lookup` | ZeroClaw |
+| 正文 → PDF/PPT/Word | `document.*.create` | DocSmith |
+| 3D/场景 | `unity.scene.*` | Unity |
+| 视频生成/剪辑 | `media.video.*` | OpenMontage |
+| 代码分析/改动 | `code.repo.read` / `code.rust.change` | Buzz Coding Workspace 中显式选择的已授权 Agent |
+| 跨域组合 | `coordination.route` 先规划，再逐 capability 指派 | 当前 Grok |
 
-新增角色时，先在这张表里加一行，再去对应 prompt 加禁止清单（参考第 1 节的教训：具体到工具名）。
+“实时检索→文档”仍是安全 policy pin：先 `research.web`，再把完整正文交给 `document.*.create`。当前实例是 ZeroClaw→DocSmith，但兼容的授权 Agent 可以替换具体实现；每帖仍只出现一个 `@Agent`。
 
-## 4. 分工讨论阶段（Phase 2，待实现）
+路由优先级：用户显式选择 → 安全 policy pin → capability/版本/输入匹配 → 权限/readiness → 历史质量与偏好 → 负载/延迟 → stable ID 确定性 tie-break。
+
+## 4. 动态 Agent 与用户创建
+
+现有权威数据面：
+
+- `AgentDefinition`：定义级身份、prompt、runtime、模型、行为默认值与来源。
+- `ManagedAgentRecord`：实例身份、运行配置、状态和错误。
+- custom harness / runtime catalog：可执行运行时与 readiness。
+- `CatalogSource` / team / snapshot：共享来源、组合与可移植性。
+
+目标扩展是在 `AgentDefinition` 上增加可选、版本化 capability profile；不另建一套 manifest。旧定义没有 capability 时仍可被用户显式 mention，但不自动推断高权限能力。
+
+用户创建生命周期：`Draft → Validate → Ready → Active → Draining → Archived → Deleted`。默认 `subscribe=mentions`、`respond_to=owner-only`、非 coordinator、最小工具权限；`subscribe=all`、`respond_to=anyone`、终端/写文件/网络等均需显式授权。
+
+Prompt 不能自封 coordinator 或扩大权限。Capability 只描述“能做什么”，有效权限始终取用户授权、ACP allow/deny、运行时能力和房间策略的交集。详细契约见 `.cursor/skills/buzz-agent-contracts/references/dynamic-agent-registry.md`。
+
+## 5. 分工讨论阶段（Phase 2，待实现）
 
 **触发条件**（避免把简单请求也拖进讨论，制造话痨）：请求同时满足以下 ≥2 条才触发讨论，否则直接单跳/两跳指派：
 
@@ -76,7 +94,7 @@ Grok: 确认，开始执行 → @ZeroClaw ...
 
 讨论阶段本身也要走 `should_suppress_meta_channel_post` 过滤，防止讨论退化成互相寒暄。
 
-## 5. 记忆存储（Phase 1，先实现这个，价值最高）
+## 6. 记忆存储（Phase 1，先实现这个，价值最高）
 
 新增 `scripts/buzz-room/memory/task-log.jsonl`（append-only，人类可读，不进 keyring/不进 git 敏感区）：
 
@@ -90,7 +108,7 @@ Grok: 确认，开始执行 → @ZeroClaw ...
 
 **读取者**：Grok 在①记忆检索阶段，对本次 `topic` 做一次简单的关键词匹配（不需要向量检索，几十条数据用 grep 级别的匹配就够），把匹配到的 1~3 条 `notes` 摘要塞进分工提议里的第一行,例如：`（参考记忆：上次PDF排版反馈是"满意"，按同样版式做）`。
 
-## 6. 分阶段路线图
+## 7. 分阶段路线图
 
 | Phase | 内容 | 状态 |
 |---|---|---|
@@ -100,9 +118,22 @@ Grok: 确认，开始执行 → @ZeroClaw ...
 | 3 | 把 `memory_append` / `memory_search` 做成真正的 MCP 工具（而不是靠 prompt 让 agent 手写 JSON），减少格式错误 | 待做 |
 | 4 | 定期（比如每周）人工或 Grok 扫一遍 `task-log.jsonl`，把重复出现的偏好固化进对应 specialist 的 prompt，形成"从记忆到规则"的闭环 | 待做 |
 
-## 7. 硬约束（贯穿所有 Phase，不因为加了讨论/记忆就放松）
+扩展性并行路线：
+
+| Track | 内容 | 状态 |
+|---|---|---|
+| D0 | persona / managed agent / custom harness / team / catalog / snapshot | ✅ 已有基础 |
+| D1 | `AgentDefinition` 可选 capability profile + 旧定义兼容映射 | 待做 |
+| D2 | Rust registry 统一 readiness、权限、版本和 route eligibility | 待做 |
+| D3 | Coordinator 通过 registry 动态选 Agent，支持用户显式 pin 与确定性 fallback | 待做 |
+| D4 | 质量/偏好记忆只参与候选调序，不绕过权限 | 待做 |
+
+## 8. 硬约束（贯穿所有 Phase，不因为加了讨论/记忆就放松）
 
 - 一条消息最多一个 `@Agent`；讨论阶段的确认回复也一样。
+- 一个房间只允许一个 active `subscribe=all` coordinator；用户 Agent 默认 mention-only。
+- 路由按 stable capability/ID，不把 display name、prompt 自述或未知 schema 当权限证据。
+- 禁用/归档 Agent 不接新任务；旧定义无 capability 时保持显式 mention 可用但不自动提权。
 - Grok 没有文档/搜索工具，永远不能自己 `read_file`/`list_dir`/`run_terminal_command` 去代替 ZeroClaw/DocSmith 完成任务。
 - 不解释身份、不写流程小作文、不甩选项菜单——`should_suppress_meta_channel_post` 兜底，但 prompt 层要先自律。
 - 记忆文件只存"事实性总结"，不存 `nsec`/密钥/大段原文。

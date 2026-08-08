@@ -40,14 +40,18 @@ const RULES: &[Rule] = &[
     Rule {
         id: "desktop",
         label: "桌面客户端",
-        prefixes: &["crates/codegen/bony-build/", "scripts/run-desktop.ps1"],
+        prefixes: &[
+            "third_party/buzz/desktop/",
+            "third_party/buzz/crates/buzz-acp/",
+            "scripts/buzz-room/start-desktop.ps1",
+        ],
         severity: "high",
-        improvement: "改进桌面壳、对话、用量统计或项目工作区入口",
+        improvement: "改进 Buzz 桌面壳、频道、Coding Workspace 或 ACP 会话",
     },
     Rule {
         id: "monitor",
         label: "Web 监控",
-        prefixes: &["crates/codegen/bony-monitor/", "scripts/run-monitor.ps1"],
+        prefixes: &["crates/codegen/bony-monitor/"],
         severity: "medium",
         improvement: "增强架构与改动可观测性",
     },

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Change Review"
+  short_description: "Review Rust diffs for correctness, regressions, and project fit"
+  default_prompt: "Use $rust-change-review to review this Rust diff and prioritize actionable findings."

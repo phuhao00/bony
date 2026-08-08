@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Failure Diagnosis"
+  short_description: "Diagnose Rust failures with evidence before proposing fixes"
+  default_prompt: "Use $rust-failure-diagnosis to find the root cause of this Rust failure and report evidence."
