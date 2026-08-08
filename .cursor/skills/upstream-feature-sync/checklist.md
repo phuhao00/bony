@@ -2,28 +2,22 @@
 
 ```
 Task:
-[ ] Working tree clean
-[ ] Monitor A: fetch upstream/main, note N behind
-[ ] Monitor B: fetch zeroclaw managed clone
-[ ] Monitor C: fetch OpenMontage install or gh API
-[ ] Report table shown to user
-[ ] User confirmed apply (if any)
+[ ] Working tree clean (commit README/product WIP first)
+[ ] git fetch upstream main
+[ ] Note left-right count HEAD...upstream/main
+[ ] backup tag: backup/pre-upstream-rebase-YYYYMMDD-HHMMSS
+[ ] User confirmed apply (监测 alone is read-only)
 
-If monorepo rebase:
-[ ] git rebase upstream/main complete
-[ ] Cargo.lock regenerated if conflicted
-[ ] SOURCE_REV = rev-parse upstream/main
-[ ] cargo check -p bony-build
-[ ] zeroclaw.rs / openmontage.rs / weather asset still present
+Rebase:
+[ ] git rebase upstream/main
+[ ] Conflicts via decision tree (product/Buzz = keep bony; lockfile = regenerate)
+[ ] Cargo.toml members = bony-* + third_party/buzz crates + new upstream members
+[ ] Do NOT restore Docker/Postgres/Redis as required room defaults
+
+After:
+[ ] SOURCE_REV = git rev-parse upstream/main
+[ ] final cargo generate-lockfile if lock was regenerated mid-way
+[ ] Path smoke: bony-build zeroclaw/openmontage, buzz-relay, buzz-db, start-room-stack.ps1
+[ ] cargo check -p bony-build -p bony-monitor -p buzz-relay -p buzz-db
 [ ] push --force-with-lease only if user asked
-
-If ZeroClaw pull:
-[ ] weather_tool overlay matches assets/zeroclaw_weather_tool.rs
-[ ] release bin rebuilt when patch/binary stale
-[ ] config agentic + native_tools + runtime_profile OK
-
-If OpenMontage pull:
-[ ] OPENMONTAGE_ROOT pulls cleanly
-[ ] skill / OPENMONTAGE_ROOT wiring intact
-[ ] UI install status still sensible
 ```
