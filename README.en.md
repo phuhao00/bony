@@ -28,7 +28,7 @@
 
 This repo bundles two things sharing one Rust workspace:
 
-1. **Bony Build**: a native desktop client (Rust / egui, currently `v0.1.3`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
+1. **Bony Build**: a native desktop client (Rust / egui, currently `v0.1.4`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
 2. **Buzz local collab room**: a bundled multi-agent group-chat backend (see [Buzz local collab room](#buzz-local-collab-room)). Grok is the coordinator; ZeroClaw / Unity / OpenMontage / DocSmith specialists hand off work via `@` mentions. The backend has been refactored to a single-instance, pure Rust + SQLite stack with no Docker / Postgres / Redis dependency.
 
 Good fit if you want to:
@@ -50,10 +50,10 @@ Typical uses: explain repo structure, dig into recent changes, add tests, summar
 
 GitHub Releases ship desktop zips (you still need a local `grok` CLI):
 
-- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony/releases/tag/v0.1.3)
-  - `bony-build-v0.1.3-windows-x86_64.zip`
-  - `bony-build-v0.1.3-macos-aarch64.zip`
-  - `bony-build-v0.1.3-macos-x86_64.zip`
+- [**Bony Build v0.1.4**](https://github.com/phuhao00/bony/releases/tag/v0.1.4)
+  - `bony-build-v0.1.4-windows-x86_64.zip`
+  - `bony-build-v0.1.4-macos-aarch64.zip`
+  - `bony-build-v0.1.4-macos-x86_64.zip`
 
 Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) on `v*` tags (`release-dist` profile). Local packaging output under `.local-dist/` is listed in [`.gitignore`](.gitignore)—do not commit exe / zip artifacts.
 
@@ -344,7 +344,7 @@ cargo run -p bony-build -- --cwd $PWD
 
 Ignore local artifacts: `target/`, `.tools/`, `.local-dist/`, `*.log`.
 
-To cut a release: push an annotated tag (e.g. `v0.1.3`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
+To cut a release: push an annotated tag (e.g. `v0.1.4`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
 
 ---
 

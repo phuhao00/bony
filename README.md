@@ -28,7 +28,7 @@
 
 本仓库是两块拼在一起的东西，共用一个 Rust workspace：
 
-1. **Bony Build**：原生桌面客户端（Rust / egui，当前 `v0.1.3`）。通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
+1. **Bony Build**：原生桌面客户端（Rust / egui，当前 `v0.1.4`）。通过 [ACP](https://agentclientprotocol.com/) 驱动本地 `grok agent stdio`，在选定仓库里做**对话式编程**——探索代码、改文件、跑终端与搜索工具——而不是只做一个聊天窗口。
 2. **Buzz 本地协作房间**：内置的多 Agent 群聊后端（详见 [Buzz 本地协作房间](#buzz-本地协作房间)）。Grok 当协调员，ZeroClaw / Unity / OpenMontage / DocSmith 等专员按 `@` 交接分工；后端已单机化重构成纯 Rust + SQLite，不依赖 Docker / Postgres / Redis。
 
 适合：
@@ -50,10 +50,10 @@
 
 GitHub Releases 提供桌面 zip（需本机另装 `grok` CLI）：
 
-- [**Bony Build v0.1.3**](https://github.com/phuhao00/bony/releases/tag/v0.1.3)
-  - `bony-build-v0.1.3-windows-x86_64.zip`
-  - `bony-build-v0.1.3-macos-aarch64.zip`
-  - `bony-build-v0.1.3-macos-x86_64.zip`
+- [**Bony Build v0.1.4**](https://github.com/phuhao00/bony/releases/tag/v0.1.4)
+  - `bony-build-v0.1.4-windows-x86_64.zip`
+  - `bony-build-v0.1.4-macos-aarch64.zip`
+  - `bony-build-v0.1.4-macos-x86_64.zip`
 
 由 [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) 在推送 `v*` tag 时构建（`release-dist` profile）。本地打包产物目录 `.local-dist/` 已写入 [`.gitignore`](.gitignore)，不要提交 exe / zip。
 
@@ -346,7 +346,7 @@ cargo run -p bony-build -- --cwd $PWD
 
 建议忽略本地产物：`target/`、`.tools/`、`.local-dist/`、各类 `*.log`。
 
-打 release：推送 annotated tag（如 `v0.1.3`）触发桌面工作流，或 `workflow_dispatch` 指定已有 tag。
+打 release：推送 annotated tag（如 `v0.1.4`）触发桌面工作流，或 `workflow_dispatch` 指定已有 tag。
 
 ---
 
