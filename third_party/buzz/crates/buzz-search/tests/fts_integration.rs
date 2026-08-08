@@ -33,7 +33,7 @@ async fn setup() -> SqlitePool {
 async fn mk_community(pool: &SqlitePool, host: &str) -> CommunityId {
     let id = Uuid::new_v4();
     sqlx::query("INSERT INTO communities (id, host, signing_key) VALUES (?, ?, ?)")
-        .bind(id.to_string())
+        .bind(id)
         .bind(host)
         .bind(b"signingkey".as_slice())
         .execute(pool)
@@ -59,14 +59,14 @@ async fn insert_event(
         "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
          VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
     )
-    .bind(community.as_uuid().to_string())
+    .bind(*community.as_uuid())
     .bind(&id[..])
     .bind(&pubkey[..])
     .bind(created_at)
     .bind(kind)
     .bind(content)
     .bind(b"signature".repeat(8))
-    .bind(channel_id.map(|c| c.to_string()))
+    .bind(channel_id)
     .execute(pool)
     .await
     .expect("insert event");
@@ -78,8 +78,8 @@ async fn mk_two_channels(pool: &SqlitePool, community: CommunityId) -> (Uuid, Uu
     let ch_b = Uuid::new_v4();
     for (id, name) in [(ch_a, "ch-a"), (ch_b, "ch-b")] {
         sqlx::query("INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, ?, ?)")
-            .bind(community.as_uuid().to_string())
-            .bind(id.to_string())
+            .bind(*community.as_uuid())
+            .bind(id)
             .bind(name)
             .bind(b"\x01".repeat(32))
             .execute(pool)
@@ -595,7 +595,7 @@ async fn deleted_events_are_excluded() {
     // Soft-delete
     sqlx::query("UPDATE events SET deleted_at = ? WHERE community_id = ? AND id = ?")
         .bind(chrono::Utc::now())
-        .bind(c.as_uuid().to_string())
+        .bind(*c.as_uuid())
         .bind(&evt_id[..])
         .execute(&pool)
         .await

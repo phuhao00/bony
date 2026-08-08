@@ -46,28 +46,34 @@ Buzz is a Rust monorepo, licensed Apache 2.0 under Block, Inc.
 └──────────┬──────────────┬──────────────────────────────────────────┘
            │              │
      ┌─────▼──────┐  ┌────▼──────┐
-     │  Postgres  │  │   Redis   │
-     │  (events,  │  │ (presence │
-     │  channels, │  │  SET EX,  │
-     │  tokens,   │  │  typing   │
-     │ workflows, │  │  ZADD,    │
-     │   audit)   │  │  PUBLISH) │
+     │   SQLite   │  │ In-process│
+     │  (events,  │  │  pub/sub  │
+     │  channels, │  │ (buzz-pub-│
+     │  tokens,   │  │ sub: broa-│
+     │ workflows, │  │ dcast +   │
+     │   audit)   │  │ DashMap)  │
      └────────────┘  └───────────┘
 
      Fan-out: sub_registry.fan_out() → conn_manager.send_to()
-     (in-process for local events; Redis round-trip for
-     events from other relay instances)
+     (all in-process — one relay process owns the whole broadcast
+     channel; no cross-process round-trip needed by default)
 
-     Redis PUBLISH occurs for channel-scoped events.
-     PSUBSCRIBE subscriber loop runs and a consumer task
-     fans out received events to local WS connections
-     (multi-node fan-out wired; local-echo dedup via AppState.local_event_ids).
+     buzz-pubsub publishes channel-scoped events onto an in-process
+     tokio::broadcast channel; a consumer task fans out received events
+     to local WS connections. The opt-in `buzz-relay-mesh` feature
+     (`BUZZ_MESH=on`) is the only thing that talks to an external Redis,
+     for cross-relay fan-out — the default single-instance relay never
+     touches Redis.
 
      ┌──────────────┐
-     │  Postgres    │  ← buzz-search (FTS over the search_tsv
-     │ (full-text   │     generated column + GIN index)
-     │   search)    │
+     │    SQLite    │  ← buzz-search (FTS5 virtual table `events_fts`,
+     │ (full-text   │     trigger-maintained on events insert/update/
+     │   search)    │     delete — see migrations/0001_initial_schema.sql)
      └──────────────┘
+
+     buzz-search also owns an embedded LanceDB store (`vector.rs`,
+     table `buzz_search_vectors`) for optional semantic/vector search,
+     independent of the SQLite FTS5 path above.
 ```
 
 ---
@@ -77,10 +83,10 @@ Buzz is a Rust monorepo, licensed Apache 2.0 under Block, Inc.
 ```
 buzz-core    (zero I/O — types, verification, filter matching, kind registry)
     │
-    ├── buzz-db          (Postgres: events, channels, tokens, workflows, audit)
+    ├── buzz-db          (SQLite: events, channels, tokens, workflows, audit)
     ├── buzz-auth        (NIP-42, NIP-98, API tokens, scopes, rate limiting)
-    ├── buzz-pubsub      (Redis pub/sub, presence, typing indicators)
-    ├── buzz-search      (Postgres FTS: query, delete)
+    ├── buzz-pubsub      (in-process pub/sub, presence, typing, rate limiting, NIP-98 replay)
+    ├── buzz-search      (SQLite FTS5 query/delete + embedded LanceDB semantic search)
     ├── buzz-audit       (hash-chain tamper-evident log)
     └── buzz-workflow    (YAML-as-code automation engine)
          │
@@ -230,7 +236,7 @@ When the relay receives `["EVENT", <event>]`, the handler in `handlers/event.rs`
 5. VERIFY            — spawn_blocking(verify_event) — Schnorr sig + ID hash
 6. MEMBERSHIP        — channel_id in event tags? → check_channel_membership
 7. DB INSERT         — db.insert_event (ON CONFLICT DO NOTHING — idempotent)
-8. REDIS PUBLISH     — pubsub.publish_event (if channel-scoped)
+8. PUBLISH           — pubsub.publish_event (in-process broadcast, if channel-scoped)
 9. FAN-OUT           — sub_registry.fan_out → conn_manager.send_to
 10. SEARCH INDEX     — search_index_tx.send (bounded worker queue, non-blocking)
 11. AUDIT LOG        — audit.log (spawned async, non-blocking)
@@ -250,21 +256,21 @@ Ephemeral events bypass DB storage, audit, and search. Two sub-paths:
 **Presence events (kind 20001):**
 ```
 1. VERIFY            — spawn_blocking(verify_event)
-2. REDIS PRESENCE    — set_presence() or clear_presence() based on content
-3. LOCAL FAN-OUT     — sub_registry.fan_out → conn_manager.send_to (no Redis PUBLISH)
+2. PRESENCE          — PresenceStore::set_presence() or clear_presence() (in-process DashMap)
+3. LOCAL FAN-OUT     — sub_registry.fan_out → conn_manager.send_to
 ```
-Presence events skip membership checks and use local-only fan-out. Multi-node presence fan-out would require Redis pub/sub (documented as future work).
+Presence events skip membership checks and use local-only fan-out — there is no other relay instance to fan out to by default.
 
 **Other ephemeral events (e.g., typing indicators):**
 ```
 1. VERIFY            — spawn_blocking(verify_event)
 2. MEMBERSHIP        — check_channel_membership (if channel-scoped)
-3. MARK LOCAL        — state.mark_local_event (dedup before Redis round-trip)
-4. REDIS PUBLISH     — pubsub.publish_event (no DB write)
+3. MARK LOCAL        — state.mark_local_event (local-echo dedup)
+4. PUBLISH           — pubsub.publish_event (in-process broadcast, no DB write)
 5. LOCAL FAN-OUT     — sub_registry.fan_out → conn_manager.send_to
 ```
 
-Ephemeral events are never stored in Postgres and never appear in REQ historical queries.
+Ephemeral events are never stored in SQLite and never appear in REQ historical queries.
 
 ### Handler Semaphore
 
@@ -323,7 +329,7 @@ This prevents a race where a non-member receives live fan-out events from a priv
 
 ### Historical Query (EOSE)
 
-After registering, the REQ handler queries Postgres for stored events matching the filters (up to 500 per filter, hard cap). These are sent as `["EVENT", sub_id, event]` frames before `["EOSE", sub_id]`. New events arriving after EOSE are delivered via the fan-out path.
+After registering, the REQ handler queries SQLite for stored events matching the filters (up to 500 per filter, hard cap). These are sent as `["EVENT", sub_id, event]` frames before `["EOSE", sub_id]`. New events arriving after EOSE are delivered via the fan-out path.
 
 ---
 
@@ -387,23 +393,22 @@ pub trait RateLimiter: Send + Sync { ... }
 - NIP-42 timestamp tolerance: ±60 seconds.
 - Dev-only key derivation: `SHA-256("buzz-test-key:{username}")` — gated behind `#[cfg(any(test, feature = "dev"))]`. The `dev` feature must not be enabled in production relay deployments.
 
-**Does NOT:** implement `RateLimiter` beyond a test stub (`AlwaysAllowRateLimiter`, gated behind `#[cfg(any(test, feature = "test-utils"))]`). No Redis-backed rate limiter exists anywhere in the codebase — rate limiting is not currently enforced. `RateLimitConfig` defines 4 tiers (human, agent-standard, agent-elevated, agent-platform) as a design target.
+**Does NOT:** implement `RateLimiter` beyond a test stub (`AlwaysAllowRateLimiter`, gated behind `#[cfg(any(test, feature = "test-utils"))]`) used in unit tests. The production implementation, `buzz-pubsub::InMemoryRateLimiter` (DashMap-backed, fixed window, in-process), is wired into `buzz-relay` — see the `buzz-pubsub` section below. `RateLimitConfig` still defines the 4 tiers (human, agent-standard, agent-elevated, agent-platform) this implementation enforces.
 
 ---
 
-### buzz-db — Postgres Event Store
+### buzz-db — SQLite Event Store
 
-All database access. Uses `sqlx::query()` (runtime, not compile-time macros) — no `.sqlx/` offline cache required.
+All database access. Uses `sqlx::query()` (runtime, not compile-time macros) — no `.sqlx/` offline cache required. Single-instance deployment: one `SqlitePool` against `sqlite://buzz.db` (or the path in `DATABASE_URL`), embedded migrations run from `migrations/0001_initial_schema.sql` (see `migration.rs`).
 
 **Key operations:**
 
 | Module | Responsibility |
 |--------|---------------|
-| `event.rs` | `insert_event` (ON CONFLICT DO NOTHING), `query_events` (QueryBuilder), `get_event_by_id` |
+| `event.rs` | `insert_event` (`ON CONFLICT DO NOTHING`), `query_events` (QueryBuilder), `get_event_by_id` |
 | `channel.rs` | Channel CRUD, membership management, role enforcement (transactional) |
 | `feed.rs` | `query_mentions` (INNER JOIN event_mentions), `query_needs_action`, `query_activity` |
 | `workflow.rs` | Full workflow/run/approval CRUD; SHA-256 hashed approval tokens |
-| `partition.rs` | Monthly range partitioning for `events` and `delivery_log` tables |
 | `dm.rs` | DM channel management |
 | `reaction.rs` | Reaction storage and retrieval |
 | `thread.rs` | Thread/reply tracking |
@@ -423,70 +428,66 @@ All database access. Uses `sqlx::query()` (runtime, not compile-time macros) —
 - Feed hard cap: `FEED_MAX_LIMIT = 100` rows regardless of caller-requested limit.
 - `query_mentions` uses `INNER JOIN event_mentions` — normalized table with composite index on `(pubkey_hex, created_at)`.
 - Approval tokens: `create_approval` receives the raw token and hashes it internally with SHA-256.
-- DDL injection protection in partition manager: allowlist of table names + strict suffix/date validators.
+- No monthly table partitioning: `partition.rs` (Postgres `PARTITION BY RANGE`) was deleted for the single-instance SQLite target — plain tables with the same indexes are enough at this scale.
 
-**Does NOT:** cache queries, implement connection pooling logic (delegated to sqlx), or make network calls outside Postgres.
+**Does NOT:** cache queries, implement connection pooling logic (delegated to sqlx), or make network calls outside the local SQLite file.
 
 ---
 
-### buzz-pubsub — Redis Pub/Sub, Presence, Typing
+### buzz-pubsub — In-Process Pub/Sub, Presence, Rate Limiting, NIP-98 Replay
 
-Manages Redis pub/sub fan-out, presence tracking, and typing indicators. In multi-community mode all tenant-visible keys are prefixed or otherwise partitioned by community (`buzz:{community}:...`) so channel fan-out, presence, typing, and cache invalidation cannot cross hosts.
+Manages event fan-out, presence tracking, typing indicators, rate limiting, and NIP-98 replay protection — all **in-process**, for a single-instance relay. Everything here used to be backed by Redis so state could be shared across pods; the single-instance deployment target moved all of it in-process (no network hop, no serialization, no external service to run). In multi-community mode all tenant-visible state is keyed/scoped by community so fan-out, presence, typing, rate limits, and NIP-98 replay tracking cannot cross hosts.
 
 **Architecture:**
 
 ```
-Publisher  → pool connection   → PUBLISH buzz:channel:{uuid}
-Subscriber → dedicated PubSub  → PSUBSCRIBE buzz:channel:*
-                                  → broadcast::channel(4096)
+buzz-relay process
+  └── PubSubManager
+        ├── broadcast::channel(4096)  → ChannelEvent          (WS fan-out)
+        ├── broadcast::channel(4096)  → ScopedCacheInvalidation (cache drops)
+        ├── broadcast::channel(4096)  → ScopedConnControl      (live bans)
+        ├── PresenceStore             (DashMap, TTL on read)
+        ├── InMemoryRateLimiter       (DashMap, fixed window)
+        └── InMemoryNip98ReplayGuard  (DashMap, TTL on read)
 ```
 
-The subscriber uses a **dedicated** `redis::aio::PubSub` connection — not from the pool. This is intentional: pool connections cannot hold `PSUBSCRIBE` state.
+**Current state:** the publish path pushes a `ChannelEvent` onto the `tokio::sync::broadcast` channel; a consumer task (spawned in `buzz-relay/src/main.rs`) receives it, calls `sub_registry.fan_out()`, and delivers matches to local WebSocket connections via `conn_manager.send_to()`. Everything is local — there is no cross-process round-trip and no reconnection logic to reason about, because there is nothing external to reconnect to. The opt-in `buzz-relay-mesh` feature (`BUZZ_MESH=on`) is the only consumer of `REDIS_URL`, for cross-relay fan-out; the default single-instance relay never opens a Redis connection.
 
-**Current state:** The subscriber loop is spawned in `buzz-relay/src/main.rs` and populates the broadcast channel. A consumer task subscribes via `pubsub.subscribe_local()`, calls `sub_registry.fan_out()` on each received event, and delivers matches to local WebSocket connections via `conn_manager.send_to()`. Multi-node fan-out is now wired end-to-end. Local-echo deduplication is implemented via `AppState.local_event_ids` — events published by the local relay instance are tracked and skipped when received via the Redis round-trip.
+**Presence:** in-process `PresenceStore` (DashMap keyed by pubkey hex), same 180-second TTL semantics as the old Redis `SET ... EX 180` (3× the 60-second heartbeat interval). Single missed heartbeat does not cause presence flap.
 
-**Reconnection:** exponential backoff 1s → 30s (`backoff_secs * 2`). Backoff resets to 1s only after a clean stream end, not on each reconnect attempt.
+**Typing indicators:** in-process equivalent of the old Redis sorted-set pattern (5-second activity window, 60-second entry TTL) — no external key-value store involved.
 
-**Presence:** `SET buzz:presence:{pubkey_hex} {status} EX 180` — 180-second TTL (3× the 60-second heartbeat interval). Single missed heartbeat does not cause presence flap.
+**Rate limiting:** `InMemoryRateLimiter` (DashMap, fixed window) implements `buzz_auth::RateLimiter` and is enforced in `buzz-relay` — see the "Known Limitations" note below for what changed here.
 
-**Typing indicators:**
-```
-ZADD buzz:typing:{channel_id} {now_unix} {pubkey_hex}
-ZREMRANGEBYSCORE buzz:typing:{channel_id} -inf {now - 5.0}
-EXPIRE buzz:typing:{channel_id} 60
-```
-5-second activity window. 60-second key TTL prevents orphaned empty sets.
+**NIP-98 replay:** `InMemoryNip98ReplayGuard` (DashMap, TTL on read) is the shared, atomic seen-set that rejects replayed NIP-98 HTTP Auth events.
 
-**Does NOT:** implement the rate limiter. Does NOT store events. `PubSubManager` is not `Clone` — callers use `Arc<PubSubManager>`.
+**Does NOT:** store events. `PubSubManager` is not `Clone` — callers use `Arc<PubSubManager>`.
 
 ---
 
-### buzz-search — Postgres FTS Integration
+### buzz-search — SQLite FTS5 + Embedded LanceDB Semantic Search
 
-Full-text search via Postgres FTS. Events are searchable through the
-`events.search_tsv` generated `tsvector` column (populated on insert, indexed
-by a GIN index) — there is no separate search service or out-of-band indexer.
-Privacy-sensitive kinds are excluded at the storage level (the `search_tsv`
-`CASE WHEN kind IN (...)` yields `NULL`, which never matches `@@`). In
-multi-community mode every query filter includes `community_id`, so the shared
-`events` table is infrastructure, not a cross-community result space; the relay
-re-authorizes every candidate hit before returning it.
+Two independent retrieval paths live in this crate:
+
+- **`query.rs` — SQLite FTS5 (NIP-50 keyword search).** Events are searchable through a standalone `events_fts` FTS5 virtual table (see `migrations/0001_initial_schema.sql`), kept in sync by `AFTER INSERT/UPDATE/DELETE` triggers on `events` — there is no separate search service, out-of-band indexer, or reindex job; every row write *is* the index update. Privacy-sensitive kinds are excluded at the storage/trigger level.
+- **`vector.rs` — embedded LanceDB semantic (vector) search.** A local, embedded LanceDB database (table `buzz_search_vectors`) storing one row per embedded event (`VectorRow`), queried via cosine-distance nearest-neighbor search (`VectorSearchService::search`). This module does not compute embeddings itself (see `EmbeddingGenerator` trait placeholder) and does not merge/rank results with the FTS path — that's a caller decision. No ANN index is built yet; flat/exact search is used (documented as fine up to roughly hundreds of thousands of vectors — see `.cursor/skills/lancedb-best-practices/SKILL.md` for indexing/maintenance guidance when that changes).
+
+In multi-community mode every query on both paths filters by `community_id` first, so the shared `events`/`buzz_search_vectors` storage is infrastructure, not a cross-community result space; the relay re-authorizes every candidate hit before returning it.
 
 **Key behaviors:**
-- `SearchService::new(pool)` wraps a `PgPool`; `search(&SearchQuery)` runs a
-  parameterized FTS query against the `events.search_tsv` GIN index and returns
+- `SearchService::new(pool)` wraps a `SqlitePool`; `search(&SearchQuery)` runs a
+  parameterized FTS5 query against `events_fts` and returns
   `SearchResult` (candidate `SearchHit`s).
 - `ChannelScope` makes the channel constraint explicit (`Any` /
   `ChannelLessOnly` / `Channels` / `ChannelsOrChannelLess`), closing the
   ambiguity the old `Option<Vec<Uuid>> + bool` matrix could not express.
-- Every query carries `community_id`; the FTS predicate is BitmapAnd-ed with
-  the community-leading btree filters so a query never crosses tenants.
-- Permission filtering is **caller's responsibility** — `buzz-search` returns
+- Every query carries `community_id` as the first predicate on both the FTS5 and LanceDB paths, so a query never crosses tenants.
+- Permission filtering is **caller's responsibility** on both paths — `buzz-search` returns
   candidate hits; the relay re-authorizes each one (channel membership, `#p`,
   owner gates) before delivering it.
 
 **Does NOT:** enforce channel membership or access control. Does NOT write
-events (indexing is the `search_tsv` generated column on the `events` insert).
+events on the FTS5 path (indexing is the trigger-maintained `events_fts` table). Does NOT generate embeddings for the vector path.
 
 ---
 
@@ -498,7 +499,7 @@ Tamper-evident append-only log with SHA-256 hash chaining.
 
 **Hash covers:** seq (big-endian bytes), timestamp (RFC3339), event_id, event_kind (big-endian), actor_pubkey, action string, channel_id (16 bytes or 16 zero bytes if None), canonical metadata JSON (BTreeMap for deterministic key ordering), prev_hash.
 
-**Single-writer guarantee:** `pg_advisory_lock` before each transaction. Lock released in all branches including panic (`catch_unwind`).
+**Single-writer guarantee:** the head-read + insert that appends an entry runs inside one SQLite transaction (no read-modify-write gap). Postgres additionally needed a per-community `pg_advisory_lock` so two relay *processes* sharing one database wouldn't race the same chain; single-instance SQLite has exactly one writer process and already serializes every write transaction at the file level (`DbConfig`'s pool `busy_timeout` covers the resulting contention), so that lock has no SQLite equivalent and was dropped rather than emulated with an in-process mutex.
 
 **10 audit actions:** `EventCreated`, `EventDeleted`, `ChannelCreated`, `ChannelUpdated`, `ChannelDeleted`, `MemberAdded`, `MemberRemoved`, `AuthSuccess`, `AuthFailure`, `RateLimitExceeded`.
 
@@ -687,7 +688,7 @@ Subcommands:
 | `generate-key` | Generate a new Nostr keypair (for bootstrapping) |
 | `reconcile-channels` | Emit kind:39000/39002 discovery events for channels missing them (idempotent) |
 
-The `buzz-admin` binary is shipped in the relay Docker image (`/usr/local/bin/buzz-admin`) and is the recommended way to manage relay membership in production. Use `./run.sh add-member`, `./run.sh remove-member`, and `./run.sh list-members` in Docker Compose deployments.
+Build and run the `buzz-admin` binary directly (`cargo run -p buzz-admin -- add-member ...`) against the same `DATABASE_URL` as the relay to manage membership.
 
 ---
 
@@ -721,7 +722,7 @@ Every security-sensitive operation uses an explicit, verified pattern. No implic
 | Concern | Mechanism |
 |---------|-----------|
 | NIP-42 timestamp | ±60 second tolerance — prevents replay attacks |
-| AUTH events | Never stored in Postgres, never logged in audit chain |
+| AUTH events | Never stored in SQLite, never logged in audit chain |
 | NIP-98 HTTP Auth | Schnorr-signed `kind:27235` events — URL and method verification |
 
 ### Input Validation
@@ -733,7 +734,6 @@ Every security-sensitive operation uses an explicit, verified pattern. No implic
 | Frame size | `MAX_FRAME_BYTES = 65,536` — oversized frames rejected, connection closed |
 | Search event IDs | 64-char hex validation before URL construction — prevents path injection |
 | Workflow step IDs | Alphanumeric + underscore only — prevents evalexpr variable injection |
-| Partition names | Allowlist of table names + strict suffix/date validators — prevents DDL injection |
 
 ### SSRF Protection
 
@@ -748,14 +748,14 @@ Applied in: `buzz-workflow` (CallWebhook action), `buzz-core` (shared utility).
 
 - Hash chain: each entry's SHA-256 covers all fields including `prev_hash` — tampering any entry breaks all subsequent hashes
 - Canonical JSON: `BTreeMap` for deterministic key ordering — hash is reproducible
-- Single-writer lock: `pg_advisory_lock` — prevents concurrent writes from breaking the chain
+- Single-writer transaction: head-read + insert run inside one SQLite transaction — prevents concurrent writes from breaking the chain (see `buzz-audit` above; no `pg_advisory_lock` equivalent needed for a single-instance writer)
 - Panic-safe: `catch_unwind` ensures lock release even on panic
 
 ### Access Control
 
 - Channel membership is the only gate — enforced by the relay at every operation
 - REQ handler checks access before subscription registration — no race window for private channel leaks
-- TOCTOU-safe membership operations: all check-then-modify sequences run inside Postgres transactions
+- TOCTOU-safe membership operations: all check-then-modify sequences run inside SQLite transactions
 - Approval tokens: UUID (CSPRNG), stored as SHA-256 hash, single-use enforced with `AND status = 'pending'` in UPDATE
 
 ### Webhook Security
@@ -767,49 +767,57 @@ Applied in: `buzz-workflow` (CallWebhook action), `buzz-core` (shared utility).
 
 ## 8. Infrastructure
 
-Docker Compose provides the full local development stack. All services include health checks and resource limits.
+Single-instance local/desktop deployment: no Docker and no external services are required to run the relay. Everything below is optional and only needed if you opt into a specific feature.
 
 ### Services
 
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| Postgres | `postgres:17-alpine` | 5432 | Primary event store — events, channels, tokens, workflows, audit; full-text search (`search_tsv` GIN) |
-| Redis | `redis:7-alpine` | 6379 | Pub/sub fan-out, presence (SET EX), typing (sorted sets) |
-| Adminer | `adminer` | 8082 | DB web UI (dev only) |
-| MinIO | `minio/minio` | 9000 (API), 9001 (console) | S3-compatible object storage (media) |
-| Prometheus | `prom/prometheus` | 9090 | Metrics collection |
+| Service | Required? | Port | Purpose |
+|---------|-----------|------|---------|
+| SQLite | Always (embedded) | — | Primary event store — events, channels, tokens, workflows, audit, FTS5 search (see below) |
+| In-process pub/sub | Always (embedded) | — | Fan-out, presence, typing, rate limiting, NIP-98 replay (`buzz-pubsub`) |
+| LanceDB | Always (embedded) | — | Optional semantic/vector search over event content (`buzz-search::vector`) |
+| S3-compatible object storage | Opt-in, self-hosted | 9000 (typical) | Media uploads + Git-on-object-storage; point `BUZZ_S3_*` at any endpoint you run (MinIO, AWS S3, R2, ...) |
+| Redis | Opt-in, self-hosted | 6379 (typical) | Only used by the opt-in `buzz-relay-mesh` cross-relay feature (`BUZZ_MESH=on`) |
+| Prometheus | Opt-in, self-hosted | 9090 (typical) | Scrapes the relay's `/metrics` endpoint if you run one |
 
-### Postgres Schema (key tables)
+### SQLite Schema (key tables)
+
+Single-instance deployment: one SQLite file (`DATABASE_URL`, default `sqlite://buzz.db`), embedded migrations in `migrations/0001_initial_schema.sql`. No monthly range partitioning (Postgres's `PARTITION BY RANGE` and `buzz-db`'s `partition.rs` were removed — plain tables with the same indexes are enough at single-instance scale) and no read-replica freshness fence (`replica_fence.rs` removed).
 
 | Table | Purpose |
 |-------|---------|
-| `events` | All stored Nostr events; monthly range-partitioned by `PARTITION BY RANGE` on `created_at`; multi-community mode keys every tenant-visible event by `community_id` |
+| `events` | All stored Nostr events; multi-community mode keys every tenant-visible event by `community_id` |
 | `channels` | Channel records (type, visibility, canvas, topic); `community_id` is immutable after creation in multi-community mode |
 | `channel_members` | Membership with roles; soft-delete via `removed_at` |
 | `workflows` | Workflow definitions (YAML stored as canonical JSON); scoped by community in multi-community mode |
 | `workflow_runs` | Execution records with trigger context and trace |
 | `workflow_approvals` | Approval gates (token stored as SHA-256 hash) |
 | `audit_log` | Hash-chain audit entries; per-community chain/head in multi-community mode |
-| `delivery_log` | Delivery tracking (partitioned; Rust module pending) |
+| `delivery_log` | Delivery tracking |
+| `events_fts` | FTS5 virtual table backing full-text search — see below |
 
-### Redis Key Patterns
+### In-Process Pub/Sub State (`buzz-pubsub`)
 
-| Pattern | Type | TTL | Purpose |
-|---------|------|-----|---------|
-| `buzz:channel:{uuid}` | Pub/Sub channel | — | Event fan-out (single-community form; shared multi-community Redis must use `buzz:{community}:channel:{uuid}` or equivalent) |
-| `buzz:presence:{pubkey_hex}` | String | 180s | Online/away status (single-community form; shared multi-community Redis must scope by community) |
-| `buzz:typing:{channel_uuid}` | Sorted Set | 60s | Active typers (5s window; shared multi-community Redis must scope by community) |
+No external key-value store: presence, typing, rate limiting, and NIP-98 replay tracking all live in `DashMap`s inside the relay process, scoped by community in multi-community mode. The opt-in `buzz-relay-mesh` feature is the only thing that still speaks the old Redis key patterns (`buzz:channel:{uuid}` pub/sub, `buzz:presence:{pubkey_hex}` string + TTL, `buzz:typing:{channel_uuid}` sorted set + TTL) for cross-relay fan-out — the default single-instance relay keeps the same TTL/window semantics in-process without ever opening a Redis connection.
 
-### Full-Text Search (Postgres FTS)
+### Full-Text Search (SQLite FTS5)
 
-Search runs over the `events.search_tsv` generated `tsvector` column on the
-`events` table (no separate collection or service). The column is populated on
-insert — `to_tsvector('simple', content)` — and excludes privacy-sensitive
-kinds via `CASE WHEN kind IN (1059, 30300, 30622) THEN NULL`, so those rows are
-storage-level unsearchable (a `NULL` tsvector never matches `@@`). A GIN index
-(`idx_events_search_tsv`) backs the `@@` probe; in multi-community mode the
-community-leading btree filters BitmapAnd with the GIN probe so every query is
-fenced to its `community_id`.
+Search runs over a standalone `events_fts` FTS5 virtual table (see
+`migrations/0001_initial_schema.sql`), kept in sync by `AFTER INSERT/UPDATE/DELETE`
+triggers on `events` — there is no separate collection, service, or out-of-band
+indexer; every row write *is* the index update. Privacy-sensitive kinds are
+excluded at the trigger level so those rows are storage-level unsearchable. In
+multi-community mode every query filters on `community_id` first so a query
+never crosses tenants.
+
+### Embedded Semantic Search (LanceDB, `buzz-search::vector`)
+
+Independent of the FTS5 path above: an embedded LanceDB database (table
+`buzz_search_vectors`, one row per embedded event) provides optional
+cosine-distance nearest-neighbor search over event content. No external
+service — LanceDB is a local, file-backed embedded store, same deployment
+shape as SQLite. See `.cursor/skills/lancedb-best-practices/SKILL.md` for
+indexing/maintenance guidance.
 
 ---
 
@@ -820,8 +828,8 @@ These are verified gaps in the current implementation — not design aspirations
 | # | Limitation | Detail |
 |---|-----------|--------|
 | 1 | **No sqlx offline query cache** | Uses `sqlx::query()` (runtime) not `sqlx::query!()` (compile-time). No `.sqlx/` directory. Queries are not validated at compile time. |
-| 2 | **No rate limiting implementation** | `RateLimiter` trait exists in `buzz-auth`. Only implementation is `AlwaysAllowRateLimiter` (test stub, gated behind `#[cfg(any(test, feature = "test-utils"))]`). `RateLimitConfig` defines 4 tiers (human, agent-standard, agent-elevated, agent-platform) but none are enforced. |
-| 3 | **No dedicated typing REST endpoint** | Typing indicators (kind 20002) are delivered via both local fan-out and Redis pub/sub (cross-node). There is no REST endpoint to query current typers — `/api/presence` returns online/away status only, not typing state. |
+| 2 | **Rate limiting is in-process, single-instance only** | `RateLimiter` trait (`buzz-auth`) is implemented by `buzz-pubsub::InMemoryRateLimiter` (DashMap, fixed window) and enforced in `buzz-relay`, covering the 4 `RateLimitConfig` tiers (human, agent-standard, agent-elevated, agent-platform). It does not coordinate across relay processes — that only matters for the opt-in multi-node mesh, not the default single-instance deployment. |
+| 3 | **No dedicated typing REST endpoint** | Typing indicators (kind 20002) are delivered via in-process local fan-out only. There is no REST endpoint to query current typers — `/api/presence` returns online/away status only, not typing state. |
 | 4 | **Huddle recording/tracks not built** | Voice, room lifecycle, and join/leave/end events are wired (see Huddle Audio above). Recording and per-track publishing have reserved kinds but no producer yet. |
 | 5 | **Approval gates not wired end-to-end** | The executor returns `StepResult::Suspended` and the relay has grant/deny API endpoints with DB CRUD, but the engine intercepts before creating `WaitingApproval` rows — runs that hit an approval gate are marked as Failed (🚧 WF-08). |
 | 6 | **Workflow actions partially stubbed** | The `send_dm` and `set_channel_topic` workflow actions are in the schema but return `NotImplemented` — a run that reaches one fails at execution (🚧 WF-07). |

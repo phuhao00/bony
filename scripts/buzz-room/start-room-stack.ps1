@@ -61,9 +61,9 @@ Write-Host "==> Infra (Docker compose in $BuzzRoot)"
 if (-not $SkipBuild) {
   Write-Host "==> Build tools"
   & (Join-Path $PSScriptRoot "build-tools.ps1") -BonyRoot $BonyRoot -BuzzRoot $BuzzRoot
-  # ensure relay
-  if (-not (Test-Path (Join-Path $BuzzRoot "target\debug\buzz-relay.exe"))) {
-    Set-Location $BuzzRoot
+  # ensure relay (root workspace target — Buzz is a member, not its own workspace)
+  if (-not (Test-Path (Join-Path $BonyRoot "target\debug\buzz-relay.exe"))) {
+    Set-Location $BonyRoot
     Remove-Item Env:RUSTUP_TOOLCHAIN -ErrorAction SilentlyContinue
     Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
     cargo build -p buzz-relay

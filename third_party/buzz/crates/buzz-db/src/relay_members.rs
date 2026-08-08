@@ -555,8 +555,8 @@ pub async fn transfer_ownership(
 pub async fn backfill_from_allowlist(pool: &SqlitePool, community: CommunityId) -> Result<u64> {
     // Check if pubkey_allowlist table exists.
     let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables \
-         WHERE table_schema = 'public' AND table_name = 'pubkey_allowlist')",
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+         WHERE type = 'table' AND name = 'pubkey_allowlist')",
     )
     .fetch_one(pool)
     .await?;
@@ -580,7 +580,7 @@ pub async fn backfill_from_allowlist(pool: &SqlitePool, community: CommunityId) 
 
     let result = sqlx::query(
         "INSERT INTO relay_members (community_id, pubkey, role, added_by, created_at) \
-         SELECT $1, encode(pubkey, 'hex'), 'member', NULL, added_at \
+         SELECT $1, lower(hex(pubkey)), 'member', NULL, added_at \
          FROM pubkey_allowlist \
          WHERE community_id = $1 \
          ON CONFLICT (community_id, pubkey) DO NOTHING",

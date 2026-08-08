@@ -150,7 +150,7 @@ async fn persist_command_event(
              WHERE community_id = $1 AND kind = $2 AND pubkey = $3 AND d_tag = $4 AND deleted_at IS NULL \
              ORDER BY created_at DESC, id ASC LIMIT 1",
         )
-        .bind(tenant.community().as_uuid().to_string())
+        .bind(*tenant.community().as_uuid())
         .bind(kind_i32)
         .bind(pubkey_bytes.as_slice())
         .bind(d_tag)
@@ -171,7 +171,7 @@ async fn persist_command_event(
                  WHERE community_id = $2 AND kind = $3 AND pubkey = $4 AND d_tag = $5 AND deleted_at IS NULL",
             )
             .bind(Utc::now())
-            .bind(tenant.community().as_uuid().to_string())
+            .bind(*tenant.community().as_uuid())
             .bind(kind_i32)
             .bind(pubkey_bytes.as_slice())
             .bind(d_tag)
@@ -188,7 +188,7 @@ async fn persist_command_event(
         ON CONFLICT DO NOTHING
         "#,
     )
-    .bind(tenant.community().as_uuid().to_string())
+    .bind(*tenant.community().as_uuid())
     .bind(id_bytes.as_slice())
     .bind(pubkey_bytes.as_slice())
     .bind(created_at)
@@ -197,7 +197,7 @@ async fn persist_command_event(
     .bind(&event.content)
     .bind(sig_bytes.as_slice())
     .bind(received_at)
-    .bind(channel_id.map(|c| c.to_string()))
+    .bind(channel_id)
     .bind(d_tag.as_deref())
     .execute(tx.as_mut())
     .await

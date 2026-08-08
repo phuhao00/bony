@@ -303,8 +303,17 @@ pub async fn search(pool: &SqlitePool, query: &SearchQuery) -> Result<SearchResu
          FROM events_fts WHERE events_fts MATCH ",
     );
     qb.push_bind(match_query);
+    // `community_id`/`channel_id` in `events_fts` are copied verbatim from
+    // `events.community_id`/`events.channel_id` by the FTS sync triggers
+    // (see migration 0001), and buzz-db's own writers (`event::insert_event`
+    // et al.) bind those UUID columns as the sqlx-uuid crate's native 16-byte
+    // BLOB encoding, not a hyphenated TEXT string — despite the SQLite
+    // column being declared `TEXT` (SQLite's manifest typing does not
+    // coerce BLOB values on insert). Bind/decode here must match that same
+    // BLOB encoding or every community/channel-scoped predicate silently
+    // matches zero rows against real data.
     qb.push(" AND community_id = ");
-    qb.push_bind(query.community.as_uuid().to_string());
+    qb.push_bind(*query.community.as_uuid());
 
     // Channel scope — see `ChannelScope` doc for the four-case mapping. The
     // emitted SQL fragments are the SQLite `IN (...)` equivalents of the
@@ -321,7 +330,7 @@ pub async fn search(pool: &SqlitePool, query: &SearchQuery) -> Result<SearchResu
             qb.push(" AND channel_id IN (");
             let mut sep = qb.separated(", ");
             for id in ids {
-                sep.push_bind(id.to_string());
+                sep.push_bind(*id);
             }
             sep.push_unseparated(")");
         }
@@ -329,7 +338,7 @@ pub async fn search(pool: &SqlitePool, query: &SearchQuery) -> Result<SearchResu
             qb.push(" AND (channel_id IN (");
             let mut sep = qb.separated(", ");
             for id in ids {
-                sep.push_bind(id.to_string());
+                sep.push_bind(*id);
             }
             sep.push_unseparated(") OR channel_id IS NULL)");
         }
@@ -376,14 +385,7 @@ pub async fn search(pool: &SqlitePool, query: &SearchQuery) -> Result<SearchResu
         let pk_hex: String = row.try_get("pubkey")?;
         let id = decode_hex_32(&id_hex, "event_id")?;
         let pubkey = decode_hex_32(&pk_hex, "pubkey")?;
-        let channel_id: Option<String> = row.try_get("channel_id")?;
-        let channel_id = channel_id
-            .map(|s| {
-                Uuid::parse_str(&s).map_err(|e| {
-                    sqlx::Error::Decode(format!("channel_id column is not a UUID: {e}").into())
-                })
-            })
-            .transpose()?;
+        let channel_id: Option<Uuid> = row.try_get("channel_id")?;
         let created_at_str: String = row.try_get("created_at")?;
         let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
             .map_err(|e| {
@@ -519,7 +521,7 @@ mod tests {
 
     async fn insert_community(pool: &SqlitePool, id: Uuid, host: &str) {
         sqlx::query("INSERT INTO communities (id, host) VALUES (?, ?)")
-            .bind(id.to_string())
+            .bind(id)
             .bind(host)
             .execute(pool)
             .await
@@ -541,14 +543,14 @@ mod tests {
             "INSERT INTO events (community_id, id, pubkey, created_at, kind, tags, content, sig, channel_id) \
              VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?)",
         )
-        .bind(community_id.to_string())
+        .bind(community_id)
         .bind(event_id.to_vec())
         .bind(pubkey.to_vec())
         .bind(created_at)
         .bind(kind)
         .bind(content)
         .bind(vec![0u8; 64])
-        .bind(channel_id.map(|c| c.to_string()))
+        .bind(channel_id)
         .execute(pool)
         .await
         .expect("insert event");
@@ -737,8 +739,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, 'a', ?)",
         )
-        .bind(community.to_string())
-        .bind(channel_a.to_string())
+        .bind(community)
+        .bind(channel_a)
         .bind(id32(0xEE).to_vec())
         .execute(&pool)
         .await
@@ -746,8 +748,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO channels (community_id, id, name, created_by) VALUES (?, ?, 'b', ?)",
         )
-        .bind(community.to_string())
-        .bind(channel_b.to_string())
+        .bind(community)
+        .bind(channel_b)
         .bind(id32(0xEE).to_vec())
         .execute(&pool)
         .await

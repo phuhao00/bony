@@ -494,7 +494,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let host = format!("ident-test-{}.example", id.simple());
         sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
-            .bind(id.to_string())
+            .bind(id)
             .bind(&host)
             .execute(pool)
             .await
