@@ -10,10 +10,11 @@
 
 [快速开始](#快速开始) ·
 [功能](#功能) ·
+[技术栈](#技术栈) ·
 [本地多 Agent 协作](#本地多-agent-协作) ·
 [Web 监控](#web-监控) ·
 [模型与供应商](#模型与供应商) ·
-[架构](#架构) ·
+[架构与运行链路](#架构与运行链路) ·
 [贡献者](#贡献者) ·
 [与上游关系](#与上游关系) ·
 [开发](#开发)
@@ -49,6 +50,28 @@ Bony 把桌面编程工作区与多 Agent 房间统一在一个客户端中，�
 | 房间协作 | Grok 协调 ZeroClaw / Unity / OpenMontage / DocSmith，支持线程和状态反馈 |
 | 本地后端 | Rust + SQLite + 进程内 pubsub，单 workspace、单根 `target/` |
 | Web 监控 | 架构分层、「怎么工作」、功能影响矩阵与提交影响时间线 |
+
+---
+
+## 技术栈
+
+| 层 | 技术 | 在 Bony 中的用途 |
+|----|------|------------------|
+| 桌面壳 | **Tauri 2 · Rust · Tokio** | 窗口、系统托盘、原生目录选择、进程生命周期、通知、更新与操作系统集成 |
+| 界面 | **React 19 · TypeScript 6 · Vite 8 · Tailwind CSS 4** | 频道、线程、Coding Workspace、Agent 会话与主题；负责界面渲染、交互状态与调用 Tauri 本机能力 |
+| UI 与状态 | **Radix UI · TanStack Query / Router / Virtual · TipTap · Shiki · Motion** | 无障碍组件、服务端状态、路由、长列表、富文本、代码高亮与过渡动画 |
+| 原生工程集成 | **Tauri Commands · Git · atomic-write-file** | 校验并规范化工程路径、保存最近项目、读取 Git 状态，并把真实目录交给 Coding Agent |
+| Agent 协议 | **ACP · JSON-RPC · stdio · `buzz-acp`** | 统一初始化、创建会话、发送 prompt、取消 turn、模型配置和流式事件 |
+| Coding Agent | **Grok · Codex · Claude Code · 自定义 ACP Runtime** | 通过同一个 managed-agent catalog 选择运行时、模型、供应商和工程会话 |
+| Grok 运行时 | **`xai-grok-shell` · `SessionActor` · `xai-grok-agent`** | 组装 Agent、运行采样/工具循环、管理上下文、记忆、压缩与子 Agent |
+| 工具与工作区 | **`ToolBridge` · `xai-grok-tools` · `xai-grok-workspace`** | 文件、终端、搜索、Git、权限、沙箱、checkpoint 与 MCP 工具 |
+| 房间服务 | **Axum · Tokio · WebSocket · Nostr** | 频道事件、线程、在线状态、Agent mention、进度与回复的实时传输 |
+| 数据层 | **SQLx · SQLite（WAL）· 进程内 pubsub** | 消息、成员、线程等持久化；使用 broadcast / DashMap 做本机 fan-out、限流和 presence |
+| 检索 | **SQLite FTS5 · LanceDB** | 房间全文检索与嵌入式语义检索 |
+| 安全 | **系统 Keyring · rustls · NIP-98 · PermissionManager / Sandbox** | 本机密钥、TLS、请求认证以及 Agent 工具执行权限 |
+| 可观测性 | **`bony-monitor` · Axum · Git 元数据** | 展示架构、运行流程、功能矩阵与提交影响 |
+
+仓库使用一个 Cargo workspace、一个根 `Cargo.lock` 和一个根 `target/`。`buzz-*` 是内嵌底层 crate 的技术前缀，Bony 是项目与产品名称。
 
 ---
 
@@ -111,11 +134,22 @@ cargo run -p bony-monitor -- --bind 127.0.0.1:8787
 
 ```powershell
 # 编译与运行都从仓库根目录走 Cargo，共用根 target/
-cargo build -p buzz-desktop
+cargo build -p buzz-relay -p buzz-desktop
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild
 powershell -File .\scripts\buzz-room\start-desktop.ps1
 ```
 
-启动后进入频道，点击标题栏右侧的代码图标打开 Coding Workspace，再选择本地工程目录。
+### 完成第一个 Coding Workspace 任务
+
+1. 进入任意已加入的频道，点击标题栏右侧的**代码图标**。
+2. 选择本地工程目录；Rust 本机层会规范化路径并加入最近项目列表。
+3. 在 **Project agents** 中选择 Grok、Codex、Claude Code 或已注册的自定义 ACP Agent。
+4. 输入任务。Bony 会自动附加所选 Agent mention 与 `coding-workspace-v1` 工程标记。
+5. `buzz-acp` 为该工程创建或复用 ACP 会话，并在 `session/new` 中把真实工程目录设为 `cwd`。
+6. 会话区实时展示消息、计划、工具调用和模型用量；运行中可点击 **Stop** 取消当前 turn。
+7. 完成后切回房间继续分工，或切换工程；工程切换会建立与新 `cwd` 对应的会话边界。
+
+Agent 未运行时，桌面端会先启动其 managed runtime。运行时、模型和供应商配置位于 Agent 编辑界面；Grok 的 BYOK 目录也可通过 `%USERPROFILE%\.grok\config.toml` 管理。
 
 ### 也可使用终端 TUI
 
@@ -170,38 +204,125 @@ context_window = 32768
 
 ---
 
-## 架构
+## 架构与运行链路
 
-概览（GitHub 可渲染）：
+### 组件架构
 
 ```mermaid
 flowchart TB
-  UI["Bony 桌面端<br/>频道 + Coding Workspace"]
-  ACP["buzz-acp<br/>会话池与队列"]
-  Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
-  Sample["采样 · 多 backend"]
-  Tools["工具 · 终端 / 文件 / 搜索"]
-  WS["Workspace / MCP / 子 agent"]
-  Room["本地多 Agent 房间<br/>SQLite + 进程内 pubsub"]
+  User["用户"]
+  Project["本地工程<br/>文件系统 · Git · AGENTS.md"]
 
-  UI --> ACP --> Agent
-  Agent --> Sample
-  Agent --> Tools
-  Agent --> WS
-  UI --> Room
+  subgraph Desktop["Bony Desktop · Tauri 2"]
+    Channel["频道 / 线程 / 房间"]
+    WorkspaceUI["Coding Workspace<br/>工程 · Agent · 会话"]
+    Renderer["React UI<br/>TanStack · Radix · TipTap"]
+    Native["Tauri Rust 本机层<br/>目录 · Git · Keyring · 进程"]
+    Catalog["Managed Agent Catalog<br/>runtime · model · provider · capability"]
+  end
+
+  subgraph RoomCore["本地协作核心"]
+    Relay["buzz-relay<br/>Axum · WebSocket · Nostr"]
+    Store["SQLite / SQLx<br/>消息 · 成员 · 线程"]
+    PubSub["buzz-pubsub<br/>broadcast · presence · rate limit"]
+    Search["FTS5 + LanceDB<br/>全文与语义检索"]
+  end
+
+  subgraph AgentPlane["Coding Agent 运行面"]
+    Harness["buzz-acp<br/>队列 · 会话池 · ACP Client"]
+    Runtimes["ACP Runtimes<br/>Grok · Codex · Claude Code · Custom"]
+    GrokCore["Grok 路径<br/>SessionActor · AgentBuilder"]
+    Model["模型供应商<br/>HTTP / SSE"]
+    Tools["ToolBridge<br/>文件 · 终端 · 搜索 · MCP"]
+  end
+
+  User --> Channel
+  User --> WorkspaceUI
+  Channel --> Renderer
+  WorkspaceUI --> Renderer
+  Renderer <--> Native
+  Native <--> Project
+  Catalog --> Harness
+  Renderer <--> Relay
+  Relay --> Store
+  Relay --> PubSub
+  Relay --> Search
+  Relay <--> Harness
+  Harness <--> Runtimes
+  Runtimes <--> Project
+  Runtimes -. "Grok runtime" .-> GrokCore
+  GrokCore <--> Model
+  GrokCore <--> Tools
+  Tools <--> Project
 ```
 
-分层与一次 turn 流程：
+| 组件 | 边界与职责 |
+|------|------------|
+| React renderer | 渲染频道、Coding Workspace 和 Agent transcript，不持有 Agent 编排与密钥业务 |
+| Tauri Rust 本机层 | 处理可信路径、原生对话框、Git、本机配置、密钥和 managed process 生命周期 |
+| `buzz-relay` | 接收签名房间事件，持久化并通过 WebSocket / 进程内 pubsub 分发 |
+| `buzz-acp` | 把房间事件转成 ACP 请求，按 Agent/频道/工程管理队列与会话 |
+| ACP runtime | 在 `session/new` 确定的工程 `cwd` 中执行；Grok、Codex、Claude Code 复用同一 managed-session 宿主协议 |
+| Grok runtime | `SessionActor` 运行采样 → 工具 → 再采样循环；`AgentBuilder` 负责提示词、skills 和工具装配 |
+| 工程目录 | Agent 直接在用户选择的真实目录中读写和执行，Bony 不创建另一份工程副本 |
 
-![架构分层](docs/architecture-layers.png)
+### 一次 Coding Workspace 请求
 
-![Turn 流程](docs/architecture-turn-flow.png)
+```mermaid
+sequenceDiagram
+  participant U as 用户
+  participant UI as Coding Workspace
+  participant T as Tauri Rust
+  participant R as buzz-relay
+  participant H as buzz-acp
+  participant A as ACP Runtime
+  participant P as 本地工程
 
-- 桌面应用：[`third_party/buzz/desktop`](third_party/buzz/desktop)
-- ACP 会话层：[`third_party/buzz/crates/buzz-acp`](third_party/buzz/crates/buzz-acp)
-- 文字说明：[`ARCHITECTURE.md`](ARCHITECTURE.md)
+  U->>UI: 选择工程与 Agent
+  UI->>T: open_coding_workspace_project
+  T->>P: 规范化路径并读取工程信息
+  T-->>UI: 工程描述与最近项目记录
+  U->>UI: 发送编码任务
+  UI->>R: 签名事件 + Agent mention + 工程路径标记
+  R-->>H: WebSocket / pubsub 分发事件
+  H->>A: 启动或复用 runtime
+  H->>A: initialize + session/new(cwd)
+  H->>A: session/prompt
+  A->>P: 文件 / 终端 / 搜索 / Git
+  A-->>H: 流式消息、计划、工具状态与用量
+  H->>R: 进度与回复事件
+  R-->>UI: 实时更新会话
+  UI-->>U: 展示结果，可 Stop 或继续追问
+```
 
-Bony 桌面端通过 ACP 驱动本机 Coding Agent 子进程；工程目录、会话和队列由 Rust 层管理。Rust crate 与目录使用 `buzz-*` 技术前缀。
+工程路径放在 `client / coding-workspace-v1` 事件标记中；`buzz-acp` 只接受通过该标记传入的受信路径，并将其绑定到 ACP session。切换工程时，会话边界随 `cwd` 一起切换，避免不同项目共享错误的工作目录。
+
+### Grok 内部 turn
+
+```text
+session/prompt
+  → SessionActor::handle_prompt
+  → ChatState::build_request
+  → SamplerHandle（HTTP/SSE）
+  → 有 tool_calls：权限检查 → ToolBridge → 工程副作用 → 写回 tool_result → 再采样
+  → 无 tool_calls：checkpoint / memory flush → PromptTurnResult
+```
+
+Codex、Claude Code 和自定义 Agent 不要求复用 Grok 的内部实现；只要实现 ACP，就能复用 Bony 的工程选择、managed-agent catalog、会话界面、消息队列与房间协作路径。
+
+### 数据与状态位置
+
+| 数据 | 位置 / 机制 | 用途 |
+|------|-------------|------|
+| 本地工程 | 用户选择的原始目录 | Agent 的真实 `cwd`、文件与 Git 工作区 |
+| 最近项目 | Tauri app data 下的 `coding-workspaces.json` | 保存规范化路径和最近打开顺序，最多 12 项 |
+| 房间数据 | `SQLite`（默认 `buzz.db`，WAL + 30s busy timeout） | 频道、消息、成员、线程、reaction 与工作流状态 |
+| 实时状态 | `buzz-pubsub` 进程内 broadcast / DashMap | fan-out、presence、限流、连接控制和 replay guard |
+| 检索索引 | SQLite FTS5 + LanceDB | 全文与语义检索 |
+| Grok 配置与记忆 | `%USERPROFILE%\.grok\` | 模型目录、会话配置、skills 与长期记忆 |
+| 密钥 | 操作系统 Keyring / 环境变量 | Nostr 身份与供应商 BYOK 凭证 |
+
+更深入的 Agent、Session、工具、权限、memory、compaction 与 subagent 说明见 [`ARCHITECTURE.md`](ARCHITECTURE.md)，分层图与 turn 图见 [`docs/architecture-layers.png`](docs/architecture-layers.png) 和 [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png)。
 
 ---
 
