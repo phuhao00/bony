@@ -10,7 +10,6 @@ aws-creds = { git = "https://github.com/tlongwell-block/rust-s3", rev = "c9fce36
 resolver = "2"
 members = [
     "crates/build/xai-proto-build",
-    "crates/codegen/bony-monitor",
     "crates/codegen/bony-room-tools-mcp",
     "crates/codegen/bony-docs-tools-mcp",
     "crates/codegen/ptyctl",
