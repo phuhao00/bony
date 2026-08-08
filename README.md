@@ -18,7 +18,7 @@
 [与上游关系](#与上游关系) ·
 [开发](#开发)
 
-![Bony 本地多 Agent 协作界面](docs/buzz-room-local-room.png)
+[▶ 播放 Bony 桌面工作区演示视频](docs/bony-desktop-demo.mp4?raw=1)
 
 </div>
 
