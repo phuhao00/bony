@@ -23,7 +23,9 @@ export default defineConfig(async () => ({
   ],
   resolve: {
     alias: {
-      "@": "/src",
+      // Absolute project path — bare "/src" resolves from the drive root and
+      // breaks `@/...` imports under Windows (Vite can't find src/app/App).
+      "@": path.resolve(__dirname, "src"),
       "@features-manifest": path.resolve(__dirname, "../preview-features.json"),
     },
   },

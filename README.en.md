@@ -2,23 +2,20 @@
 
 # Bony Build
 
-**Native desktop AI coding assistant + local multi-agent collab room** — chat to edit code, isolate tasks in Git worktrees, details-panel VCS, session plugins (Unity / Bevy); ships with a [Buzz](third_party/buzz) room where Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith specialists, pure Rust + SQLite, no Docker.
+**Native desktop AI coding assistant + local multi-agent collab room** — switch between channels and a Coding Workspace inside one [Buzz Desktop](third_party/buzz/desktop), open local projects, and drive Grok over ACP, with a clear path for future Codex and Claude Code collaboration.
 
 **Language:** [中文](README.md) · **English**
 
-[Prebuilt binaries](#prebuilt-binaries) ·
 [Quick start](#quick-start) ·
 [Features](#features) ·
 [Buzz local collab room](#buzz-local-collab-room) ·
-[Details & VCS](#details--vcs) ·
-[Plugins & Unity](#plugins--unity) ·
 [Web monitor](#web-monitor) ·
 [Models & providers](#models--providers) ·
 [Architecture](#architecture) ·
 [Upstream relationship](#upstream-relationship) ·
 [Development](#development)
 
-![Bony Build desktop](docs/bony-build-desktop-2026-07-25.png)
+![Buzz Desktop local multi-agent room](docs/buzz-room-local-room.png)
 
 </div>
 
@@ -26,36 +23,23 @@
 
 ## What is this
 
-This repo bundles two things sharing one Rust workspace:
+This repo unifies the desktop coding workspace and multi-agent room inside one Buzz Desktop:
 
-1. **Bony Build**: a native desktop client (Rust / egui, currently `v0.1.4`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
-2. **Buzz local collab room**: a bundled multi-agent group-chat backend (see [Buzz local collab room](#buzz-local-collab-room)). Grok is the coordinator; ZeroClaw / Unity / OpenMontage / DocSmith specialists hand off work via `@` mentions. The backend has been refactored to a single-instance, pure Rust + SQLite stack with no Docker / Postgres / Redis dependency.
+1. **Coding Workspace**: click the code icon in a channel header, open a local project, and drive `grok agent stdio` over [ACP](https://agentclientprotocol.com/) for code exploration, edits, terminal work, and search.
+2. **Local multi-agent room**: Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith specialists through serial `@` handoffs. The backend uses Rust + SQLite with no Docker / Postgres / Redis requirement.
 
 Good fit if you want to:
 
 - Use **multi-provider BYOK** (Qwen / Kimi / Zhipu / OpenAI-compatible, etc.) for day-to-day edits on your machine
-- Keep work **isolated per task with Git worktrees**, with sidebar conversations grouped **by project**
-- Inspect the working copy, per-file diffs, and commit history in a **resizable details panel** (Fork-style)
-- Drive Unity / Bevy extensions locally; Unity uses a **local CLI loop** (probe, Play, Pipeline) without hanging installs through the Agent
+- Manage local projects in Coding Workspace and bind each ACP session to the real project directory
+- Switch smoothly between channel collaboration and coding tasks while retaining the Buzz theme and window behavior
+- Grow from Grok today to a shared session model for Codex, Claude Code, and other coding agents
 - Inspect architecture layers and per-commit feature impact with a local **Web monitor**
 - Split work across specialized agents via `@` handoffs in the **Buzz room** instead of one agent doing everything
 
-Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture; or in the Buzz room, have ZeroClaw search, Unity drive the engine, and DocSmith produce docs. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
+Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture; or in the Buzz room, have ZeroClaw search, Unity drive the engine, and DocSmith produce docs.
 
-**The product brand and desktop shell are Bony Build.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony`](https://github.com/phuhao00/bony).
-
----
-
-## Prebuilt binaries
-
-GitHub Releases ship desktop zips (you still need a local `grok` CLI):
-
-- [**Bony Build v0.1.4**](https://github.com/phuhao00/bony/releases/tag/v0.1.4)
-  - `bony-build-v0.1.4-windows-x86_64.zip`
-  - `bony-build-v0.1.4-macos-aarch64.zip`
-  - `bony-build-v0.1.4-macos-x86_64.zip`
-
-Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-desktop.yml) on `v*` tags (`release-dist` profile). Local packaging output under `.local-dist/` is listed in [`.gitignore`](.gitignore)—do not commit exe / zip artifacts.
+**Bony Build is the repository and product name; Buzz Desktop is the sole desktop shell.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony`](https://github.com/phuhao00/bony).
 
 ---
 
@@ -63,24 +47,14 @@ Built by [`.github/workflows/release-desktop.yml`](.github/workflows/release-des
 
 | Capability | Description |
 |------------|-------------|
-| Chat workspace | Codex-style sidebar + timeline; Markdown, user bubbles / assistant cards, inline tool results |
-| New chat | Top-level **New chat** is unscoped; sidebar has a **Recent chats** inbox |
-| Grouped by project | Sidebar groups conversations by project; delete / archive; suggested titles |
-| Tasks & worktrees | Create / switch tasks; optional isolated worktrees and branches |
-| Details · VCS | Resizable right panel: working-copy file list, colored diffs, describe & commit, history → changed files → per-file patch |
-| Session plugins | Composer **`+`**: attach files, enable Unity / Bevy, manage plugins; dismissible chips |
-| Plugins store | **Plugins** page: tabs, search, installed strip, full-width cards |
-| Permission modes | Per task: read-only / ask / allow edits / full control; CLI supports `--ask-permissions` |
-| Model switching | Click the model name in the composer; choice is written to `~/.grok/config.toml` as default |
-| Multi-provider | Kimi / Qwen / Zhipu / OpenAI-compatible / Anthropic Messages, etc. (BYOK) |
-| Unity control | **Plugins** page for install & project binding; in-chat chip + shortcuts / `/unity`; **local CLI, not Agent** |
-| Bevy | Optional Rust ECS game-dev integration (enable on the Plugins page) |
-| Usage stats | Turn and token usage panel (line / bar charts) |
-| CJK UI | System Chinese fonts (e.g. Microsoft YaHei) to avoid tofu glyphs |
-| Shortcuts | **Enter** to send, **Shift+Enter** for newline |
+| Coding Workspace | Open a Codex-like coding surface inside a channel without launching a second app |
+| Local projects | Native directory picker, recent projects, and removal; ACP sessions use the real project path |
+| Session isolation | Switching projects releases the old session and starts a new one to prevent cwd leakage |
+| Multi-agent path | Grok works today; UI and session layers expose one extension point for Codex and Claude Code |
+| Buzz interaction | Smooth workspace/channel transitions with Buzz theme, title bar, and window behavior |
+| Room collaboration | Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith with threads and progress feedback |
+| Local backend | Rust + SQLite + in-process pubsub, one workspace and one root `target/` |
 | Web monitor | Architecture layers, “how it works”, feature-impact matrix, commit impact timeline |
-
-Primary sidebar nav today: **New chat** · **Chat** · **Plugins**. Sites / PRs / schedules remain placeholders.
 
 ---
 
@@ -104,47 +78,12 @@ Policy and architecture detail: [`docs/buzz-room-collab.md`](docs/buzz-room-coll
 
 ---
 
-## Details & VCS
-
-Open the right-hand **Details** panel for session info and Git:
-
-1. **Working copy** — scans the **primary project checkout** (not the agent worktree); lists A/M/D changes  
-2. **Describe & commit** — when dirty, an inline message field appears; commit after describing  
-3. **Recent history** — click a commit → **changed files** (add/del bars) → click a file for that file’s patch  
-4. Drag the **left edge** of the panel to widen it for long diffs  
-
-Non-Git directories do not raise a modal error; the panel simply notes that VCS is unavailable. Status refreshes about every 2 seconds, or use **Refresh**.
-
----
-
-## Plugins & Unity
-
-### Plugin model
-
-1. Sidebar **Plugins**: enable / disable Unity, Bevy, etc.; open settings or docs  
-2. Composer **`+`**: attach files or extensions for this session; dismissible context chips  
-3. With Unity enabled, the composer offers quiet shortcuts (save scene, refresh assets, Play, …) and docs
-
-Unity actions use the **local Unity CLI**, not the grok Agent—so `unity pipeline install` does not hang inside a worktree.
-
-### Recommended install
-
-Install CLI → re-detect → confirm a project root with `Assets` → install Pipeline → open the editor and probe → run the loop. Default Windows CLI: `%LOCALAPPDATA%\Unity\bin\unity.exe`.
-
-```powershell
-$env:UNITY_CLI_CHANNEL='beta'; irm https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1 | iex
-```
-
-More detail: [`crates/codegen/bony-build/README.md`](crates/codegen/bony-build/README.md).
-
----
-
 ## Web monitor
 
 Local dashboard for **architecture**, end-to-end “how it works”, and **per-change impact**:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-monitor.ps1
+cargo run -p bony-monitor -- --bind 127.0.0.1:8787
 # open http://127.0.0.1:8787
 ```
 
@@ -177,24 +116,12 @@ Implementation: `crates/codegen/bony-monitor` (Axum).
 ### Launch the desktop app
 
 ```powershell
-# Dev: build and run
-powershell -ExecutionPolicy Bypass -File .\scripts\run-desktop.ps1
-
-# Clean restart: kill old process → release build → launch
-powershell -ExecutionPolicy Bypass -File .\scripts\run-bony-build.ps1
-
-# Or
-$env:CARGO_TARGET_DIR = "$PWD\target"
-cargo run -p bony-build
+# Build and run from the repository root, sharing the root target/
+cargo build -p buzz-desktop
+powershell -File .\scripts\buzz-room\start-desktop.ps1
 ```
 
-Useful flags:
-
-```text
---cwd <path>        Session working directory (default: cwd)
---grok-bin <path>   Path to the grok executable
---ask-permissions   Require manual tool approval (default: auto-approve)
-```
+After startup, enter a channel, click the code icon in the header to open Coding Workspace, then choose a local project directory.
 
 On Windows, **os error 4551** (Smart App Control) usually means build from a trusted terminal or disable SAC.
 
@@ -257,21 +184,19 @@ Overview (renders on GitHub):
 
 ```mermaid
 flowchart TB
-  UI["Bony Build<br/>egui desktop shell"]
-  ACP["ACP JSON-RPC<br/>over stdio"]
+  UI["Buzz Desktop<br/>channels + Coding Workspace"]
+  ACP["buzz-acp<br/>session pool and queue"]
   Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
   Sample["Sampling · multi-backend"]
   Tools["Tools · terminal / files / search"]
   WS["Workspace / MCP / sub-agents"]
-  Unity["Side path · Unity CLI<br/>local process, not via Agent"]
-  Git["Side path · Details-panel Git<br/>primary-repo status / show"]
+  Room["Local multi-agent room<br/>SQLite + in-process pubsub"]
 
   UI --> ACP --> Agent
   Agent --> Sample
   Agent --> Tools
   Agent --> WS
-  UI -.-> Unity
-  UI -.-> Git
+  UI --> Room
 ```
 
 Layered view and a single turn:
@@ -280,10 +205,11 @@ Layered view and a single turn:
 
 ![Turn flow](docs/architecture-turn-flow.png)
 
-- Desktop crate: [`crates/codegen/bony-build`](crates/codegen/bony-build)
+- Desktop app: [`third_party/buzz/desktop`](third_party/buzz/desktop)
+- ACP session layer: [`third_party/buzz/crates/buzz-acp`](third_party/buzz/crates/buzz-acp)
 - Write-up: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 
-The desktop app does **not** embed the full agent runtime; it drives an installed `grok` subprocess.
+Buzz Desktop drives local coding-agent subprocesses over ACP; Rust owns project paths, sessions, and queueing.
 
 ---
 
@@ -292,7 +218,7 @@ The desktop app does **not** embed the full agent runtime; it drives an installe
 | Layer | Source |
 |-------|--------|
 | Agent / TUI / tool stack | Periodically aligned with [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (`Synced from monorepo`) |
-| Product shell | Fork-owned: `bony-build`, `bony-monitor`, branded docs, desktop release workflow |
+| Product shell | Fork-owned: Buzz Desktop integration, `bony-monitor`, branded and collaboration docs |
 | Pin | Root [`SOURCE_REV`](SOURCE_REV) records the upstream monorepo sync point |
 
 ### Sync upstream
@@ -313,16 +239,13 @@ Rollback tag (if still present locally): `backup/pre-upstream-sync`.
 
 | Path | Description |
 |------|-------------|
-| `crates/codegen/bony-build` | Bony Build desktop client (details VCS, Unity / Bevy / plugin UX) |
+| `third_party/buzz/desktop` | Sole desktop client, including channels and Coding Workspace |
+| `third_party/buzz/crates/buzz-acp` | Coding-agent ACP session pool and queue |
 | `crates/codegen/bony-monitor` | Architecture & change-impact Web monitor |
 | `crates/codegen/xai-grok-shell` | Agent runtime, stdio / headless |
 | `crates/codegen/xai-grok-pager*` | Official TUI (`grok`) |
 | `crates/codegen/xai-grok-agent` / `*-tools` / `*-workspace` | Agent, tools, workspace |
 | `crates/codegen/xai-acp-lib` | ACP stdio helpers (used by the desktop bridge) |
-| `scripts/run-desktop.ps1` | Desktop build & run |
-| `scripts/run-bony-build.ps1` | Kill old processes + release build + launch |
-| `scripts/run-monitor.ps1` | Start Web monitor (default :8787) |
-| `.github/workflows/release-desktop.yml` | Multi-platform desktop zip release |
 | `docs/` | Screenshots and architecture diagrams (incl. Buzz room) |
 | `scripts/buzz-room/` | Local Buzz room: relay / Desktop / external agents |
 | `third_party/buzz` | Buzz sources (in-tree workspace members) |
@@ -337,28 +260,25 @@ Full upstream docs remain in each crate and the [user guide](crates/codegen/xai-
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
 $env:PROTOC = "$PWD\.tools\protoc\bin\protoc.exe"   # if you have protoc placed here
-cargo check -p bony-build -p bony-monitor
-cargo build -p bony-build --profile release-dist
-cargo run -p bony-build -- --cwd $PWD
+cargo check -p buzz-desktop -p bony-monitor
+cargo test -p buzz-acp
+cargo build -p buzz-desktop
 ```
 
 Ignore local artifacts: `target/`, `.tools/`, `.local-dist/`, `*.log`.
 
-To cut a release: push an annotated tag (e.g. `v0.1.4`) to trigger the desktop workflow, or `workflow_dispatch` with an existing tag.
-
----
-
 ## Docs & license
 
+- Coding Workspace: [`third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx`](third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx)
 - User guide: [`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
 - Auth: [`02-authentication.md`](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 - Custom models: [`11-custom-models.md`](crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md)
 - Upstream open-source repo: [`xai-org/grok-build`](https://github.com/xai-org/grok-build)
 
-This repo includes agent / TUI sources synced from the SpaceXAI monorepo / `xai-org/grok-build`; the desktop product layer is Bony Build. See root [`LICENSE`](LICENSE) and per-crate declarations.
+This repo includes agent / TUI sources synced from the SpaceXAI monorepo / `xai-org/grok-build`; Buzz Desktop is the sole desktop product layer. See root [`LICENSE`](LICENSE) and per-crate declarations.
 
 ---
 
 ## Acknowledgments
 
-Agent runtime and `grok` CLI capabilities come from [SpaceXAI / Grok Build](https://x.ai/cli) and [`xai-org/grok-build`](https://github.com/xai-org/grok-build). Bony Build adds a multi-provider desktop experience, task / worktree workflows, a details-panel VCS UI, session plugins (Unity / Bevy), and change observability on top.
+Agent runtime and `grok` CLI capabilities come from [SpaceXAI / Grok Build](https://x.ai/cli) and [`xai-org/grok-build`](https://github.com/xai-org/grok-build). Bony Build adds a local-project Coding Workspace, multi-agent room, and change observability inside Buzz Desktop.

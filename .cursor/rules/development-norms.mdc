@@ -9,7 +9,7 @@ alwaysApply: true
 
 | 需求 | 落点 |
 |------|------|
-| 桌面 AI 编程壳 | `crates/codegen/bony-build` |
+| 桌面 AI 编程壳 | `third_party/buzz/desktop`（界面）+ `third_party/buzz/desktop/src-tauri`（本机能力） |
 | Agent/工具/会话 | `crates/codegen/xai-grok-*` 等 |
 | Buzz 协议/ACP/池 | `third_party/buzz/crates/*` |
 | Desktop 本机命令/seed | `third_party/buzz/desktop/src-tauri`（Rust） |

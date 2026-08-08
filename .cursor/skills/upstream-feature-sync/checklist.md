@@ -18,6 +18,6 @@ After:
 [ ] SOURCE_REV = git rev-parse upstream/main
 [ ] final cargo generate-lockfile if lock was regenerated mid-way
 [ ] Path smoke: bony-build zeroclaw/openmontage, buzz-relay, buzz-db, start-room-stack.ps1
-[ ] cargo check -p bony-build -p bony-monitor -p buzz-relay -p buzz-db
+[ ] cargo check -p buzz-desktop -p bony-monitor -p buzz-relay -p buzz-db
 [ ] push --force-with-lease only if user asked
 ```

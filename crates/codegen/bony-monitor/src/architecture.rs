@@ -30,17 +30,21 @@ pub struct ArchitectureOverview {
 
 pub fn overview(catalog: &CatalogSnapshot) -> ArchitectureOverview {
     let mut host_crates = vec![
-        "bony-build".into(),
+        "buzz-desktop".into(),
+        "buzz-acp".into(),
         "bony-monitor".into(),
         "xai-grok-pager*".into(),
     ];
     if catalog.desktop_module_count > 0 {
-        host_crates.push(format!("bony-build src ×{}", catalog.desktop_module_count));
+        host_crates.push(format!(
+            "buzz-desktop Rust src ×{}",
+            catalog.desktop_module_count
+        ));
     }
     for d in catalog
         .discovered
         .iter()
-        .filter(|d| d.crate_name == "bony-build")
+        .filter(|d| d.crate_name == "buzz-desktop")
         .take(8)
     {
         host_crates.push(format!("· {}", d.stem));
@@ -48,14 +52,14 @@ pub fn overview(catalog: &CatalogSnapshot) -> ArchitectureOverview {
 
     ArchitectureOverview {
         title: "Bony Build 架构".into(),
-        blurb: "Codex 式桌面壳经 ACP 驱动 grok agent stdio；目录与模块扫描会随工作区热更新。"
+        blurb: "Buzz Desktop 的 Coding Workspace 经 ACP 驱动 grok agent stdio；目录与模块扫描会随工作区热更新。"
             .into(),
         layers: vec![
             ArchLayer {
                 id: "host".into(),
                 name: "1 · Host / 客户端".into(),
                 summary: format!(
-                    "Bony Build 桌面（顶栏/侧栏/项目/用量图）、TUI、或任意 ACP 客户端；当前扫描到 {} 个桌面模块",
+                    "Buzz Desktop（频道/Coding Workspace）、TUI、或任意 ACP 客户端；当前扫描到 {} 个桌面 Rust 模块",
                     catalog.desktop_module_count
                 ),
                 crates: host_crates,
@@ -109,15 +113,14 @@ pub fn overview(catalog: &CatalogSnapshot) -> ArchitectureOverview {
             ArchDiagram {
                 id: "desktop".into(),
                 title: "桌面端界面".into(),
-                path: "/repo-docs/bony-build-desktop.png".into(),
+                path: "/repo-docs/buzz-room-local-room.png".into(),
             },
         ],
         flows: vec![
-            "用户在 Bony Build 输入任务 → ACP prompt → SessionActor".into(),
+            "用户在 Buzz Coding Workspace 输入任务 → ACP prompt → SessionActor".into(),
             "Sampler 请求当前模型（如 qwen-max）→ 流式文本 / tool calls".into(),
             "ToolBridge 执行工具 → 结果回灌 → 继续采样直到结束".into(),
-            "轮次结束写入 ~/.bony-build/turns.jsonl；使用统计面板展示折线/柱状趋势".into(),
-            "切换项目 → Shutdown 旧 bridge → 新 cwd 重连 agent".into(),
+            "切换项目 → 释放旧 ACP session → 使用新 cwd 创建 agent session".into(),
             "bony-monitor 热重载 features.toml / 扫描模块，并按规则生成影响摘要".into(),
         ],
     }

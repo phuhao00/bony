@@ -8,7 +8,7 @@
 
 | 面 | 终态 |
 |----|------|
-| Bony Build | Rust/egui 壳 · ACP · worktree 任务 · 主仓 VCS 详情 · 插件 |
+| Buzz Desktop | 唯一 Tauri 桌面壳 · Coding Workspace · ACP · 本地多 Agent 房间 |
 | 运行时 | 本地 agent + BYOK · 权限模式 · 逻辑在 Rust |
 | Buzz 房间 | 单 workspace / 单 `target/` · Grok 协调 · 串行 `@` 交接 · 硬拦兜底 |
 | 协作智能 | 分工执行 → 记忆写回 → 下次检索（见 `buzz-room-agent-orchestration-plan.md`） |
@@ -51,9 +51,12 @@ powershell -File .\scripts\buzz-room\stop-room-stack.ps1
 | 单域 | 直接指派最擅长 agent；不讨论 |
 | 资讯→文档 | `@ZeroClaw` → `@DocSmith`（两帖，各一 `@`） |
 | 跨域 | 短讨论仅在必要；再串行执行 |
+| 动态 / 用户 Agent | capability 路由；默认 mention-only + owner-only；高权限显式授权 |
 | 防回归 | `BUZZ_ACP_DENY_TOOLS`、meta 过滤、工具名级禁令 |
 
-细节：`docs/buzz-room-collab.md`、`docs/buzz-room-agent-orchestration-plan.md`。
+开发 Agent 分工、所有权与交接：`docs/AGENT_COLLABORATION.md`。
+
+Buzz 运行时协作：`docs/buzz-room-collab.md`、`docs/buzz-room-agent-orchestration-plan.md`。
 
 ## 6. 去冗余 · 抽象 · 模块化
 
@@ -79,7 +82,8 @@ Cursor 规则：`.cursor/rules/modularity-dry.mdc`。
 
 | 路径 | 职责 |
 |------|------|
-| `crates/codegen/bony-build` | Bony 桌面 |
+| `third_party/buzz/desktop` | Buzz Desktop 界面与 Tauri 本机集成 |
+| `third_party/buzz/crates/buzz-acp` | Coding Agent ACP 会话池与队列 |
 | `crates/codegen/xai-grok-*` | Agent / 工具 / TUI |
 | `third_party/buzz` | Buzz in-tree sources |
 | `scripts/buzz-room/prompts/` | Agent 文案（非业务运行时） |
@@ -89,5 +93,5 @@ Cursor 规则：`.cursor/rules/modularity-dry.mdc`。
 
 1. 用户当次明确指令  
 2. 本文件 + `.cursor/rules/*`  
-3. `docs/buzz-room-*.md` / skills  
+3. `docs/AGENT_COLLABORATION.md` / `docs/buzz-room-*.md` / skills
 4. 历史脚本或 README 过时段落（应用本规范纠正）

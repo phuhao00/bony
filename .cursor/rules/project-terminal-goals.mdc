@@ -11,7 +11,7 @@ alwaysApply: true
 
 | 产品面 | 终态 |
 |--------|------|
-| **Bony Build** | Rust（egui）桌面壳 + ACP 驱动本地 agent；任务 worktree 隔离；详情面板主仓 VCS；会话插件（Unity/Bevy）可用 |
+| **Buzz Desktop** | Tauri 桌面壳内统一频道、Coding Workspace 与本地多 Agent 协作；ACP 驱动 Grok，并为 Codex / Claude Code 等编码 Agent 保留统一会话入口 |
 | **Agent 运行时** | 对齐 grok-build 上游；本机 BYOK；权限模式完整；不把无关逻辑塞进 PowerShell |
 | **Buzz 房间** | 单 monorepo workspace + 根 `target/`；Grok 协调 + specialists `@` 串行交接；工具硬拦 > prompt 软约束 |
 | **协作记忆** | 讨论→分工→执行→记忆写回（见 `docs/buzz-room-agent-orchestration-plan.md`）；交付物在房间内可交接 |

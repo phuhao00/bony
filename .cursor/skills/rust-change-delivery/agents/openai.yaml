@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Change Delivery"
+  short_description: "Ship minimal, verified Rust changes in the correct crate"
+  default_prompt: "Use $rust-change-delivery to implement this Rust change with a minimal diff and package-scoped verification."

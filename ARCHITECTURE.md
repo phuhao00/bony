@@ -1,9 +1,9 @@
 # Bony Build 架构与 Agent 实现
 
-> Bony Build：基于 SpaceXAI / Grok agent 运行时的桌面与终端 AI coding agent（Rust）。
+> Bony Build：基于 SpaceXAI / Grok agent 运行时的桌面与终端 AI coding agent 工作区。
 > 本文描述仓库分层、Agent 装配与 Session 运行时细节。
 > 源码同步自 SpaceXAI monorepo；根 `Cargo.toml` 为生成物，请优先改各 crate 的 `Cargo.toml`。
-> 桌面客户端 crate：`crates/codegen/bony-build`（`cargo run -p bony-build`）。
+> 唯一桌面客户端：`third_party/buzz/desktop`（Tauri，Rust 本机层为 `buzz-desktop`）。
 
 ---
 
@@ -410,25 +410,26 @@ xai-grok-memory/src/        记忆布局
 
 ---
 
-## 15. 桌面客户端（可视化使用 Agent）
+## 15. 桌面客户端（Coding Workspace）
 
-原生窗口客户端（非 Web）：[`crates/codegen/xai-grok-desktop/`](crates/codegen/xai-grok-desktop/)
+桌面客户端：[`third_party/buzz/desktop/`](third_party/buzz/desktop/)
 
 ```text
-egui 窗口 ──ACP stdio──► grok agent stdio ──► SessionActor
+Buzz Coding Workspace ──buzz-acp──► grok agent stdio ──► SessionActor
 ```
 
 ```powershell
-cargo run -p xai-grok-desktop
-# 可选：--cwd . --always-approve --grok-bin path\to\grok
+cargo build -p buzz-desktop
+powershell -File .\scripts\buzz-room\start-desktop.ps1
 ```
 
-详见 [crates/codegen/xai-grok-desktop/README.md](crates/codegen/xai-grok-desktop/README.md)。需本机已安装 `grok` 并完成登录（或设置 `XAI_API_KEY`）。
+在频道页点击顶部代码图标打开 Coding Workspace，再选择本地项目目录。当前 Grok 通过 ACP 接入；界面与会话模型为后续 Codex、Claude Code 等 Coding Agent 保留统一扩展点。
 
 ---
 
 ## 16. 相关文档
 
+- Buzz Coding Workspace：[`third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx`](third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx)
 - 用户指南：`crates/codegen/xai-grok-pager/docs/user-guide/`
 - Agent crate README：`crates/codegen/xai-grok-agent/README.md`
 - 桌面客户端：`crates/codegen/xai-grok-desktop/README.md`
