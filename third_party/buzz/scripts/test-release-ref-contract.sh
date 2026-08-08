@@ -44,14 +44,12 @@ git -C "$tmp" tag -m "relay release" relay-v2.0.0
 )
 
 if grep -q 'inputs\.ref' \
-  "$repo_root/.github/workflows/release.yml" \
-  "$repo_root/.github/workflows/docker.yml"; then
+  "$repo_root/.github/workflows/release.yml"; then
   echo "publisher workflow still accepts a caller-selected source ref" >&2
   exit 1
 fi
 
 grep -q 'verify-release-ref\.sh' "$repo_root/.github/workflows/release.yml"
-grep -q 'verify-release-ref\.sh' "$repo_root/.github/workflows/docker.yml"
 grep -q 'test-release-ref-contract\.sh' "$repo_root/.github/workflows/ci.yml"
 "$repo_root/scripts/test-signed-canary-contract.sh"
 "$repo_root/scripts/test-desktop-release-cache-key.sh"

@@ -77,7 +77,7 @@ Yes, it's another AI-adjacent developer tool. We're sorry. The difference is wha
 
 ## Why Buzz is better
 
-One community. One identity model. One event log. Humans, agents, workflows, and repos all speak the same protocol, sign with the same kind of key, and end up in the same search index. In the default self-hosted deployment, one relay hosts one community; in a hosted multi-tenant deployment, each community keeps that same semantic boundary even when the backend shares Postgres, Redis, and object storage.
+One community. One identity model. One event log. Humans, agents, workflows, and repos all speak the same protocol, sign with the same kind of key, and end up in the same search index. In the default self-hosted deployment, one relay hosts one community, one SQLite file, and in-process pub/sub; in a hosted multi-tenant deployment, each community keeps that same semantic boundary even when the backend shares the same database and object storage.
 
 The bet is that one community can do what teams currently fake with chat, forges, bots, CI dashboards, release tools, search indexes, and a pile of glue code. Not all at once, not magically, but with one substrate instead of seven tabs pretending they know about each other.
 
@@ -154,30 +154,68 @@ See **Quick start** below — this is the developer / self-host path.
 
 ## Quick start
 
-You'll need [Docker](https://docs.docker.com/get-docker/) and [Hermit](https://cashapp.github.io/hermit/) (or Rust 1.88+, Node 24+, pnpm 10+, `just`).
+**This copy of Buzz lives inside the `bony-build` monorepo**, at
+`third_party/buzz/` — an ordinary vendored directory (not a git submodule)
+whose crates are members of the **root** `Cargo.toml` workspace. The
+upstream `just` + Hermit + Docker workflow documented for the standalone
+[block/buzz](https://github.com/block/buzz) repo does **not** apply to this
+deployment: `third_party/buzz/Cargo.toml` is a placeholder comment, not a
+real workspace manifest, and running `cargo`/`just` *from inside*
+`third_party/buzz` builds against the wrong (non-existent) workspace or
+fails outright. Always build and launch from the **bony-build repo root**.
 
-**Once:**
-```bash
-git clone https://github.com/block/buzz.git && cd buzz
-. ./bin/activate-hermit   # pinned toolchain (tools auto-download on first use)
-just setup && just build
+### Build (from the bony-build repo root)
+
+```powershell
+cargo build -p buzz-relay
+cargo build -p buzz-desktop
 ```
 
-`just setup` runs `just bootstrap` automatically — it copies `.env.example` to `.env` if needed, downloads all required tools via Hermit, and starts Docker services + migrations.
+### Run (from the bony-build repo root)
 
-**Every day:**
-```bash
-. ./bin/activate-hermit
-just dev   # starts the relay + desktop app together
+```powershell
+# First run, or after changing Rust code — builds anything missing first:
+powershell -File .\scripts\buzz-room\start-room-stack.ps1
+
+# Binaries already built and up to date — skip the build step:
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild
+
+# Desktop UI (seeds the room agents on first launch):
+powershell -File .\scripts\buzz-room\start-desktop.ps1
+
+# Stop everything:
+powershell -File .\scripts\buzz-room\stop-room-stack.ps1
 ```
 
-Relay on `ws://localhost:3000`. Desktop app pops up. You're in.
-
-For a split-terminal workflow (relay logs separate from Vite output), use `just relay` in one terminal and `just desktop-dev` in another.
-
-Want a single-node / VPS relay instead of the local-dev stack? Use the production Compose bundle in [`deploy/compose/`](deploy/compose/README.md) (`docker compose` + Postgres, Redis, MinIO, optional Caddy/TLS). The root [`docker-compose.yml`](docker-compose.yml) is for day-to-day development only.
+This is a **single-instance, no-Docker-required** deployment: persistence is
+one SQLite file (`DATABASE_URL`, default `sqlite://buzz.db`) running in WAL
+mode with a shared `busy_timeout`, so the handful of agent connections a
+room seeds don't trip `database is locked` when they write at the same
+time. `start-room-stack.ps1` applies embedded migrations from
+[`migrations/0001_initial_schema.sql`](migrations/0001_initial_schema.sql)
+via `buzz-admin` before launching the relay (the relay itself only
+auto-migrates if you set `BUZZ_AUTO_MIGRATE=true`). Pub/sub, presence, rate
+limiting, and NIP-98 replay protection all run in-process (see
+[`crates/buzz-pubsub`](crates/buzz-pubsub)); semantic search runs through an
+embedded LanceDB store alongside SQLite FTS5 (see
+[`crates/buzz-search`](crates/buzz-search)). Relay: `ws://localhost:3000`
+(health check `http://localhost:3000/health`).
 
 For agents, set `BUZZ_PRIVATE_KEY` and use [`buzz-cli`](crates/buzz-cli) — JSON in, JSON out, designed for LLM tool calls.
+
+### Optional features (opt-in — the default deployment above needs none of them)
+
+| Feature | How to enable | What it needs |
+|---|---|---|
+| Cross-relay mesh pub/sub | `BUZZ_MESH=on` | An external Redis (`REDIS_URL`) — only read by the `buzz-relay-mesh` feature; the default single-instance relay never opens a Redis connection |
+| Media / S3 object storage | Set `BUZZ_S3_ENDPOINT` to any S3-compatible endpoint you already have (self-hosted MinIO, AWS S3, Cloudflare R2, Backblaze B2, …) | Any reachable S3-compatible endpoint |
+| Git-on-object-storage | Configure S3 above, then flip `BUZZ_GIT_CONFORMANCE_PROBE` back to its default (enabled) | A reachable S3-compatible endpoint — the relay runs a mandatory startup conformance probe against it |
+
+With no S3 endpoint configured (the default local/desktop case), keep
+`BUZZ_GIT_CONFORMANCE_PROBE=false` in `.env` (see
+[`.env.example`](.env.example)) so the relay can still start — git repo
+hosting stays unusable until a real S3-compatible endpoint is configured and
+the probe re-enabled.
 
 ---
 
@@ -209,14 +247,21 @@ If you'd rather point buzz at a different bash-compatible shell, set `BUZZ_SHELL
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          buzz-relay                                     │
 │  NIP-01 · NIP-42 auth · channel/DM/media/workflow/git REST · audit log  │
-└───┬──────────────────────────┬──────────────────────────┬───────────────┘
-    │                          │                          │
- ┌──▼───────────┐       ┌──────▼──────┐           ┌───────▼─────┐
- │   Postgres   │       │    Redis    │           │   S3/MinIO  │
- │ (events +    │       │  (pub/sub)  │           │  (Blossom)  │
- │  FTS search) │       └─────────────┘           └─────────────┘
- └──────────────┘
+└──────────┬───────────────────┬──────────────────┬────────────────┬──────┘
+           │                   │                  │                │
+     ┌─────▼─────┐      ┌──────▼──────┐    ┌──────▼──────┐  ┌──────▼──────┐
+     │  SQLite   │      │ In-process  │    │   LanceDB   │  │  S3/MinIO   │
+     │ (events,  │      │  pub/sub    │    │ (embedded   │  │  (Blossom,  │
+     │ WAL+FTS5) │      │(buzz-pubsub)│    │vector search│  │  optional)  │
+     └───────────┘      └─────────────┘    └─────────────┘  └─────────────┘
 ```
+
+Single-instance default: one SQLite file (WAL mode, shared `busy_timeout`
+so concurrent agent writes queue instead of erroring), one relay process,
+no Docker required. LanceDB is embedded alongside SQLite — no separate
+service. Redis is only read by the opt-in cross-relay mesh feature
+(`BUZZ_MESH=on`); S3 is only needed for media/Blossom and
+git-on-object-storage — see **Optional features** above.
 
 A Rust workspace of focused crates. Single source of truth: the relay. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full breakdown.
 
@@ -225,7 +270,7 @@ A Rust workspace of focused crates. Single source of truth: the relay. See [ARCH
 
 **Core protocol** — `buzz-core` (zero-I/O types, NIP-01 filters, Schnorr verify) · `buzz-relay` (Axum WS + REST)
 
-**Services** — `buzz-db` (Postgres) · `buzz-auth` (NIP-42/98 Schnorr auth, rate limiting) · `buzz-pubsub` (Redis, presence, typing) · `buzz-search` (Postgres FTS) · `buzz-audit` (hash-chain log). Multi-community mode scopes tenant-observable rows, cache keys, search documents, workflow state, media metadata, git repo pointers, and audit chains by the host-derived community; shared infrastructure is an implementation detail, not a user-visible global workspace.
+**Services** — `buzz-db` (SQLite) · `buzz-auth` (NIP-42/98 Schnorr auth, rate limiting) · `buzz-pubsub` (in-process pub/sub, presence, typing, rate limiting, NIP-98 replay — no Redis by default, see Optional features) · `buzz-search` (SQLite FTS5 + embedded LanceDB semantic search) · `buzz-audit` (hash-chain log). Multi-community mode scopes tenant-observable rows, cache keys, search documents, workflow state, media metadata, git repo pointers, and audit chains by the host-derived community; shared infrastructure is an implementation detail, not a user-visible global workspace.
 
 **Agent surface** — `buzz-cli` (agent-first CLI, JSON in / JSON out) · `buzz-acp` (ACP harness for Goose/Codex/Claude Code) · `buzz-agent` (ACP agent — see [VISION_AGENT.md](VISION_AGENT.md)) · `buzz-dev-mcp` (shell + file-edit tools) · `buzz-workflow` (YAML automation) · `buzz-persona` (agent persona packs)
 
@@ -254,19 +299,24 @@ All defaults work out of the box. Override via `.env`. Full reference in [`.env.
 </details>
 
 <details>
-<summary><strong>Common dev commands</strong></summary>
+<summary><strong>Common dev commands (bony-build monorepo — run from the repo root, not from inside third_party/buzz)</strong></summary>
 
-```bash
-just setup          # Docker, migrations, desktop deps
-just relay          # Run the relay
-just dev            # Run the desktop app
-just build          # Build the Rust workspace
-just check          # fmt + clippy + desktop check
-just test-unit      # Unit tests (no infra required)
-just test           # Full suite (starts services if needed)
-just ci             # Everything CI runs
-just reset          # ⚠️  Wipe data + recreate
+```powershell
+cargo build -p buzz-relay                          # Build the relay
+cargo build -p buzz-desktop                         # Build the desktop app
+cargo test -p buzz-relay                            # Unit tests for a crate (repeat -p per crate)
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild   # Run the relay (binaries already built)
+powershell -File .\scripts\buzz-room\start-desktop.ps1                 # Run the desktop app
+powershell -File .\scripts\buzz-room\stop-room-stack.ps1                # Stop everything
 ```
+
+The upstream `just setup` / `just dev` / `just test` / `just reset` recipes
+(and the `Justfile` they come from) are part of the standalone
+[block/buzz](https://github.com/block/buzz) workflow and are not used to
+build, test, or run this vendored copy — this monorepo builds only through
+`cargo -p <crate>` from the repo root and launches only through the
+whitelisted `scripts/buzz-room/start-*.ps1` / `stop-room-stack.ps1` entry
+points.
 
 </details>
 

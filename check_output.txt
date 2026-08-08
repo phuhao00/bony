@@ -1,9 +1,0 @@
-﻿rtk : warning: build failed, waiting for other jobs to finish...
-所在位置 C:\Users\Administrator\AppData\Local\Temp\ps-script-472420d2-e8cf-4a53-acb9-d9d6a82f7987.ps1:115 字符: 1
-+ rtk cargo check -p buzz-search --tests --message-format=short 2>&1 |  ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (warning: build ...bs to finish...:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-cargo build: 0 errors, 1 warnings (2 crates)
-[full output: ~/AppData\Local\rtk\tee\1786105736_cargo_check.log]

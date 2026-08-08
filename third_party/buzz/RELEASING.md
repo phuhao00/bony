@@ -73,19 +73,11 @@ or mobile GitHub Release.
 
 ### Relay
 
-1. **`just release-relay`** runs locally on `main`, creates or updates a
-   `relay-release/<version>` PR, bumps `crates/buzz-relay/Cargo.toml`,
-   regenerates `Cargo.lock`, and updates the relay changelog.
-2. **Merge the PR.** `auto-tag-on-release-pr-merge` pushes
-   `relay-v<version>`.
-3. **The tag triggers `docker.yml`.** Stable releases update the version
-   aliases and `latest`; prereleases do not. Each release also publishes an
-   optimized, symbol-bearing image under matching `debug-` tags (for example,
-   `debug-0.3.0` and `debug-latest`) for native profiling. The ordinary tags
-   remain stripped and are the default for deployments that do not need it.
-
-Every push to `main` continues to publish the rolling relay `:main` and
-`:sha-<7>` tags, plus matching `:debug-main` and `:debug-sha-<7>` variants.
+The relay Docker image publish lane (`docker.yml`, the `relay-v<version>`
+auto-tag lane, and `just release-relay`) was removed along with the rest of
+the Docker/Helm/K8s deployment configuration — see the docker/Helm/K8s config
+removal. The relay now ships only as a source build (`cargo build -p
+buzz-relay`); there is no published container image or release lane for it.
 
 ### Mobile
 

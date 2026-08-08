@@ -53,10 +53,37 @@ pub use error::{DbError, Result};
 pub use event::{EventQuery, ReactionEventInsertOutcome, DEFAULT_MAX_PAGE_LIMIT};
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{SqliteConnection, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnection, SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{Connection, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::time::Duration;
 use uuid::Uuid;
+
+/// Build the [`SqliteConnectOptions`] every pool onto the Buzz database must
+/// share — single source of truth so extra pools opened outside [`Db`]
+/// (buzz-relay's audit/search pools) get the same concurrency behavior as
+/// the primary pool instead of silently defaulting to `busy_timeout(0)`.
+///
+/// - `journal_mode(Wal)`: WAL lets readers run concurrently with the single
+///   writer instead of the rollback-journal default, where any writer
+///   commit takes a whole-file lock that blocks every other connection
+///   (readers included). This is the fix for multi-agent rooms where 5+
+///   agent connections write profile/event rows within milliseconds of each
+///   other.
+/// - `busy_timeout(30s)`: for the cases WAL still serializes (two writers at
+///   once), later writers wait instead of failing immediately with
+///   `SQLITE_BUSY` — this is set per-connection, so every pool touching this
+///   file must set it, not just the primary one.
+/// - `foreign_keys(true)`: SQLite leaves FK enforcement off by default
+///   (unlike Postgres, which always enforces `REFERENCES` constraints).
+pub fn sqlite_connect_options(url: &str) -> Result<SqliteConnectOptions> {
+    Ok(url
+        .parse::<SqliteConnectOptions>()
+        .map_err(sqlx::Error::from)?
+        .create_if_missing(true)
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_secs(30)))
+}
 
 use buzz_core::{CommunityId, StoredEvent};
 
@@ -367,24 +394,13 @@ impl Db {
     /// to keep the schema's FK constraints load-bearing rather than
     /// decorative.
     async fn connect_pool(config: &DbConfig, url: &str) -> Result<SqlitePool> {
-        let connect_options: sqlx::sqlite::SqliteConnectOptions = url
-            .parse::<sqlx::sqlite::SqliteConnectOptions>()
-            .map_err(sqlx::Error::from)?
-            .create_if_missing(true)
-            .foreign_keys(true)
-            // A writer transaction (or the whole-database lock a write
-            // statement takes) blocks a concurrent writer instead of failing
-            // immediately with SQLITE_BUSY. This is what gives single-writer
-            // SQLite the same "later transaction waits" ordering the removed
-            // Postgres advisory locks provided — no explicit lock needed.
-            .busy_timeout(Duration::from_secs(30));
         Ok(SqlitePoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
             .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
             .max_lifetime(Duration::from_secs(config.max_lifetime_secs))
             .idle_timeout(Duration::from_secs(config.idle_timeout_secs))
-            .connect_with(connect_options)
+            .connect_with(sqlite_connect_options(url)?)
             .await?)
     }
 
@@ -2843,8 +2859,8 @@ impl Db {
         let result = sqlx::query(
             "UPDATE events \
              SET d_tag = COALESCE( \
-                 (SELECT elem->>1 FROM jsonb_array_elements(tags) AS elem \
-                  WHERE elem->>0 = 'd' LIMIT 1), \
+                 (SELECT json_extract(elem.value, '$[1]') FROM json_each(tags) AS elem \
+                  WHERE json_extract(elem.value, '$[0]') = 'd' LIMIT 1), \
                  '' \
              ) \
              WHERE kind BETWEEN 30000 AND 39999 AND d_tag IS NULL",

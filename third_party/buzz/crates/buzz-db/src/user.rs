@@ -244,18 +244,18 @@ pub async fn search_users(
         WHERE community_id = $1
           AND (LOWER(COALESCE(display_name, '')) LIKE $2 ESCAPE '\'
            OR LOWER(COALESCE(nip05_handle, '')) LIKE $2 ESCAPE '\'
-           OR LOWER(encode(pubkey, 'hex')) LIKE $2 ESCAPE '\')
+           OR LOWER(hex(pubkey)) LIKE $2 ESCAPE '\')
         ORDER BY
             CASE
                 WHEN LOWER(COALESCE(display_name, '')) = $3 THEN 0
                 WHEN LOWER(COALESCE(nip05_handle, '')) = $3 THEN 1
-                WHEN LOWER(encode(pubkey, 'hex')) = $3 THEN 2
+                WHEN LOWER(hex(pubkey)) = $3 THEN 2
                 WHEN LOWER(COALESCE(display_name, '')) LIKE $4 ESCAPE '\' THEN 3
                 WHEN LOWER(COALESCE(nip05_handle, '')) LIKE $4 ESCAPE '\' THEN 4
-                WHEN LOWER(encode(pubkey, 'hex')) LIKE $4 ESCAPE '\' THEN 5
+                WHEN LOWER(hex(pubkey)) LIKE $4 ESCAPE '\' THEN 5
                 ELSE 6
             END,
-            COALESCE(NULLIF(display_name, ''), NULLIF(nip05_handle, ''), LOWER(encode(pubkey, 'hex')))
+            COALESCE(NULLIF(display_name, ''), NULLIF(nip05_handle, ''), LOWER(hex(pubkey)))
         LIMIT $5
         "#,
     )
