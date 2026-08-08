@@ -10,10 +10,11 @@ Grok is available today over [ACP](https://agentclientprotocol.com/), with one e
 
 [Quick start](#quick-start) ·
 [Features](#features) ·
+[Technology stack](#technology-stack) ·
 [Local multi-agent collaboration](#local-multi-agent-collaboration) ·
 [Web monitor](#web-monitor) ·
 [Models & providers](#models--providers) ·
-[Architecture](#architecture) ·
+[Architecture & runtime](#architecture-and-runtime-flow) ·
 [Contributors](#contributors) ·
 [Upstream relationship](#upstream-relationship) ·
 [Development](#development)
@@ -49,6 +50,28 @@ Bony brings the desktop coding workspace and multi-agent room together in one cl
 | Room collaboration | Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith with threads and progress feedback |
 | Local backend | Rust + SQLite + in-process pubsub, one workspace and one root `target/` |
 | Web monitor | Architecture layers, “how it works”, feature-impact matrix, commit impact timeline |
+
+---
+
+## Technology stack
+
+| Layer | Technology | How Bony uses it |
+|-------|------------|------------------|
+| Desktop shell | **Tauri 2 · Rust · Tokio** | Windows, system tray, native directory selection, process lifecycle, notifications, updates, and OS integration |
+| Interface | **React 19 · TypeScript 6 · Vite 8 · Tailwind CSS 4** | Channels, threads, Coding Workspace, agent sessions, and theming; handles rendering, interaction state, and calls into native Tauri capabilities |
+| UI and state | **Radix UI · TanStack Query / Router / Virtual · TipTap · Shiki · Motion** | Accessible primitives, server state, routing, long lists, rich text, code highlighting, and transitions |
+| Native project integration | **Tauri Commands · Git · atomic-write-file** | Validate and normalize project paths, persist recent projects, read Git state, and pass the real directory to a coding agent |
+| Agent protocol | **ACP · JSON-RPC · stdio · `buzz-acp`** | Initialize agents, create sessions, send prompts, cancel turns, configure models, and stream events |
+| Coding agents | **Grok · Codex · Claude Code · custom ACP runtimes** | Select runtimes, models, providers, and project sessions through one managed-agent catalog |
+| Grok runtime | **`xai-grok-shell` · `SessionActor` · `xai-grok-agent`** | Assemble the agent, run sampling/tool loops, and manage context, memory, compaction, and sub-agents |
+| Tools and workspace | **`ToolBridge` · `xai-grok-tools` · `xai-grok-workspace`** | Files, terminal, search, Git, permissions, sandboxing, checkpoints, and MCP tools |
+| Room service | **Axum · Tokio · WebSocket · Nostr** | Real-time delivery of channel events, threads, presence, agent mentions, progress, and replies |
+| Data layer | **SQLx · SQLite (WAL) · in-process pubsub** | Persist messages, members, and threads; use broadcast / DashMap for local fan-out, rate limiting, and presence |
+| Search | **SQLite FTS5 · LanceDB** | Room full-text search and embedded semantic search |
+| Security | **System keyring · rustls · NIP-98 · PermissionManager / Sandbox** | Local secrets, TLS, request authentication, and permissions for agent tool execution |
+| Observability | **`bony-monitor` · Axum · Git metadata** | Show architecture, runtime flow, capability matrices, and commit impact |
+
+The repository uses one Cargo workspace, one root `Cargo.lock`, and one root `target/`. `buzz-*` is the technical prefix retained by embedded lower-level crates; Bony is the project and product name.
 
 ---
 
@@ -111,11 +134,22 @@ Implementation: `crates/codegen/bony-monitor` (Axum).
 
 ```powershell
 # Build and run from the repository root, sharing the root target/
-cargo build -p buzz-desktop
+cargo build -p buzz-relay -p buzz-desktop
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild
 powershell -File .\scripts\buzz-room\start-desktop.ps1
 ```
 
-After startup, enter a channel, click the code icon in the header to open Coding Workspace, then choose a local project directory.
+### Complete a first Coding Workspace task
+
+1. Enter any joined channel and click the **code icon** on the right side of the header.
+2. Select a local project directory. The native Rust layer normalizes the path and adds it to recent projects.
+3. Under **Project agents**, choose Grok, Codex, Claude Code, or a registered custom ACP agent.
+4. Enter a task. Bony attaches the selected agent mention and the `coding-workspace-v1` project marker.
+5. `buzz-acp` creates or reuses the ACP session for that project and passes the real directory as `cwd` in `session/new`.
+6. The session view streams messages, plans, tool activity, and model usage. Click **Stop** to cancel the active turn.
+7. Return to the room for further delegation or switch projects. A project switch establishes the session boundary for the new `cwd`.
+
+If an agent is not running, the desktop starts its managed runtime first. Runtime, model, and provider settings live in the agent editor; Grok BYOK settings can also be managed through `%USERPROFILE%\.grok\config.toml`.
 
 ### Terminal TUI
 
@@ -170,38 +204,125 @@ Restart the desktop app after config or env changes. Use `grok models` to verify
 
 ---
 
-## Architecture
+## Architecture and runtime flow
 
-Overview (renders on GitHub):
+### Component architecture
 
 ```mermaid
 flowchart TB
-  UI["Bony desktop<br/>channels + Coding Workspace"]
-  ACP["buzz-acp<br/>session pool and queue"]
-  Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
-  Sample["Sampling · multi-backend"]
-  Tools["Tools · terminal / files / search"]
-  WS["Workspace / MCP / sub-agents"]
-  Room["Local multi-agent room<br/>SQLite + in-process pubsub"]
+  User["User"]
+  Project["Local project<br/>filesystem · Git · AGENTS.md"]
 
-  UI --> ACP --> Agent
-  Agent --> Sample
-  Agent --> Tools
-  Agent --> WS
-  UI --> Room
+  subgraph Desktop["Bony Desktop · Tauri 2"]
+    Channel["Channels / threads / rooms"]
+    WorkspaceUI["Coding Workspace<br/>project · agent · session"]
+    Renderer["React UI<br/>TanStack · Radix · TipTap"]
+    Native["Tauri Rust native layer<br/>directories · Git · keyring · processes"]
+    Catalog["Managed Agent Catalog<br/>runtime · model · provider · capability"]
+  end
+
+  subgraph RoomCore["Local collaboration core"]
+    Relay["buzz-relay<br/>Axum · WebSocket · Nostr"]
+    Store["SQLite / SQLx<br/>messages · members · threads"]
+    PubSub["buzz-pubsub<br/>broadcast · presence · rate limit"]
+    Search["FTS5 + LanceDB<br/>full-text and semantic search"]
+  end
+
+  subgraph AgentPlane["Coding-agent runtime plane"]
+    Harness["buzz-acp<br/>queue · session pool · ACP client"]
+    Runtimes["ACP runtimes<br/>Grok · Codex · Claude Code · custom"]
+    GrokCore["Grok path<br/>SessionActor · AgentBuilder"]
+    Model["Model providers<br/>HTTP / SSE"]
+    Tools["ToolBridge<br/>files · terminal · search · MCP"]
+  end
+
+  User --> Channel
+  User --> WorkspaceUI
+  Channel --> Renderer
+  WorkspaceUI --> Renderer
+  Renderer <--> Native
+  Native <--> Project
+  Catalog --> Harness
+  Renderer <--> Relay
+  Relay --> Store
+  Relay --> PubSub
+  Relay --> Search
+  Relay <--> Harness
+  Harness <--> Runtimes
+  Runtimes <--> Project
+  Runtimes -. "Grok runtime" .-> GrokCore
+  GrokCore <--> Model
+  GrokCore <--> Tools
+  Tools <--> Project
 ```
 
-Layered view and a single turn:
+| Component | Boundary and responsibility |
+|-----------|-----------------------------|
+| React renderer | Renders channels, Coding Workspace, and agent transcripts; it does not own agent orchestration or secret-management logic |
+| Tauri Rust native layer | Handles trusted paths, native dialogs, Git, local configuration, secrets, and managed-process lifecycles |
+| `buzz-relay` | Accepts signed room events, persists them, and distributes them through WebSocket and in-process pubsub |
+| `buzz-acp` | Converts room events to ACP requests and manages queues and sessions by agent, channel, and project |
+| ACP runtime | Executes inside the project `cwd` selected by `session/new`; Grok, Codex, and Claude Code plug into the same managed-session host contract |
+| Grok runtime | `SessionActor` runs the sample → tool → resample loop; `AgentBuilder` assembles prompts, skills, and tools |
+| Project directory | Agents read, write, and execute directly in the user's selected directory; Bony does not create another project copy |
 
-![Architecture layers](docs/architecture-layers.png)
+### One Coding Workspace request
 
-![Turn flow](docs/architecture-turn-flow.png)
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant UI as Coding Workspace
+  participant T as Tauri Rust
+  participant R as buzz-relay
+  participant H as buzz-acp
+  participant A as ACP Runtime
+  participant P as Local project
 
-- Desktop app: [`third_party/buzz/desktop`](third_party/buzz/desktop)
-- ACP session layer: [`third_party/buzz/crates/buzz-acp`](third_party/buzz/crates/buzz-acp)
-- Write-up: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+  U->>UI: Select a project and agent
+  UI->>T: open_coding_workspace_project
+  T->>P: Normalize path and read project metadata
+  T-->>UI: Project descriptor and recent-project record
+  U->>UI: Send a coding task
+  UI->>R: Signed event + agent mention + project-path marker
+  R-->>H: Deliver through WebSocket / pubsub
+  H->>A: Start or reuse runtime
+  H->>A: initialize + session/new(cwd)
+  H->>A: session/prompt
+  A->>P: Files / terminal / search / Git
+  A-->>H: Stream messages, plan, tool status, and usage
+  H->>R: Progress and reply events
+  R-->>UI: Update the session in real time
+  UI-->>U: Show result; allow Stop or follow-up
+```
 
-Bony drives local coding-agent subprocesses over ACP; Rust owns project paths, sessions, and queueing. Rust crates and directories use the `buzz-*` technical prefix.
+The project path travels in the `client / coding-workspace-v1` event marker. `buzz-acp` accepts trusted paths through this marker and binds each path to its ACP session. Switching projects changes the session boundary together with `cwd`, preventing work from leaking into the wrong directory.
+
+### Inside one Grok turn
+
+```text
+session/prompt
+  → SessionActor::handle_prompt
+  → ChatState::build_request
+  → SamplerHandle (HTTP/SSE)
+  → tool_calls present: permission check → ToolBridge → project side effect → tool_result → resample
+  → no tool_calls: checkpoint / memory flush → PromptTurnResult
+```
+
+Codex, Claude Code, and custom agents do not need to reuse Grok's internal implementation. Any ACP-compatible agent can reuse Bony's project picker, managed-agent catalog, session UI, message queue, and room-collaboration path.
+
+### Data and state locations
+
+| Data | Location / mechanism | Purpose |
+|------|----------------------|---------|
+| Local project | Original directory selected by the user | Agent's real `cwd`, files, and Git working tree |
+| Recent projects | `coding-workspaces.json` under Tauri app data | Normalized paths in most-recent order, up to 12 entries |
+| Room data | `SQLite` (default `buzz.db`, WAL + 30s busy timeout) | Channels, messages, members, threads, reactions, and workflow state |
+| Real-time state | `buzz-pubsub` in-process broadcast / DashMap | Fan-out, presence, rate limiting, connection control, and replay guard |
+| Search indexes | SQLite FTS5 + LanceDB | Full-text and semantic search |
+| Grok configuration and memory | `%USERPROFILE%\.grok\` | Model catalog, session settings, skills, and long-term memory |
+| Secrets | Operating-system keyring / environment variables | Nostr identity and provider BYOK credentials |
+
+For deeper coverage of agents, sessions, tools, permissions, memory, compaction, and sub-agents, see [`ARCHITECTURE.md`](ARCHITECTURE.md). The rendered layer and turn diagrams are available in [`docs/architecture-layers.png`](docs/architecture-layers.png) and [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png).
 
 ---
 
