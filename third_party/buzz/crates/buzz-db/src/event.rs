@@ -68,7 +68,7 @@ pub struct EventQuery {
     /// Restrict results to events with any of these IDs (multi-id `IN` pushdown).
     pub ids: Option<Vec<Vec<u8>>>,
     /// Restrict results to events with an `e` tag referencing any of these event IDs (hex).
-    /// Uses JSONB containment (`tags @> ...`) against the `tags` column.
+    /// Uses a `json_each(tags)` membership check against the `tags` column.
     pub e_tags: Option<Vec<String>>,
     /// Restrict results to events in any of these channels, while retaining
     /// channel-less global events. Applied before SQL `LIMIT` so access-filtered
@@ -83,16 +83,18 @@ pub struct EventQuery {
     /// private events are excluded from the candidate page rather than
     /// discarded after it.
     ///
-    /// The clause is: `AND (kind NOT IN (...) OR pubkey = $reader OR tags @> ?)`,
-    /// where the `IN` list is [`SHARED_GATED_KINDS`] and `?` is the JSONB
-    /// literal `[["shared","true"]]`.  The GIN index on `tags` (migration 0004,
-    /// jsonb_path_ops) makes the containment check fast.
+    /// The clause is: `AND (kind NOT IN (...) OR pubkey = $reader OR EXISTS
+    /// (SELECT 1 FROM json_each(tags) WHERE json(value) = json('["shared","true"]')))`,
+    /// where the `IN` list is [`SHARED_GATED_KINDS`]. `json_each` unnests the
+    /// `tags` array so membership can be checked per-element; SQLite has no
+    /// GIN-style index for this, so it's a table scan per row (fine at
+    /// single-instance scale — see `event_visible_to_reader` for the
+    /// authoritative post-filter check).
     ///
-    /// NOTE: `tags @> '[["shared","true"]]'` uses JSONB containment, which
-    /// matches any tag array that is a superset of `[["shared","true"]]` ??it
-    /// would match `["shared","true","extra"]` too.  The ingest `parts.len() ==
-    /// 2` exact-shape check ensures such malformed tags are never stored, so the
-    /// SQL pushdown is sound.  Keeping `event_visible_to_reader` as post-filter
+    /// NOTE: this matches only an *exact* two-element `["shared","true"]` tag
+    /// entry, not any superset. The ingest `parts.len() == 2` exact-shape
+    /// check ensures such malformed tags are never stored, so the SQL
+    /// pushdown is sound. Keeping `event_visible_to_reader` as post-filter
     /// defense-in-depth catches any residual mismatch.
     pub shared_gated_reader: Option<Vec<u8>>,
 }
@@ -463,11 +465,10 @@ pub(crate) async fn query_events_on(
         }
     }
 
-    // e-tag pushdown via JSONB containment: tags @> '[["e","<hex>"]]'.
-    // Multiple e-tags use OR (any match). Served by idx_events_tags_gin
-    // (GIN, jsonb_path_ops ??migrations/0004): the channel-window aux closure
-    // fans this out once per retained row, which made unindexed containment
-    // the dominant scroll-back cost (~1.7s/page on staging).
+    // e-tag pushdown via `json_each(tags)` membership check: does `tags`
+    // contain the element ["e", "<hex>"]? Multiple e-tags use OR (any
+    // match). SQLite has no index for this — it's a per-row table scan —
+    // but that's acceptable at single-instance scale.
     if let Some(ref e_tags) = q.e_tags {
         if !e_tags.is_empty() {
             qb.push(" AND (");
@@ -475,10 +476,14 @@ pub(crate) async fn query_events_on(
                 if i > 0 {
                     qb.push(" OR ");
                 }
-                // Build the JSONB literal: [["e","<hex>"]]
-                let containment = serde_json::json!([["e", hex_id]]);
-                qb.push(format!("{col_prefix}tags @> "));
-                qb.push_bind(containment);
+                // json(value) = json(?) normalizes both sides to canonical
+                // form so formatting differences don't break equality.
+                let tag_elem = serde_json::json!(["e", hex_id]);
+                qb.push(format!(
+                    "EXISTS (SELECT 1 FROM json_each({col_prefix}tags) WHERE json(value) = json("
+                ));
+                qb.push_bind(tag_elem);
+                qb.push("))");
             }
             qb.push(")");
         }
@@ -526,16 +531,16 @@ pub(crate) async fn query_events_on(
     // shared ones off the end of the result set (the catalog query pattern).
     //
     // Clause: AND (kind NOT IN (30175, 30178) OR pubkey = $reader
-    //              OR tags @> '[["shared","true"]]')
+    //              OR EXISTS (SELECT 1 FROM json_each(tags)
+    //                         WHERE json(value) = json('["shared","true"]')))
     //
-    // The JSONB containment check is served by idx_events_tags_gin (migration
-    // 0004, jsonb_path_ops).  `tags @> '[["shared","true"]]'` matches any array
-    // that contains exactly the sub-array ??a two-element `["shared","true"]`
-    // tag passes; a tag-absent event does not.  Because ingest requires exactly
-    // two elements for the shared tag (parts.len() == 2), no stored event can
-    // carry a three-element superset.
+    // `json_each` unnests the `tags` array so exact-element membership can be
+    // checked per row (no index — table scan, fine at single-instance
+    // scale). Because ingest requires exactly two elements for the shared
+    // tag (parts.len() == 2), no stored event can carry a superset that
+    // would otherwise need a containment (rather than equality) check.
     if let Some(ref reader_bytes) = q.shared_gated_reader {
-        let shared_containment = serde_json::json!([["shared", "true"]]);
+        let shared_tag_elem = serde_json::json!(["shared", "true"]);
         qb.push(format!(" AND ({col_prefix}kind NOT IN ("));
         let mut sep = qb.separated(", ");
         for kind in SHARED_GATED_KINDS {
@@ -543,8 +548,11 @@ pub(crate) async fn query_events_on(
         }
         qb.push(format!(") OR {col_prefix}pubkey = "));
         qb.push_bind(reader_bytes.clone());
-        qb.push(format!(" OR {col_prefix}tags @> "));
-        qb.push_bind(shared_containment);
+        qb.push(format!(
+            " OR EXISTS (SELECT 1 FROM json_each({col_prefix}tags) WHERE json(value) = json("
+        ));
+        qb.push_bind(shared_tag_elem);
+        qb.push("))");
         qb.push(")");
     }
 
@@ -729,9 +737,12 @@ pub(crate) async fn count_events_on(conn: &mut sqlx::SqliteConnection, q: &Event
                 if i > 0 {
                     qb.push(" OR ");
                 }
-                let containment = serde_json::json!([["e", hex_id]]);
-                qb.push(format!("{col_prefix}tags @> "));
-                qb.push_bind(containment);
+                let tag_elem = serde_json::json!(["e", hex_id]);
+                qb.push(format!(
+                    "EXISTS (SELECT 1 FROM json_each({col_prefix}tags) WHERE json(value) = json("
+                ));
+                qb.push_bind(tag_elem);
+                qb.push("))");
             }
             qb.push(")");
         }

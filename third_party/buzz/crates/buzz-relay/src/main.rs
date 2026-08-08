@@ -306,7 +306,7 @@ async fn main() -> anyhow::Result<()> {
         let audit_pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(5)
             .min_connections(1)
-            .connect(&config.database_url)
+            .connect_with(buzz_db::sqlite_connect_options(&config.database_url)?)
             .await
             .map_err(|e| anyhow::anyhow!("Audit DB connection failed: {e}"))?;
         info!("Audit service ready");
@@ -326,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
     // external collection to provision — the search service just queries the
     // same SQLite database over its own pool.
     let search_pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .connect(&config.database_url)
+        .connect_with(buzz_db::sqlite_connect_options(&config.database_url)?)
         .await
         .map_err(|e| anyhow::anyhow!("Search DB connection failed: {e}"))?;
     let search = SearchService::new(search_pool);

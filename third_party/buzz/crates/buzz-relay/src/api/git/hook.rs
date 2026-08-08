@@ -181,26 +181,16 @@ pub async fn install_hook(repo_path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::PRE_RECEIVE_HOOK;
 
+    /// The relay's own host environment (wherever `buzz-relay` runs — no
+    /// longer a Docker runtime image, see the docker/Helm/K8s removal) must
+    /// provide these tools; the git pre-receive hook fails closed without
+    /// them. This only checks the hook script still invokes what it claims.
     #[test]
-    fn runtime_image_installs_pre_receive_hook_tools() {
-        let dockerfile = include_str!("../../../../../Dockerfile");
-        let runtime_stage = dockerfile
-            .split("FROM debian:${DEBIAN_VERSION}-slim AS runtime")
-            .nth(1)
-            .expect("Dockerfile should have a runtime stage");
-        let runtime_setup = runtime_stage
-            .split("COPY --from=builder")
-            .next()
-            .expect("runtime stage should copy built artifacts after package setup");
-
+    fn pre_receive_hook_invokes_expected_tools() {
         for tool in ["curl", "openssl"] {
             assert!(
                 PRE_RECEIVE_HOOK.contains(tool),
                 "test setup expected the pre-receive hook to invoke {tool}"
-            );
-            assert!(
-                runtime_setup.contains(&format!("\n        {tool} \\")),
-                "relay runtime image must install {tool}; the git pre-receive hook uses it and fails closed without it"
             );
         }
     }

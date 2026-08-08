@@ -1,8 +1,0 @@
-﻿rtk : cargo build (69 crates compiled)
-所在位置 C:\Users\Administrator\AppData\Local\Temp\ps-script-e572cd68-0d6b-463d-8525-8aab51412f73.ps1:115 字符: 1
-+ rtk cargo check -p buzz-push-gateway --message-format=short 2>&1 | Ou ...
-+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (cargo build (69 crates compiled):String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
-[full output: ~/AppData\Local\rtk\tee\1786106469_cargo_check.log]
