@@ -17,7 +17,7 @@ user_impact = "直接影响用户打开工程并进入编码任务的主路径"
 
 [[features]]
 id = "desktop-shell"
-name = "Buzz Desktop 壳"
+name = "Bony 桌面端"
 category = "桌面体验"
 description = "频道、线程、Coding Workspace、主题与窗口交互"
 user_facing = true

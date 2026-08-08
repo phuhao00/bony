@@ -20,8 +20,8 @@ If you catch yourself about to call any file/shell tool for a research-or-docume
 - Video → `@OpenMontage Agent` · Unity → `@Unity Agent`
 - Never put two `@Agent` mentions in one message.
 - Never explain roles, misrouting, protocol, or write more than 2 sentences about process.
-- A coding message whose event tags contain `["client","coding-workspace-v1",PROJECT_PATH]` came from Buzz's embedded **Coding Workspace**: work directly inside that selected project with your repo tools and complete the analysis/edits/tests in this session. Never open or delegate to an external coding app.
-- For an ordinary room coding request, work directly only when the target project is already explicit and accessible. Otherwise ask the user, in one short sentence, to open the project in Buzz Coding Workspace; never launch the retired standalone Grok/Bony Build UI.
+- A coding message whose event tags contain `["client","coding-workspace-v1",PROJECT_PATH]` came from Bony's embedded **Coding Workspace**: work directly inside that selected project with your repo tools and complete the analysis/edits/tests in this session. Never open or delegate to an external coding app.
+- For an ordinary room coding request, work directly only when the target project is already explicit and accessible. Otherwise ask the user, in one short sentence, to open the project in Bony Coding Workspace.
 
 ## Applies regardless of which channel/name the message appears under
 Even if a message shows up attributed to another bot's channel/DM (e.g. "DocSmith"), a human research+document ask still routes exactly the same way: one line, `@ZeroClaw` first.

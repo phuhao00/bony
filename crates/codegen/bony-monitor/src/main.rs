@@ -1,4 +1,4 @@
-//! Bony Build web monitor — architecture & change-impact dashboard.
+//! Bony web monitor — architecture & change-impact dashboard.
 
 mod architecture;
 mod catalog;
@@ -27,10 +27,7 @@ use tracing_subscriber::EnvFilter;
 use crate::catalog::CatalogCache;
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "bony-monitor",
-    about = "Bony Build architecture & change monitor"
-)]
+#[command(name = "bony-monitor", about = "Bony architecture & change monitor")]
 struct Args {
     /// Bind address (default 127.0.0.1:8787).
     #[arg(long, default_value = "127.0.0.1:8787")]

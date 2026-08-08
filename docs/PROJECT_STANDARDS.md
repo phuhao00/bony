@@ -1,4 +1,4 @@
-# Bony Build 项目规范
+# Bony 项目规范
 
 > Agent 与人工共用的强制约定。Cursor 侧镜像：`.cursor/rules/*.mdc`（`alwaysApply`）。
 
@@ -8,7 +8,7 @@
 
 | 面 | 终态 |
 |----|------|
-| Buzz Desktop | 唯一 Tauri 桌面壳 · Coding Workspace · ACP · 本地多 Agent 房间 |
+| Bony 桌面端 | Tauri 桌面壳 · Coding Workspace · ACP · 本地多 Agent 房间 |
 | 运行时 | 本地 agent + BYOK · 权限模式 · 逻辑在 Rust |
 | Buzz 房间 | 单 workspace / 单 `target/` · Grok 协调 · 串行 `@` 交接 · 硬拦兜底 |
 | 协作智能 | 分工执行 → 记忆写回 → 下次检索（见 `buzz-room-agent-orchestration-plan.md`） |
@@ -21,7 +21,7 @@
 
 - **新增实现只允许 Rust**（根 `Cargo.toml` workspace 成员）。
 - 构建：`cargo build|test|run|clippy -p <crate>`（仓库根）。
-- Buzz Desktop 既有 TS **不扩大业务**；agent/seed/编排进 Tauri Rust 与 `buzz-*` crate。
+- Bony 桌面端既有 TS **不扩大业务**；agent/seed/编排进 Tauri Rust 与 `buzz-*` crate。
 - 禁止为新能力引入 Python / Node / Go / bash 业务程序。
 
 ## 3. 脚本
@@ -82,7 +82,7 @@ Cursor 规则：`.cursor/rules/modularity-dry.mdc`。
 
 | 路径 | 职责 |
 |------|------|
-| `third_party/buzz/desktop` | Buzz Desktop 界面与 Tauri 本机集成 |
+| `third_party/buzz/desktop` | Bony 桌面界面与 Tauri 本机集成 |
 | `third_party/buzz/crates/buzz-acp` | Coding Agent ACP 会话池与队列 |
 | `crates/codegen/xai-grok-*` | Agent / 工具 / TUI |
 | `third_party/buzz` | Buzz in-tree sources |

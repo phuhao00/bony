@@ -1,11 +1,11 @@
-# Buzz Room Collaboration (Grok lead)
+# Bony Room Collaboration (Grok lead)
 
 > **项目强制规范**（终止目标 / 只用 Rust / 除启动外禁止脚本 / 极致性能与最短协作）：  
 > [`docs/PROJECT_STANDARDS.md`](./PROJECT_STANDARDS.md) · 仓库根 [`AGENTS.md`](../AGENTS.md) · `.cursor/rules/`
 
-Grok is the initial **room lead**. Buzz is the **shared office**. ZeroClaw, Unity, OpenMontage, and DocSmith are built-in starting specialists, not a closed agent list; user-created agents may join through the same managed-agent/persona/catalog model.
+Grok is the initial **room lead**. Bony is the **shared workspace**. ZeroClaw, Unity, OpenMontage, and DocSmith are built-in starting specialists, not a closed agent list; user-created agents may join through the same managed-agent/persona/catalog model.
 
-![Buzz room: Grok hands weather to ZeroClaw in Welcome](buzz-room-welcome-handoff.png)
+![Bony room: Grok hands weather to ZeroClaw in Welcome](buzz-room-welcome-handoff.png)
 
 Buzz source lives **in this monorepo tree** at `third_party/buzz` (ordinary directory — not a git submodule).
 All Buzz crates and `buzz-desktop` are members of the **root** `Cargo.toml` workspace:
@@ -14,7 +14,7 @@ one `cargo build`, one `Cargo.lock`, one `target/` at the repo root.
 ## Layout
 
 ```
-bony-build/
+bony/
   Cargo.toml                     # single workspace (Grok CLI + Buzz + Desktop)
   target/                        # single Cargo target dir
   third_party/buzz/              # Buzz sources (in-tree)
@@ -23,7 +23,7 @@ bony-build/
   crates/.../bony-room-tools-mcp
 ```
 
-## Quick start (from bony-build root only)
+## Quick start (from the Bony repository root)
 
 规范：**除启动脚本外不用脚本**；编译一律 `cargo -p`。
 
@@ -39,7 +39,7 @@ powershell -File .\scripts\buzz-room\start-desktop.ps1
 powershell -File .\scripts\buzz-room\stop-room-stack.ps1
 ```
 
-## Buzz Desktop
+## Bony Desktop
 
 | When | Command |
 |------|---------|
@@ -81,7 +81,7 @@ Agent 是 **定义/persona + managed instance + ACP runtime + 本机密钥**，�
 |------|------|
 | **今天资讯 / 新闻 / 实时** + PDF/PPT/Word | **串行两跳**：Grok **只** `@ZeroClaw`（同一帖禁止再写 `@DocSmith`，否则双 p-tag 会同时叫醒）→ ZeroClaw `web_search` → 再 **单** `@DocSmith` + 完整 body → `pdf_create`。禁止 DocSmith 先 list_dir |
 | 已有正文 / 路径整理成文档 | `@DocSmith` → `bony-docs-tools-mcp`（`pdf_*` / `docx_*` / `xlsx_*` / `pptx_*`） |
-| 重编码 | 从 Buzz **Coding Workspace** 选择本地项目与已授权 Coding Agent（`coding-workspace-v1`）→ ACP `session/new` 以所选工程作为真实 `cwd`，在当前 Buzz 工作区内直接编辑/测试；不再启动独立 Grok/Bony Build UI |
+| 重编码 | 从 Bony **Coding Workspace** 选择本地项目与已授权 Coding Agent（`coding-workspace-v1`）→ ACP `session/new` 以所选工程作为真实 `cwd`，在当前工作区内直接编辑/测试 |
 | 代码分析 | Grok 自用工具 + 可选 `code-graph`，不交给 DocSmith |
 
 ### Grok 禁止事项（真实发生过的回归，别再犯）

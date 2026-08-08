@@ -51,15 +51,15 @@ pub fn overview(catalog: &CatalogSnapshot) -> ArchitectureOverview {
     }
 
     ArchitectureOverview {
-        title: "Bony Build 架构".into(),
-        blurb: "Buzz Desktop 的 Coding Workspace 经 ACP 驱动 grok agent stdio；目录与模块扫描会随工作区热更新。"
+        title: "Bony 架构".into(),
+        blurb: "Bony 桌面端的 Coding Workspace 经 ACP 驱动 grok agent stdio；目录与模块扫描会随工作区热更新。"
             .into(),
         layers: vec![
             ArchLayer {
                 id: "host".into(),
                 name: "1 · Host / 客户端".into(),
                 summary: format!(
-                    "Buzz Desktop（频道/Coding Workspace）、TUI、或任意 ACP 客户端；当前扫描到 {} 个桌面 Rust 模块",
+                    "Bony 桌面端（频道/Coding Workspace）、TUI、或任意 ACP 客户端；当前扫描到 {} 个桌面 Rust 模块",
                     catalog.desktop_module_count
                 ),
                 crates: host_crates,

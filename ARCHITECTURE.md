@@ -1,6 +1,6 @@
-# Bony Build 架构与 Agent 实现
+# Bony 架构与 Agent 实现
 
-> Bony Build：基于 SpaceXAI / Grok agent 运行时的桌面与终端 AI coding agent 工作区。
+> Bony：基于 SpaceXAI / Grok agent 运行时的桌面与终端 AI coding agent 工作区。
 > 本文描述仓库分层、Agent 装配与 Session 运行时细节。
 > 源码同步自 SpaceXAI monorepo；根 `Cargo.toml` 为生成物，请优先改各 crate 的 `Cargo.toml`。
 > 唯一桌面客户端：`third_party/buzz/desktop`（Tauri，Rust 本机层为 `buzz-desktop`）。
