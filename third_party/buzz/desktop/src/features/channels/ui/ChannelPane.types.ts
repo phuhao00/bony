@@ -106,6 +106,7 @@ export type ChannelPaneProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
     channelId?: string | null,
+    codingWorkspacePath?: string,
   ) => Promise<void>;
   onSendVideoReviewComment?: (
     message: TimelineMessage,

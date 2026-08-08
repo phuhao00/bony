@@ -87,6 +87,7 @@ export function createOptimisticMessage(
   mentionPubkeys: string[] = [],
   parentEventId: string | null = null,
   mediaTags: string[][] = [],
+  codingWorkspacePath: string | null = null,
 ): RelayEvent {
   const localKey = `optimistic-${crypto.randomUUID()}`;
   const tags: string[][] = [];
@@ -114,6 +115,9 @@ export function createOptimisticMessage(
 
   for (const tag of mediaTags) {
     tags.push(tag);
+  }
+  if (codingWorkspacePath) {
+    tags.push(["client", "coding-workspace-v1", codingWorkspacePath]);
   }
 
   return {
@@ -413,6 +417,7 @@ export function useSendMessageMutation(
       mentionPubkeys?: string[];
       parentEventId?: string | null;
       mediaTags?: string[][];
+      codingWorkspacePath?: string;
     },
     MessageQueryContext | undefined
   >({
@@ -423,6 +428,7 @@ export function useSendMessageMutation(
       mentionPubkeys,
       parentEventId,
       mediaTags,
+      codingWorkspacePath,
     }) => {
       // Prefer a channel captured by the caller at compose time. Otherwise,
       // resolve a captured id from the shared channel cache so navigation
@@ -465,10 +471,15 @@ export function useSendMessageMutation(
         mentionPubkeys,
       );
 
-      // Messages carrying media OR custom-emoji tags MUST go through REST so
-      // the relay's tag validation runs. The WebSocket path emits no extra
-      // tags, so emoji-only messages would otherwise lose their emoji tag.
-      if (parentEventId || imetaTags.length > 0 || emojiTags.length > 0) {
+      // Messages carrying validated extra tags MUST go through Tauri so the
+      // relay's tag gate runs. The WebSocket path emits no client/media/emoji
+      // tags, so tagged workbench messages would otherwise lose their mode.
+      if (
+        parentEventId ||
+        imetaTags.length > 0 ||
+        emojiTags.length > 0 ||
+        codingWorkspacePath
+      ) {
         const cachedMessages =
           queryClient.getQueryData<RelayEvent[]>(
             channelMessagesKey(effectiveChannel.id),
@@ -482,6 +493,7 @@ export function useSendMessageMutation(
           undefined,
           emojiTags,
           mentionTags,
+          codingWorkspacePath,
         );
 
         // Build tags matching relay-emitted shape: h, author p, mention ps, reply es, imeta, emoji.
@@ -519,6 +531,9 @@ export function useSendMessageMutation(
             ...imetaTags,
             ...emojiTags,
             ...mentionTags,
+            ...(codingWorkspacePath
+              ? [["client", "coding-workspace-v1", codingWorkspacePath]]
+              : []),
           ],
           content: content.trim(),
           sig: "",
@@ -539,6 +554,7 @@ export function useSendMessageMutation(
       mentionPubkeys,
       parentEventId,
       mediaTags,
+      codingWorkspacePath,
     }) => {
       // Mirror mutationFn's target resolution so the optimistic message lands
       // in the cache for the same channel as the real send. A caller-supplied
@@ -574,6 +590,7 @@ export function useSendMessageMutation(
         mentionPubkeys ?? [],
         parentEventId ?? null,
         mediaTags ?? [],
+        codingWorkspacePath ?? null,
       );
 
       const nextWindow = mergeLiveChannelWindowEvent(

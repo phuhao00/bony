@@ -536,6 +536,7 @@ pub async fn send_channel_message(
     emoji_tags: Option<Vec<Vec<String>>>,
     mention_tags: Option<Vec<Vec<String>>>,
     mention_pubkeys: Option<Vec<String>>,
+    coding_workspace_path: Option<String>,
     kind: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
@@ -546,6 +547,7 @@ pub async fn send_channel_message(
     let media = media_tags.unwrap_or_default();
     let emoji = emoji_tags.unwrap_or_default();
     let mention_refs_only = mention_tags.unwrap_or_default();
+    let client_tags = coding_workspace_client_tags(coding_workspace_path)?;
     let kind_num = kind.unwrap_or(buzz_core_pkg::kind::KIND_STREAM_MESSAGE);
 
     let mut resolved_root: Option<String> = None;
@@ -582,7 +584,7 @@ pub async fn send_channel_message(
                 }
                 None => None,
             };
-            events::build_message(
+            events::build_message_with_client_tags(
                 channel_uuid,
                 content.trim(),
                 thread_ref.as_ref(),
@@ -590,6 +592,7 @@ pub async fn send_channel_message(
                 &media,
                 &emoji,
                 &mention_refs_only,
+                &client_tags,
             )?
         }
     };
@@ -610,6 +613,35 @@ pub async fn send_channel_message(
         depth,
         created_at: chrono::Utc::now().timestamp(),
     })
+}
+
+const CODING_WORKSPACE_CLIENT_MARKER: &str = "coding-workspace-v1";
+
+fn coding_workspace_client_tags(path: Option<String>) -> Result<Vec<Vec<String>>, String> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    if path.is_empty() {
+        return Err("Coding Workspace project path must not be empty".to_string());
+    }
+    if path.chars().any(char::is_control) {
+        return Err("Coding Workspace project path contains control characters".to_string());
+    }
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("Coding Workspace project path must be absolute".to_string());
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("Coding Workspace project is not accessible: {error}"))?;
+    if !path.is_dir() {
+        return Err("Coding Workspace project path is not a directory".to_string());
+    }
+    Ok(vec![vec![
+        "client".to_string(),
+        CODING_WORKSPACE_CLIENT_MARKER.to_string(),
+        path.to_string_lossy().to_string(),
+    ]])
 }
 
 fn event_has_client_marker(event: &Event, marker: &str) -> bool {
