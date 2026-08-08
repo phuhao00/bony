@@ -2,7 +2,7 @@
 
 # Bony Build
 
-**Native desktop AI coding assistant** — chat to edit code, isolate tasks in Git worktrees, details-panel VCS, session plugins (Unity / Bevy).
+**Native desktop AI coding assistant + local multi-agent collab room** — chat to edit code, isolate tasks in Git worktrees, details-panel VCS, session plugins (Unity / Bevy); ships with a [Buzz](third_party/buzz) room where Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith specialists, pure Rust + SQLite, no Docker.
 
 **Language:** [中文](README.md) · **English**
 
@@ -26,7 +26,10 @@
 
 ## What is this
 
-**Bony Build** is a native desktop client (Rust / egui, currently `v0.1.3`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
+This repo bundles two things sharing one Rust workspace:
+
+1. **Bony Build**: a native desktop client (Rust / egui, currently `v0.1.3`). It drives a local `grok agent stdio` process over [ACP](https://agentclientprotocol.com/) and does **conversational coding** in the workspace you choose—explore code, edit files, run the terminal and search tools—not just a chat window.
+2. **Buzz local collab room**: a bundled multi-agent group-chat backend (see [Buzz local collab room](#buzz-local-collab-room)). Grok is the coordinator; ZeroClaw / Unity / OpenMontage / DocSmith specialists hand off work via `@` mentions. The backend has been refactored to a single-instance, pure Rust + SQLite stack with no Docker / Postgres / Redis dependency.
 
 Good fit if you want to:
 
@@ -35,8 +38,9 @@ Good fit if you want to:
 - Inspect the working copy, per-file diffs, and commit history in a **resizable details panel** (Fork-style)
 - Drive Unity / Bevy extensions locally; Unity uses a **local CLI loop** (probe, Play, Pipeline) without hanging installs through the Agent
 - Inspect architecture layers and per-commit feature impact with a local **Web monitor**
+- Split work across specialized agents via `@` handoffs in the **Buzz room** instead of one agent doing everything
 
-Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
+Typical uses: explain repo structure, dig into recent changes, add tests, summarize auth / architecture; or in the Buzz room, have ZeroClaw search, Unity drive the engine, and DocSmith produce docs. Per-task permissions: read-only / ask / allow edits / full control; or require manual approval globally with `--ask-permissions`.
 
 **The product brand and desktop shell are Bony Build.** Agent / TUI runtime tracks open-source [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (see [Upstream relationship](#upstream-relationship)). Repo: [`phuhao00/bony`](https://github.com/phuhao00/bony).
 
