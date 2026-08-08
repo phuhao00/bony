@@ -82,11 +82,21 @@ GitHub Releases 提供桌面 zip（需本机另装 `grok` CLI）：
 
 ## Buzz 本地协作房间
 
-本仓库另含 [Block/Buzz](third_party/buzz) 本地房间栈：Grok 作协调员，ZeroClaw / Unity / OpenMontage 专员在共享频道协作（`@` 交接、工具中途状态可见）。
+本仓库另含 [Block/Buzz](third_party/buzz) 的本地多 Agent 协作房间：**Grok** 担任房间协调员，**ZeroClaw**（检索）/ **Unity**（游戏引擎）/ **OpenMontage**（剪辑）/ **DocSmith**（文档产出）等专员在共享频道里按 `@` 串行交接协作——工具调用中途状态可见，消息可加表情反馈，还能按需开子线程深入追问。
 
-![Buzz 房间：Grok 交接 ZeroClaw 查询深圳天气](docs/buzz-room-welcome-handoff.png)
+后端已完成**单机化重构**，不再依赖 Docker / Postgres / Redis：持久化用 **SQLite**（WAL 模式 + 30s busy timeout，支持多 Agent 并发写入不报错）；发布订阅、限流、在线状态用**进程内实现**取代 Redis；语义检索接入嵌入式 **[LanceDB](https://github.com/lancedb/lancedb)** 向量库；对象存储仍走 S3 兼容 OSS，且为可选项——不配置也能本机跑起来。
 
-一键脚本与策略见 [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md)、[`scripts/buzz-room`](scripts/buzz-room)。
+![Buzz 房间：Grok 交接 ZeroClaw 查询深圳天气，右侧子线程展示完整天气播报](docs/buzz-room-local-room.png)
+
+一键启动（仅限白名单脚本，编译一律走 `cargo build -p <crate>`）：
+
+```powershell
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild   # relay + 进程内 pubsub + SQLite
+powershell -File .\scripts\buzz-room\start-desktop.ps1                 # Buzz Desktop
+powershell -File .\scripts\buzz-room\stop-room-stack.ps1               # 停止
+```
+
+策略与架构细节见 [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md)、[`third_party/buzz/README.md`](third_party/buzz/README.md)、[`scripts/buzz-room`](scripts/buzz-room)。
 
 ---
 
@@ -189,8 +199,7 @@ Windows 若遇到 **os error 4551**（Smart App Control），请在可信终端�
 本仓库仍包含完整 `grok` TUI / agent 源码：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-dev.ps1
-# 或
+$env:CARGO_TARGET_DIR = "$PWD\target"
 cargo run -p xai-grok-pager-bin
 ```
 
@@ -309,7 +318,6 @@ git push --force-with-lease origin main
 | `scripts/run-desktop.ps1` | 桌面端构建运行 |
 | `scripts/run-bony-build.ps1` | 结束旧进程 + release 构建 + 启动 |
 | `scripts/run-monitor.ps1` | 启动 Web 监控（默认 :8787） |
-| `scripts/run-dev.ps1` | TUI 开发启动 |
 | `.github/workflows/release-desktop.yml` | 多平台桌面 zip release |
 | `docs/` | 截图与架构图（含 Buzz 房间协作） |
 | `scripts/buzz-room/` | 本地 Buzz 房间：relay / Desktop / 外部 agent |

@@ -82,11 +82,21 @@ Primary sidebar nav today: **New chat** · **Chat** · **Plugins**. Sites / PRs 
 
 ## Buzz local collab room
 
-This monorepo also ships a [Block/Buzz](third_party/buzz) local room stack: Grok as coordinator with ZeroClaw / Unity / OpenMontage specialists in a shared channel (`@` handoffs, mid-turn tool status).
+This monorepo also ships [Block/Buzz](third_party/buzz)'s local multi-agent collab room: **Grok** is the room coordinator, with **ZeroClaw** (search), **Unity** (game engine), **OpenMontage** (editing), and **DocSmith** (docs) as specialists collaborating in a shared channel via serial `@` handoffs — mid-turn tool status is visible, messages can carry emoji reactions, and threads open on demand for follow-ups.
 
-![Buzz room: Grok hands Shenzhen weather to ZeroClaw](docs/buzz-room-welcome-handoff.png)
+The backend has been fully refactored for **single-instance, Docker-free** deployment: persistence is **SQLite** (WAL mode + a 30s busy timeout, so concurrent multi-agent writes wait instead of failing); pub/sub, rate limiting, and presence run **in-process** instead of Redis; semantic search is wired up to embedded **[LanceDB](https://github.com/lancedb/lancedb)**; object storage still goes through an optional S3-compatible bucket — it runs fine locally even unconfigured.
 
-Scripts and policy: [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md), [`scripts/buzz-room`](scripts/buzz-room).
+![Buzz room: Grok hands the Shenzhen weather query to ZeroClaw; the thread panel shows the full weather report](docs/buzz-room-local-room.png)
+
+One-shot startup (whitelisted scripts only; always build with `cargo build -p <crate>`):
+
+```powershell
+powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild   # relay + in-process pubsub + SQLite
+powershell -File .\scripts\buzz-room\start-desktop.ps1                 # Buzz Desktop
+powershell -File .\scripts\buzz-room\stop-room-stack.ps1               # stop everything
+```
+
+Policy and architecture detail: [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md), [`third_party/buzz/README.md`](third_party/buzz/README.md), [`scripts/buzz-room`](scripts/buzz-room).
 
 ---
 
@@ -189,8 +199,7 @@ On Windows, **os error 4551** (Smart App Control) usually means build from a tru
 This repo still ships the full `grok` TUI / agent sources:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run-dev.ps1
-# or
+$env:CARGO_TARGET_DIR = "$PWD\target"
 cargo run -p xai-grok-pager-bin
 ```
 
@@ -309,7 +318,6 @@ Rollback tag (if still present locally): `backup/pre-upstream-sync`.
 | `scripts/run-desktop.ps1` | Desktop build & run |
 | `scripts/run-bony-build.ps1` | Kill old processes + release build + launch |
 | `scripts/run-monitor.ps1` | Start Web monitor (default :8787) |
-| `scripts/run-dev.ps1` | TUI dev launch |
 | `.github/workflows/release-desktop.yml` | Multi-platform desktop zip release |
 | `docs/` | Screenshots and architecture diagrams (incl. Buzz room) |
 | `scripts/buzz-room/` | Local Buzz room: relay / Desktop / external agents |
