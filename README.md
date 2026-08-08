@@ -1,45 +1,39 @@
 <div align="center">
 
-# Bony Build
+# Bony
 
-**原生桌面 AI 编程助手 + 本地多 Agent 协作房间** — 在同一个 [Buzz Desktop](third_party/buzz/desktop) 中切换频道与 Coding Workspace，打开本地工程并通过 ACP 驱动 Grok；面向 Codex、Claude Code 等 Coding Agent 的后续协同扩展。
+**本地优先的桌面 AI 编程与多 Agent 协作平台** — 在一个客户端里打开本地工程、进入 Coding Workspace、运行 Coding Agent，并在共享房间中协调多个专员协作。
+
+当前通过 [ACP](https://agentclientprotocol.com/) 接入 Grok，并为 Codex、Claude Code 等 Coding Agent 提供统一扩展入口。Bony 使用 Rust、Tauri 与 SQLite 构建，面向本地工程与本机运行环境。
 
 **语言:** **中文** · [English](README.en.md)
 
 [快速开始](#快速开始) ·
 [功能](#功能) ·
-[Buzz 本地协作房间](#buzz-本地协作房间) ·
+[本地多 Agent 协作](#本地多-agent-协作) ·
 [Web 监控](#web-监控) ·
 [模型与供应商](#模型与供应商) ·
 [架构](#架构) ·
+[贡献者](#贡献者) ·
 [与上游关系](#与上游关系) ·
 [开发](#开发)
 
-![Buzz Desktop 本地多 Agent 房间](docs/buzz-room-local-room.png)
+![Bony 本地多 Agent 协作界面](docs/buzz-room-local-room.png)
 
 </div>
 
 ---
 
-## 这是什么
+## Bony 是什么
 
-本仓库把桌面编程工作区与多 Agent 房间统一进一个 Buzz Desktop：
+Bony 把桌面编程工作区与多 Agent 房间统一在一个客户端中，核心工作流是：
 
-1. **Coding Workspace**：在频道顶部点击代码图标，打开本地工程目录，通过 [ACP](https://agentclientprotocol.com/) 驱动 `grok agent stdio` 完成探索、编辑、终端与搜索。
-2. **本地多 Agent 房间**：Grok 当协调员，ZeroClaw / Unity / OpenMontage / DocSmith 等专员按 `@` 交接分工；后端使用 Rust + SQLite，不依赖 Docker / Postgres / Redis。
+1. 选择本地工程目录，在频道内打开 Coding Workspace。
+2. 通过 ACP 启动 Grok 会话，使用文件、终端和搜索能力完成编码任务。
+3. 切回共享房间，由 Grok 通过 `@` 把检索、引擎、剪辑和文档任务交给专员。
+4. 通过统一会话入口继续接入 Codex、Claude Code 等 Coding Agent。
 
-适合：
-
-- 本机 **多供应商 BYOK**（Qwen / Kimi / 智谱 / OpenAI 兼容等）日常改码
-- 在 Coding Workspace 中管理本地工程、切换会话，并让每个 ACP 会话使用真实工程目录
-- 在同一桌面界面中平滑切换频道协作与编码任务，主题跟随 Buzz
-- 通过统一 Agent 会话模型逐步接入 Grok、Codex、Claude Code 等编码 Agent
-- 用本地 **Web 监控**看架构分层与每次提交对功能的影响
-- 需要多个专精 Agent 分工协作时，用 **Buzz 房间**里 `@` 交接，而不是一个 Agent 全包
-
-常见用法：解释仓库结构、排查近期改动、补测试、总结认证 / 架构；或在 Buzz 房间里让 ZeroClaw 检索、Unity 操作引擎、DocSmith 出文档。
-
-**Bony Build 是仓库与产品名称，Buzz Desktop 是唯一桌面壳**；agent / TUI 运行时对齐开源上游 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（见 [与上游关系](#与上游关系)）。仓库：[`phuhao00/bony`](https://github.com/phuhao00/bony)。
+**项目名称与产品名称都是 Bony。** `third_party/buzz` 存放 Bony 内嵌并改造的 Block/Buzz 客户端与房间基础代码；Agent / TUI 运行时对齐 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)。仓库：[`phuhao00/bony`](https://github.com/phuhao00/bony)。
 
 ---
 
@@ -47,30 +41,30 @@
 
 | 能力 | 说明 |
 |------|------|
-| Coding Workspace | 在频道内打开类似 Codex 的编码界面，不跳出独立应用 |
+| Coding Workspace | 在频道内打开类似 Codex 的编码界面，集成项目、会话、消息、终端与搜索 |
 | 本地工程 | 原生目录选择器、最近项目、移除记录；ACP 会话使用工程真实路径 |
 | 会话隔离 | 切换工程时释放旧会话并创建新会话，避免工作目录串线 |
 | 多 Agent 演进 | Grok 当前可用；界面和会话层为 Codex、Claude Code 等保留统一扩展点 |
-| Buzz 交互 | Coding Workspace 与频道丝滑切换，主题、标题栏和窗口行为跟随 Buzz |
+| Bony 桌面交互 | Coding Workspace 与频道丝滑切换，共享主题、标题栏和窗口行为 |
 | 房间协作 | Grok 协调 ZeroClaw / Unity / OpenMontage / DocSmith，支持线程和状态反馈 |
 | 本地后端 | Rust + SQLite + 进程内 pubsub，单 workspace、单根 `target/` |
 | Web 监控 | 架构分层、「怎么工作」、功能影响矩阵与提交影响时间线 |
 
 ---
 
-## Buzz 本地协作房间
+## 本地多 Agent 协作
 
-本仓库另含 [Block/Buzz](third_party/buzz) 的本地多 Agent 协作房间：**Grok** 担任房间协调员，**ZeroClaw**（检索）/ **Unity**（游戏引擎）/ **OpenMontage**（剪辑）/ **DocSmith**（文档产出）等专员在共享频道里按 `@` 串行交接协作——工具调用中途状态可见，消息可加表情反馈，还能按需开子线程深入追问。
+Bony 的房间能力基于仓库内嵌并改造的 [Block/Buzz](third_party/buzz) 代码：**Grok** 担任房间协调员，**ZeroClaw**（检索）/ **Unity**（游戏引擎）/ **OpenMontage**（剪辑）/ **DocSmith**（文档产出）等专员在共享频道里按 `@` 串行交接协作——工具调用中途状态可见，消息可加表情反馈，还能按需开子线程深入追问。
 
-后端已完成**单机化重构**，不再依赖 Docker / Postgres / Redis：持久化用 **SQLite**（WAL 模式 + 30s busy timeout，支持多 Agent 并发写入不报错）；发布订阅、限流、在线状态用**进程内实现**取代 Redis；语义检索接入嵌入式 **[LanceDB](https://github.com/lancedb/lancedb)** 向量库；对象存储仍走 S3 兼容 OSS，且为可选项——不配置也能本机跑起来。
+本地后端使用 **SQLite** 持久化（WAL 模式 + 30s busy timeout），以进程内组件处理发布订阅、限流和在线状态，并用嵌入式 **[LanceDB](https://github.com/lancedb/lancedb)** 提供语义检索；需要附件存储时可配置 S3 兼容对象存储。
 
-![Buzz 房间：Grok 交接 ZeroClaw 查询深圳天气，右侧子线程展示完整天气播报](docs/buzz-room-local-room.png)
+![Bony 房间：Grok 交接 ZeroClaw 查询深圳天气，右侧子线程展示完整天气播报](docs/buzz-room-local-room.png)
 
 一键启动（仅限白名单脚本，编译一律走 `cargo build -p <crate>`）：
 
 ```powershell
 powershell -File .\scripts\buzz-room\start-room-stack.ps1 -SkipBuild   # relay + 进程内 pubsub + SQLite
-powershell -File .\scripts\buzz-room\start-desktop.ps1                 # Buzz Desktop
+powershell -File .\scripts\buzz-room\start-desktop.ps1                 # Bony 桌面客户端
 powershell -File .\scripts\buzz-room\stop-room-stack.ps1               # 停止
 ```
 
@@ -125,7 +119,7 @@ powershell -File .\scripts\buzz-room\start-desktop.ps1
 
 ### 也可使用终端 TUI
 
-本仓库仍包含完整 `grok` TUI / agent 源码：
+本仓库包含完整 `grok` TUI / agent 源码：
 
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
@@ -182,7 +176,7 @@ context_window = 32768
 
 ```mermaid
 flowchart TB
-  UI["Buzz Desktop<br/>频道 + Coding Workspace"]
+  UI["Bony 桌面端<br/>频道 + Coding Workspace"]
   ACP["buzz-acp<br/>会话池与队列"]
   Agent["grok agent stdio<br/>MvpAgent / SessionActor"]
   Sample["采样 · 多 backend"]
@@ -207,7 +201,19 @@ flowchart TB
 - ACP 会话层：[`third_party/buzz/crates/buzz-acp`](third_party/buzz/crates/buzz-acp)
 - 文字说明：[`ARCHITECTURE.md`](ARCHITECTURE.md)
 
-Buzz Desktop 通过 ACP 驱动本机 Coding Agent 子进程；工程目录、会话和队列由 Rust 层管理。
+Bony 桌面端通过 ACP 驱动本机 Coding Agent 子进程；工程目录、会话和队列由 Rust 层管理。Rust crate 与目录使用 `buzz-*` 技术前缀。
+
+---
+
+## 贡献者
+
+| 名称 | 角色 |
+|------|------|
+| [phuhao（@phuhao00）](https://github.com/phuhao00) | Bony 创建者、产品负责人和核心维护者 |
+| [OpenAI Codex](https://openai.com/codex/) | Agentic 编程协作：设计、实现、测试与文档 |
+| [Cursor](https://www.cursor.com/) | AI 编程协作：代码探索、重构与交互迭代 |
+
+Codex 与 Cursor 作为 AI 开发协作工具在此透明列出。GitHub 的 Contributors 侧栏只会自动统计与提交关联的 GitHub 账号，因此不会把 AI 工具显示成独立账号。
 
 ---
 
@@ -216,7 +222,7 @@ Buzz Desktop 通过 ACP 驱动本机 Coding Agent 子进程；工程目录、会
 | 层级 | 来源 |
 |------|------|
 | Agent / TUI / 工具栈 | 定期对齐 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（`Synced from monorepo`） |
-| 产品壳 | 本仓库自有：Buzz Desktop 集成、`bony-monitor`、品牌与协作文档 |
+| 产品层 | 本仓库自有：Bony 桌面集成、`bony-monitor`、品牌与协作文档 |
 | 源码钉 | 根目录 [`SOURCE_REV`](SOURCE_REV) 记录上游 monorepo 同步点 |
 
 ### 同步上游
@@ -229,24 +235,20 @@ git rebase upstream/main
 git push --force-with-lease origin main
 ```
 
-回滚可用 tag `backup/pre-upstream-sync`（若本地仍保留）。
-
----
-
 ## 仓库布局（摘要）
 
 | 路径 | 说明 |
 |------|------|
-| `third_party/buzz/desktop` | 唯一桌面客户端，包含频道与 Coding Workspace |
+| `third_party/buzz/desktop` | Bony 桌面客户端实现，包含频道与 Coding Workspace；技术包名为 `buzz-desktop` |
 | `third_party/buzz/crates/buzz-acp` | Coding Agent ACP 会话池与队列 |
 | `crates/codegen/bony-monitor` | 架构与改动影响 Web 监控 |
 | `crates/codegen/xai-grok-shell` | Agent 运行时、stdio / headless |
 | `crates/codegen/xai-grok-pager*` | 官方 TUI（`grok`） |
 | `crates/codegen/xai-grok-agent` / `*-tools` / `*-workspace` | Agent、工具、工作区 |
 | `crates/codegen/xai-acp-lib` | ACP stdio 辅助库（桌面桥接使用） |
-| `docs/` | 截图与架构图（含 Buzz 房间协作） |
-| `scripts/buzz-room/` | 本地 Buzz 房间：relay / Desktop / 外部 agent |
-| `third_party/buzz` | Buzz 源码（in-tree 工作区成员） |
+| `docs/` | Bony 文档、截图与架构图 |
+| `scripts/buzz-room/` | Bony 本地协作栈的启动入口：relay / Desktop / 外部 agent |
+| `third_party/buzz` | Bony 内嵌并改造的 Block/Buzz 底层源码（in-tree 工作区成员） |
 | `SOURCE_REV` | 上游 monorepo 同步修订 |
 
 完整上游说明见各 crate 文档与 [user guide](crates/codegen/xai-grok-pager/docs/user-guide/)。
@@ -267,6 +269,8 @@ cargo build -p buzz-desktop
 
 建议忽略本地产物：`target/`、`.tools/`、`.local-dist/`、各类 `*.log`。
 
+---
+
 ## 文档与许可
 
 - 项目规范：[`docs/PROJECT_STANDARDS.md`](docs/PROJECT_STANDARDS.md)
@@ -275,11 +279,6 @@ cargo build -p buzz-desktop
 - 认证：[`02-authentication.md`](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)
 - 自定义模型：[`11-custom-models.md`](crates/codegen/xai-grok-pager/docs/user-guide/11-custom-models.md)
 - 上游开源仓：[`xai-org/grok-build`](https://github.com/xai-org/grok-build)
+- 许可证：[`LICENSE`](LICENSE) 及各 crate 声明
 
-本仓库含从 SpaceXAI monorepo / `xai-org/grok-build` 同步的 agent / TUI 源码；Buzz Desktop 是唯一桌面产品层。许可证见根目录 [`LICENSE`](LICENSE) 及各 crate 声明。
-
----
-
-## 致谢
-
-Agent 运行时与 `grok` CLI 能力来源于 [SpaceXAI / Grok Build](https://x.ai/cli) 与 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)。Bony Build 在 Buzz Desktop 中提供本地工程 Coding Workspace、多 Agent 房间与改动可观测能力。
+Agent 运行时与 `grok` CLI 能力来源于 [SpaceXAI / Grok Build](https://x.ai/cli) 与 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)；房间与客户端基础代码来源于 [Block/Buzz](third_party/buzz)。

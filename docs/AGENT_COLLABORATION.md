@@ -1,4 +1,4 @@
-# Bony Build 开发 Agent 协作规范
+# Bony 开发 Agent 协作规范
 
 > 本规范定义编码 Agent 的分工、所有权、交接与验证。项目硬约束仍以 `docs/PROJECT_STANDARDS.md`、根 `AGENTS.md` 和 `.cursor/rules/*` 为准；Buzz 房间运行时路由另见 `docs/buzz-room-agent-orchestration-plan.md`。
 

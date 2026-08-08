@@ -1,14 +1,14 @@
 ---
 name: buzz-room-build-gate
 description: >-
-  Strictly gates Buzz Desktop / room stack compile and launch under bony-build.
+  Strictly gates Bony desktop / room stack compilation and launch.
   One monorepo Cargo workspace (root Cargo.toml), one root target/, Buzz in-tree.
   Compile only with cargo -p from repo root. Start only via start-room-stack /
   start-desktop / stop-room-stack. No build/mint/register scripts. local-stt ON
   (sherpa shared DLLs). Use when building/running Buzz, Desktop, or relay.
 ---
 
-# Buzz Room 编译闸门（严格）
+# Bony 编译闸门（严格）
 
 配合总规范：`docs/PROJECT_STANDARDS.md`、`.cursor/rules/*`。冲突时以 **PROJECT_STANDARDS + rules** 为准。
 
