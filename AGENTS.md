@@ -1,4 +1,4 @@
-# Agent 须知（bony-build）
+# Agent 须知（Bony）
 
 完整规范：[`docs/PROJECT_STANDARDS.md`](docs/PROJECT_STANDARDS.md)  
 Cursor 规则：`.cursor/rules/`（始终生效）
