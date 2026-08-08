@@ -210,8 +210,8 @@ Bony 桌面端通过 ACP 驱动本机 Coding Agent 子进程；工程目录、�
 | 名称 | 角色 |
 |------|------|
 | [phuhao（@phuhao00）](https://github.com/phuhao00) | Bony 创建者、产品负责人和核心维护者 |
-| [OpenAI Codex](https://openai.com/codex/) | Agentic 编程协作：设计、实现、测试与文档 |
-| [Cursor](https://www.cursor.com/) | AI 编程协作：代码探索、重构与交互迭代 |
+| [OpenAI Codex](https://github.com/apps/openai-codex) | Agentic 编程协作：设计、实现、测试与文档 |
+| [Cursor Agent](https://github.com/cursoragent) | AI 编程协作：代码探索、重构与交互迭代 |
 
 Codex 与 Cursor 作为 AI 开发协作工具在此透明列出。GitHub 的 Contributors 侧栏只会自动统计与提交关联的 GitHub 账号，因此不会把 AI 工具显示成独立账号。
 

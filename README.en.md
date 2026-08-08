@@ -210,8 +210,8 @@ Bony drives local coding-agent subprocesses over ACP; Rust owns project paths, s
 | Name | Role |
 |------|------|
 | [phuhao (@phuhao00)](https://github.com/phuhao00) | Creator, product lead, and core maintainer of Bony |
-| [OpenAI Codex](https://openai.com/codex/) | Agentic coding collaborator across design, implementation, testing, and documentation |
-| [Cursor](https://www.cursor.com/) | AI coding collaborator for code exploration, refactoring, and interaction iteration |
+| [OpenAI Codex](https://github.com/apps/openai-codex) | Agentic coding collaborator across design, implementation, testing, and documentation |
+| [Cursor Agent](https://github.com/cursoragent) | AI coding collaborator for code exploration, refactoring, and interaction iteration |
 
 Codex and Cursor are listed transparently as AI development collaborators. GitHub's Contributors sidebar only counts GitHub accounts associated with commits, so AI tools do not appear there as standalone accounts.
 
