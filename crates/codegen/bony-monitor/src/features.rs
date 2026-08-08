@@ -158,8 +158,8 @@ fn auto_feature_for_path(path: &str) -> Option<FeatureHit> {
     let norm = path.replace('\\', "/");
     let file_name = PathFile::new(&norm);
     let stem = file_name.stem?;
-    let crate_name = if norm.contains("bony-build/") {
-        "bony-build"
+    let crate_name = if norm.contains("third_party/buzz/desktop/") {
+        "buzz-desktop"
     } else if norm.contains("bony-monitor/") {
         "bony-monitor"
     } else if norm.starts_with("scripts/") {
@@ -173,7 +173,7 @@ fn auto_feature_for_path(path: &str) -> Option<FeatureHit> {
 
     let id = format!("auto-{crate_name}-{stem}");
     let label = match crate_name {
-        "bony-build" => format!("桌面·{stem}"),
+        "buzz-desktop" => format!("桌面·{stem}"),
         "bony-monitor" => format!("监控·{stem}"),
         "scripts" => format!("脚本·{stem}"),
         other => format!("{other}·{stem}"),

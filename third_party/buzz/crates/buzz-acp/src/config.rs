@@ -700,7 +700,7 @@ pub(crate) fn normalize_agent_command_identity(command: &str) -> String {
 fn default_agent_args(command: &str) -> Option<Vec<String>> {
     match normalize_agent_command_identity(command).as_str() {
         "goose" => Some(vec!["acp".to_string()]),
-        // Grok / bony-build ACP: `grok agent stdio` (not a bare `acp` subcommand).
+        // Grok speaks ACP via `grok agent stdio` (not a bare `acp` subcommand).
         "grok" | "xai-grok" => Some(vec!["agent".to_string(), "stdio".to_string()]),
         "codex" | "codex-acp" | "claude-agent-acp" | "claude-code-acp" | "claude-code"
         | "claudecode" | "buzz-agent" => Some(Vec::new()),

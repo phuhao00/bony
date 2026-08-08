@@ -1,8 +1,8 @@
 ---
 name: upstream-feature-sync
 description: >-
-  Safely rebases xai-org/grok-build into bony-build while preserving Bony Build
-  product shell, Buzz local multi-agent room (SQLite / in-process pubsub /
+  Safely rebases xai-org/grok-build into this repository while preserving the
+  Buzz Desktop product shell and local multi-agent room (SQLite / in-process pubsub /
   LanceDB), and ZeroClaw / OpenMontage overlays. Use when the user asks to
   rebase/sync/merge upstream grok-build, 监测上游, periodically adopt monorepo
   updates, or keep product + Buzz features when rewriting against upstream/main.
@@ -25,18 +25,18 @@ git remote add upstream https://github.com/xai-org/grok-build.git
 
 ## Hard rule: what must never die
 
-### A) Bony product shell (prefer **ours** / commit being replayed)
+### A) Product shell (prefer **ours** / commit being replayed)
 
 | Path | Why |
 |------|-----|
-| `crates/codegen/bony-build/**` | egui desktop, Unity/Bevy, ACP bridge, plugins |
+| `third_party/buzz/desktop/**` | sole Tauri desktop shell, Coding Workspace, local integration |
+| `third_party/buzz/crates/buzz-acp/**` | shared ACP pool and coding-agent sessions |
 | `crates/codegen/bony-monitor/**` | local impact / architecture web |
 | `crates/codegen/bony-room-tools-mcp/**` | room helpers MCP |
 | `crates/codegen/bony-docs-tools-mcp/**` | DocSmith tool MCP |
-| `.github/workflows/release-desktop.yml` | desktop zip release |
-| `scripts/run-desktop.ps1`, `run-bony-build.ps1`, `run-monitor.ps1` | product launch only |
+| `scripts/buzz-room/start-desktop.ps1` | product launch only |
 | Root `README.md` / `README.en.md` / `ARCHITECTURE.md` | brand + Buzz + BYOK docs |
-| `docs/PROJECT_STANDARDS.md`, `docs/buzz-room-*.md`, buzz screenshots | product norms |
+| `docs/PROJECT_STANDARDS.md`, `docs/AGENT_COLLABORATION.md`, `docs/buzz-room-*.md`, buzz screenshots | product norms |
 | `.cursor/rules/**`, `.cursor/skills/**`, `AGENTS.md` | agent norms |
 
 ### B) Buzz local multi-agent room (prefer **ours** product commits)
@@ -57,9 +57,8 @@ If upstream ever adds files that name “Postgres-only relay” into **our** Buz
 
 ### C) Partner overlays (prefer **ours**)
 
-- ZeroClaw: `zeroclaw.rs`, `zeroclaw_bridge.rs`, weather asset `assets/zeroclaw_weather_tool.rs`
-- OpenMontage: `openmontage.rs` skill wiring / install UX
-- Intent router / route cards / ACP bridges in bony-build
+- ZeroClaw / OpenMontage: room prompts, managed install discovery, and `bony-room-tools-mcp`
+- Coding agents: Buzz Desktop Coding Workspace, room seed contracts, and `buzz-acp`
 
 ### D) Prefer **upstream** only for pure runtime
 
@@ -128,9 +127,10 @@ git rebase --abort
 3. Preserve check (paths must exist):
 
 ```text
-crates/codegen/bony-build/src/{app,zeroclaw,openmontage,agent_bridge}.rs
-crates/codegen/bony-build/assets/zeroclaw_weather_tool.rs
 crates/codegen/bony-monitor/src/main.rs
+third_party/buzz/desktop/src-tauri/src/commands/coding_workspace.rs
+third_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx
+third_party/buzz/crates/buzz-acp/src/pool.rs
 third_party/buzz/crates/buzz-relay/src/main.rs
 third_party/buzz/crates/buzz-db/src/lib.rs
 scripts/buzz-room/start-room-stack.ps1
@@ -141,7 +141,7 @@ docs/buzz-room-collab.md
 
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
-cargo check -p bony-build -p bony-monitor -p buzz-relay -p buzz-db
+cargo check -p buzz-desktop -p bony-monitor -p buzz-relay -p buzz-db
 ```
 
 5. Optional smoke: room stack start only if user wants; do not invent extra scripts.
@@ -187,7 +187,7 @@ Report template:
 | OpenMontage | install root | … | pull skill tree |
 
 ## 保留项自检清单（若 rebase）
-- bony-build / bony-monitor / buzz room SQLite 栈
+- Buzz Desktop / bony-monitor / buzz room SQLite 栈
 - 启动白名单 scripts/buzz-room/start-*
 - 不恢复 Docker/Postgres/Redis 为默认依赖
 ```
@@ -198,11 +198,11 @@ Report template:
 
 ### ZeroClaw managed clone
 
-Keep weather overlay from `crates/codegen/bony-build/assets/zeroclaw_weather_tool.rs` after any ZC pull; rebuild managed `zeroclaw` release bin when patch/stale.
+Keep room contracts and managed-install discovery after any ZeroClaw pull; rebuild the managed `zeroclaw` release binary when stale.
 
 ### OpenMontage
 
-`git pull` only under install root; **do not** replace bony `openmontage.rs` with upstream pipe tree.
+`git pull` only under the install root; preserve the room prompt and `bony-room-tools-mcp` integration.
 
 ---
 

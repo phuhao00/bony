@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Performance Optimization"
+  short_description: "Optimize Rust latency, memory, and I/O from measured baselines"
+  default_prompt: "Use $rust-performance-optimization to measure and optimize this Rust performance problem."

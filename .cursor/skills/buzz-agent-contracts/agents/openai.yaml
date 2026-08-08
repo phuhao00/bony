@@ -1,0 +1,4 @@
+interface:
+  display_name: "Buzz Agent Contracts"
+  short_description: "Design dynamic Buzz agents, routing, and safe lifecycle"
+  default_prompt: "Use $buzz-agent-contracts to design this dynamic or user-created Buzz agent contract and registry lifecycle."

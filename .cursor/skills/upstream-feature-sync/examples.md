@@ -18,7 +18,7 @@ Agent:
 4. `Cargo.lock` conflict → `cargo generate-lockfile`  
 5. Keep `third_party/buzz/**`, `bony-*`, room start scripts  
 6. `SOURCE_REV` = `upstream/main`  
-7. `cargo check -p bony-build -p bony-monitor -p buzz-relay -p buzz-db`  
+7. `cargo check -p buzz-desktop -p bony-monitor -p buzz-relay -p buzz-db`
 8. Push only if user asks: `git push --force-with-lease origin main`
 
 ## Wrong outcome (do not ship)

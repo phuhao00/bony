@@ -84,7 +84,6 @@ pub fn rule_covers_path(f: &FeatureRule, path: &str) -> bool {
 
 pub struct CatalogCache {
     repo: PathBuf,
-    catalog_dir: PathBuf,
     features_toml: PathBuf,
     inner: RwLock<CachedState>,
 }
@@ -101,7 +100,6 @@ impl CatalogCache {
         let features_toml = catalog_dir.join("features.toml");
         let cache = Self {
             repo,
-            catalog_dir,
             features_toml,
             inner: RwLock::new(CachedState {
                 snapshot: CatalogSnapshot::empty(),
@@ -132,7 +130,7 @@ impl CatalogCache {
             return;
         }
 
-        match load_snapshot(&self.repo, &self.features_toml, &self.catalog_dir) {
+        match load_snapshot(&self.repo, &self.features_toml) {
             Ok(snap) => {
                 let mut guard = self.inner.write().expect("catalog lock");
                 guard.snapshot = snap;
@@ -147,23 +145,13 @@ impl CatalogCache {
     }
 }
 
-fn load_snapshot(repo: &Path, features_toml: &Path, catalog_dir: &Path) -> Result<CatalogSnapshot> {
+fn load_snapshot(repo: &Path, features_toml: &Path) -> Result<CatalogSnapshot> {
     let rules = load_features_toml(features_toml)?;
     let discovered = scan_modules(repo);
     let desktop_module_count = discovered
         .iter()
-        .filter(|d| d.crate_name == "bony-build")
+        .filter(|d| d.crate_name == "buzz-desktop")
         .count();
-
-    // Persist discovered.json for sync script / git visibility (best effort).
-    let discovered_path = catalog_dir.join("discovered.json");
-    if let Ok(text) = serde_json::to_string_pretty(&serde_json::json!({
-        "generated_at": chrono_like_now(),
-        "modules": discovered,
-    })) {
-        let _ = std::fs::create_dir_all(catalog_dir);
-        let _ = std::fs::write(discovered_path, text);
-    }
 
     Ok(CatalogSnapshot {
         rules,
@@ -197,13 +185,16 @@ fn load_features_toml(path: &Path) -> Result<Vec<FeatureRule>> {
 fn scan_modules(repo: &Path) -> Vec<DiscoveredFile> {
     let mut out = Vec::new();
     let roots = [
-        ("bony-build", repo.join("crates/codegen/bony-build/src")),
+        (
+            "buzz-desktop",
+            repo.join("third_party/buzz/desktop/src-tauri/src"),
+        ),
         ("bony-monitor", repo.join("crates/codegen/bony-monitor/src")),
     ];
     for (crate_name, dir) in roots {
         collect_rs(&dir, crate_name, repo, &mut out);
     }
-    for script in ["scripts/run-desktop.ps1", "scripts/run-monitor.ps1"] {
+    for script in ["scripts/buzz-room/start-desktop.ps1"] {
         let p = repo.join(script);
         if p.is_file() {
             out.push(DiscoveredFile {
@@ -257,7 +248,7 @@ fn file_mtime(path: &Path) -> Option<SystemTime> {
 fn scan_tree_mtime(repo: &Path) -> Option<SystemTime> {
     let mut latest: Option<SystemTime> = None;
     for dir in [
-        repo.join("crates/codegen/bony-build/src"),
+        repo.join("third_party/buzz/desktop/src-tauri/src"),
         repo.join("crates/codegen/bony-monitor/src"),
         repo.join("scripts"),
     ] {
@@ -283,9 +274,4 @@ fn bump_mtime_dir(dir: &Path, latest: &mut Option<SystemTime>) {
             });
         }
     }
-}
-
-fn chrono_like_now() -> String {
-    // Avoid extra chrono dep; ISO-ish local stamp is enough for the JSON file.
-    format!("{:?}", SystemTime::now())
 }

@@ -10,7 +10,6 @@ aws-creds = { git = "https://github.com/tlongwell-block/rust-s3", rev = "c9fce36
 resolver = "2"
 members = [
     "crates/build/xai-proto-build",
-    "crates/codegen/bony-build",
     "crates/codegen/bony-monitor",
     "crates/codegen/bony-room-tools-mcp",
     "crates/codegen/bony-docs-tools-mcp",
@@ -501,20 +500,6 @@ inherits = "release-dist"
 # All settings now match the parent — this is an intentional alias.
 
 
-[profile.dev.package.bony-build]
-# egui UI tessellation is painful at opt-level 0; keep local `cargo run` usable.
-opt-level = 2
-
-[profile.dev.package.egui]
-opt-level = 2
-[profile.dev.package.epaint]
-opt-level = 2
-[profile.dev.package.eframe]
-opt-level = 2
-[profile.dev.package.egui_glow]
-opt-level = 2
-[profile.dev.package.epaint_default_fonts]
-opt-level = 2
 
 [profile.bench]
 debug = true

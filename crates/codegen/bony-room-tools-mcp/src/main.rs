@@ -5,8 +5,6 @@
 //! - `openmontage_status` — check managed OpenMontage install readiness
 //! - `openmontage_preflight` — run provider menu summary against the venv
 //! - `openmontage_run` — run a Python helper under the OpenMontage root
-//! - `coding_task_status` — check whether bony-build desktop binary is ready
-//! - `open_coding_task` — launch a detached Bony Build window for heavy coding
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -14,7 +12,9 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+
+const OPENMONTAGE_PREFLIGHT_CODE: &str = "from tools.tool_registry import registry; import json; registry.discover(); print(json.dumps(registry.provider_menu_summary(), indent=2))";
 
 fn main() {
     if let Err(e) = run() {
@@ -138,7 +138,7 @@ fn tool_defs() -> Vec<Value> {
                 "properties": {
                     "root": {
                         "type": "string",
-                        "description": "OpenMontage root (default: %USERPROFILE%/.bony-build/openmontage)"
+                        "description": "OpenMontage root (default: managed %USERPROFILE%/.bony-build/openmontage, with legacy %USERPROFILE%/OpenMontage discovery)"
                     }
                 }
             }
@@ -155,7 +155,7 @@ fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "openmontage_run",
-            "description": "Run a Python script file under the OpenMontage root with the managed venv. Path is relative to root unless absolute. Prefer small helper scripts over python -c.",
+            "description": "Run an existing OpenMontage Python tool/script with the managed venv. Path is relative to root unless absolute; do not generate ad-hoc orchestration scripts.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -173,45 +173,6 @@ fn tool_defs() -> Vec<Value> {
                 "required": ["script"]
             }
         }),
-        json!({
-            "name": "coding_task_status",
-            "description": "Check whether the Bony Build desktop binary (and preferred grok CLI) are available to open a detached coding window.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "bony_root": {
-                        "type": "string",
-                        "description": "Monorepo root (default: BONY_ROOT env or cwd walk)"
-                    }
-                }
-            }
-        }),
-        json!({
-            "name": "open_coding_task",
-            "description": "Launch a NEW Bony Build desktop window for a heavy multi-file coding task. Detached (does not wait). Prefer this over in-chat multi-file coding. Args: repo_path, prompt (task description), optional title.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "repo_path": {
-                        "type": "string",
-                        "description": "Repository / project root for --cwd"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Initial user task message seeded into the new window"
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Optional task title for the sidebar"
-                    },
-                    "bony_root": {
-                        "type": "string",
-                        "description": "Monorepo root used to locate bony-build.exe / open-coding-task.ps1"
-                    }
-                },
-                "required": ["prompt"]
-            }
-        }),
     ]
 }
 
@@ -221,8 +182,6 @@ fn call_tool(name: &str, args: &Value) -> Value {
         "openmontage_status" => tool_openmontage_status(args),
         "openmontage_preflight" => tool_openmontage_preflight(args),
         "openmontage_run" => tool_openmontage_run(args),
-        "coding_task_status" => tool_coding_task_status(args),
-        "open_coding_task" => tool_open_coding_task(args),
         other => Err(format!("unknown tool: {other}")),
     };
     match result {
@@ -254,9 +213,8 @@ fn tool_unity_cli(args: &Value) -> std::result::Result<String, String> {
     }
     let cwd = args.get("cwd").and_then(|v| v.as_str()).map(PathBuf::from);
     let timeout = timeout_from(args, 120, 1800);
-    let bin = resolve_unity_bin().ok_or_else(|| {
-        "unity CLI not found on PATH or default install locations".to_string()
-    })?;
+    let bin = resolve_unity_bin()
+        .ok_or_else(|| "unity CLI not found on PATH or default install locations".to_string())?;
     run_capture(&bin, &tokens, cwd.as_deref(), timeout)
 }
 
@@ -272,25 +230,11 @@ fn tool_openmontage_preflight(args: &Value) -> std::result::Result<String, Strin
     if !py.is_file() {
         return Err(format!("venv python missing: {}", py.display()));
     }
-    // Prefer a small helper if present; else dump a short diagnostic.
-    let helper = root.join("scripts").join("provider_menu_summary.py");
-    if helper.is_file() {
-        return run_capture(
-            &py,
-            &[helper.to_string_lossy().into_owned()],
-            Some(&root),
-            Duration::from_secs(120),
-        );
-    }
-    // Fallback: import check only.
     run_capture(
         &py,
-        &[
-            "-c".into(),
-            "import sys; print('python', sys.version); print('root_ok', True)".into(),
-        ],
+        &["-c".into(), OPENMONTAGE_PREFLIGHT_CODE.into()],
         Some(&root),
-        Duration::from_secs(30),
+        Duration::from_secs(120),
     )
 }
 
@@ -326,179 +270,6 @@ fn tool_openmontage_run(args: &Value) -> std::result::Result<String, String> {
     run_capture(&py, &tokens, Some(&root), timeout)
 }
 
-fn bony_root_from(args: &Value) -> PathBuf {
-    if let Some(p) = args.get("bony_root").and_then(|v| v.as_str()) {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
-    }
-    if let Ok(p) = std::env::var("BONY_ROOT") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
-    }
-    // Walk up from current_exe / cwd looking for workspace Cargo.toml with bony-build member.
-    if let Ok(mut dir) = std::env::current_dir() {
-        for _ in 0..8 {
-            let marker = dir.join("crates").join("codegen").join("bony-build");
-            if marker.is_dir() {
-                return dir;
-            }
-            if !dir.pop() {
-                break;
-            }
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-}
-
-fn find_bony_build_exe(root: &Path) -> Option<PathBuf> {
-    for prof in ["release", "debug"] {
-        let p = root.join("target").join(prof).join("bony-build.exe");
-        if p.is_file() {
-            return Some(p);
-        }
-        let p2 = root.join("target").join(prof).join("bony-build");
-        if p2.is_file() {
-            return Some(p2);
-        }
-    }
-    which("bony-build")
-}
-
-fn tool_coding_task_status(args: &Value) -> std::result::Result<String, String> {
-    let root = bony_root_from(args);
-    let exe = find_bony_build_exe(&root);
-    let script = root
-        .join("scripts")
-        .join("buzz-room")
-        .join("open-coding-task.ps1");
-    let grok = which("grok.cmd")
-        .or_else(|| which("grok"))
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(not found on PATH)".into());
-    Ok(format!(
-        "bony_root={}\nbony_build_exe={}\nopen_coding_task_script={}\ngrok={}\nready={}",
-        root.display(),
-        exe.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(missing — cargo build -p bony-build --release)".into()),
-        if script.is_file() {
-            script.display().to_string()
-        } else {
-            "(missing)".into()
-        },
-        grok,
-        exe.is_some()
-    ))
-}
-
-fn tool_open_coding_task(args: &Value) -> std::result::Result<String, String> {
-    let prompt = args
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "prompt is required".to_string())?;
-    let root = bony_root_from(args);
-    let repo = args
-        .get("repo_path")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.clone());
-    let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("");
-
-    let script = root
-        .join("scripts")
-        .join("buzz-room")
-        .join("open-coding-task.ps1");
-    if script.is_file() {
-        let mut cmd = Command::new("powershell");
-        cmd.args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &script.to_string_lossy(),
-            "-RepoPath",
-            &repo.to_string_lossy(),
-            "-Prompt",
-            prompt,
-            "-BonyRoot",
-            &root.to_string_lossy(),
-        ]);
-        if !title.is_empty() {
-            cmd.args(["-Title", title]);
-        }
-        configure_no_window(&mut cmd);
-        let out = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| format!("spawn open-coding-task.ps1: {e}"))?;
-        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-        let err = String::from_utf8_lossy(&out.stderr);
-        if !err.trim().is_empty() {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&err);
-        }
-        if !out.status.success() {
-            return Err(if text.is_empty() {
-                format!("open-coding-task failed: {}", out.status)
-            } else {
-                text
-            });
-        }
-        return Ok(text);
-    }
-
-    // Fallback: spawn bony-build.exe directly without the PowerShell wrapper.
-    let exe = find_bony_build_exe(&root).ok_or_else(|| {
-        format!(
-            "bony-build.exe not found under {}/target/{{release,debug}} — run: cargo build -p bony-build --release",
-            root.display()
-        )
-    })?;
-    let tmp = std::env::temp_dir().join(format!(
-        "bony-seed-{}.txt",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    ));
-    std::fs::write(&tmp, prompt).map_err(|e| format!("write seed prompt: {e}"))?;
-    let mut cmd = Command::new(&exe);
-    cmd.arg("--cwd")
-        .arg(&repo)
-        .arg("--seed-prompt-file")
-        .arg(&tmp);
-    if !title.is_empty() {
-        cmd.arg("--task-title").arg(title);
-    }
-    cmd.current_dir(&repo)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    let child = cmd
-        .spawn()
-        .map_err(|e| format!("spawn {}: {e}", exe.display()))?;
-    Ok(format!(
-        "started bony-build pid={} cwd={} seed={}",
-        child.id(),
-        repo.display(),
-        tmp.display()
-    ))
-}
-
 fn openmontage_root(args: &Value) -> PathBuf {
     if let Some(p) = args.get("root").and_then(|v| v.as_str()) {
         return PathBuf::from(p);
@@ -513,11 +284,19 @@ fn openmontage_root(args: &Value) -> PathBuf {
 
 fn dirs_openmontage_default() -> PathBuf {
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-        return PathBuf::from(home)
-            .join(".bony-build")
-            .join("openmontage");
+        return openmontage_default_from_home(&PathBuf::from(home));
     }
     PathBuf::from(".bony-build").join("openmontage")
+}
+
+fn openmontage_default_from_home(home: &Path) -> PathBuf {
+    let managed = home.join(".bony-build").join("openmontage");
+    let legacy = home.join("OpenMontage");
+    if managed.join("AGENT_GUIDE.md").is_file() || !legacy.join("AGENT_GUIDE.md").is_file() {
+        managed
+    } else {
+        legacy
+    }
 }
 
 fn venv_python(root: &Path) -> PathBuf {
@@ -535,8 +314,8 @@ fn openmontage_check(root: &Path) -> &'static str {
     if !venv_python(root).is_file() {
         return "missing_venv";
     }
-    // Lightweight marker of a real clone.
-    if root.join("pyproject.toml").is_file() || root.join("README.md").is_file() {
+    // Agent contract is the stable marker used by the desktop integration too.
+    if root.join("AGENT_GUIDE.md").is_file() {
         return "ready";
     }
     "incomplete"
@@ -557,7 +336,10 @@ fn resolve_unity_bin() -> Option<PathBuf> {
     }
     // Windows Unity Hub CLI default.
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let candidate = PathBuf::from(local).join("Unity").join("bin").join("unity.exe");
+        let candidate = PathBuf::from(local)
+            .join("Unity")
+            .join("bin")
+            .join("unity.exe");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -611,7 +393,9 @@ fn run_capture(
         cmd.current_dir(cwd);
     }
     configure_no_window(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| format!("spawn {}: {e}", bin.display()))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
     let started = std::time::Instant::now();
     loop {
         match child.try_wait() {
@@ -677,5 +461,35 @@ fn configure_no_window(cmd: &mut Command) {
     #[cfg(not(windows))]
     {
         let _ = cmd;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_uses_real_provider_menu() {
+        assert!(OPENMONTAGE_PREFLIGHT_CODE.contains("registry.discover()"));
+        assert!(OPENMONTAGE_PREFLIGHT_CODE.contains("provider_menu_summary"));
+    }
+
+    #[test]
+    fn legacy_install_is_discovered_before_managed_install_exists() {
+        let home = std::env::temp_dir().join(format!(
+            "bony-room-openmontage-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let legacy = home.join("OpenMontage");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("AGENT_GUIDE.md"), "contract").unwrap();
+
+        assert_eq!(openmontage_default_from_home(&home), legacy);
+
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

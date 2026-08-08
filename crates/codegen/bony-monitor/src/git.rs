@@ -252,7 +252,7 @@ mod tests {
     fn parses_single_commit_chunk() {
         let sample = "\x1e\
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\x1fbbbbbbb\x1fAdd feature\x1fImpact: better UI\nRisk: none\x1fAda\x1fada@ex.com\x1f2026-07-17T00:00:00+08:00\n\
-10\t2\tcrates/codegen/bony-build/src/app.rs\n";
+10\t2\tthird_party/buzz/desktop/src/features/channels/ui/CodingWorkspaceScreen.tsx\n";
         let catalog = CatalogSnapshot::empty();
         let entries = parse_git_log(sample, &catalog).unwrap();
         assert_eq!(entries.len(), 1);

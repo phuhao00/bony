@@ -10,8 +10,9 @@
 //! no hand-written `managed-agents.json`, no externally-launched `buzz-acp`
 //! processes, no keyring writes past the OS credential-store size cap.
 //!
-//! Idempotent by name/channel-name: a record or channel that already exists
-//! is left untouched. Safe to call on every Desktop launch — see the
+//! Idempotent by name/channel-name: existing records are reused, with narrow
+//! built-in migrations for room-owned configuration such as Coding Workspace. Safe
+//! to call on every Desktop launch — see the
 //! post-community-init hook in `App.tsx`.
 
 use std::collections::{BTreeMap, HashSet};
@@ -20,12 +21,17 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
-use crate::managed_agents::{load_managed_agents, BackendKind, CreateManagedAgentRequest, RespondTo};
+use crate::managed_agents::{
+    load_managed_agents, save_managed_agents, BackendKind, CreateManagedAgentRequest, RespondTo,
+};
+use crate::util::now_iso;
 
 use super::{add_channel_members, create_channel, create_managed_agent, get_channels};
 
 const ROOM_CHANNEL_NAME: &str = "Local Room";
 const ROOM_CHANNEL_DESCRIPTION: &str = "Local room stack agents";
+const CODING_WORKSPACE_CLIENT_MARKER: &str = "coding-workspace-v1";
+const CODING_WORKSPACE_PROMPT_REVISION: &str = "coding-workspace-contract-v2";
 
 const GROK_PROMPT: &str =
     include_str!("../../../../../../scripts/buzz-room/prompts/grok-coordinator.md");
@@ -39,7 +45,7 @@ const DOCSMITH_PROMPT: &str =
     include_str!("../../../../../../scripts/buzz-room/prompts/docsmith-specialist.md");
 
 /// One fixed room-agent seat. `name` is the idempotency key: a managed-agent
-/// record whose name already matches (case-insensitively) is left alone, so
+/// record whose name already matches (case-insensitively) is reused, so
 /// calling `seed_room_agents` on every launch never mints duplicates.
 struct RoomAgentSpec {
     name: &'static str,
@@ -77,11 +83,20 @@ fn zeroclaw_command() -> String {
 /// Working-directory root ZeroClaw's OpenMontage counterpart reads from.
 fn openmontage_root() -> Option<String> {
     dirs::home_dir().map(|home| {
-        home.join(".bony-build")
-            .join("openmontage")
+        openmontage_root_from_home(&home)
             .to_string_lossy()
             .into_owned()
     })
+}
+
+fn openmontage_root_from_home(home: &std::path::Path) -> std::path::PathBuf {
+    let managed = home.join(".bony-build").join("openmontage");
+    let legacy = home.join("OpenMontage");
+    if managed.join("AGENT_GUIDE.md").is_file() || !legacy.join("AGENT_GUIDE.md").is_file() {
+        managed
+    } else {
+        legacy
+    }
 }
 
 fn room_agent_specs() -> [RoomAgentSpec; 5] {
@@ -171,6 +186,86 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
     ]
 }
 
+fn room_agent_system_prompt(spec: &RoomAgentSpec) -> String {
+    format!(
+        "{}\n\n(Local room agent: {} - {})",
+        spec.system_prompt, spec.name, spec.about
+    )
+}
+
+fn needs_coding_workspace_prompt_migration(system_prompt: Option<&str>) -> bool {
+    !system_prompt
+        .unwrap_or_default()
+        .contains(CODING_WORKSPACE_PROMPT_REVISION)
+}
+
+/// Upgrade the fixed Grok room seat in place when a previous release seeded
+/// the pre-workbench coordinator prompt. The name remains the room-seat
+/// idempotency key; user-created personas and unrelated Grok agents are not
+/// touched. A running seat is picked up by the existing spawn-config drift
+/// policy, which restarts it once idle.
+fn reconcile_room_agent_contracts(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let grok_spec = room_agent_specs()
+        .into_iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case("Grok"))
+        .ok_or_else(|| "Grok room agent spec is missing".to_string())?;
+    let openmontage_spec = room_agent_specs()
+        .into_iter()
+        .find(|spec| spec.name.eq_ignore_ascii_case("OpenMontage"))
+        .ok_or_else(|| "OpenMontage room agent spec is missing".to_string())?;
+    let desired_grok_prompt = room_agent_system_prompt(&grok_spec);
+    let desired_openmontage_prompt = room_agent_system_prompt(&openmontage_spec);
+    let desired_openmontage_root = openmontage_root();
+
+    let _store_guard = state
+        .managed_agents_store_lock
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let mut records = load_managed_agents(app)?;
+    let mut changed = false;
+    for record in &mut records {
+        let is_fixed_grok_seat = !record.pubkey.trim().is_empty()
+            && record.persona_id.is_none()
+            && record.name.eq_ignore_ascii_case("Grok");
+        if is_fixed_grok_seat
+            && needs_coding_workspace_prompt_migration(record.system_prompt.as_deref())
+        {
+            record.system_prompt = Some(desired_grok_prompt.clone());
+            record.updated_at = now_iso();
+            changed = true;
+        }
+
+        let is_fixed_openmontage_seat = !record.pubkey.trim().is_empty()
+            && record.persona_id.is_none()
+            && record.name.eq_ignore_ascii_case("OpenMontage");
+        if !is_fixed_openmontage_seat {
+            continue;
+        }
+        let mut openmontage_changed = false;
+        if record.system_prompt.as_deref() != Some(desired_openmontage_prompt.as_str()) {
+            record.system_prompt = Some(desired_openmontage_prompt.clone());
+            openmontage_changed = true;
+        }
+        if let Some(root) = desired_openmontage_root.as_deref() {
+            if record.env_vars.get("OPENMONTAGE_ROOT").map(String::as_str) != Some(root) {
+                record
+                    .env_vars
+                    .insert("OPENMONTAGE_ROOT".to_string(), root.to_string());
+                openmontage_changed = true;
+            }
+        }
+        if openmontage_changed {
+            record.updated_at = now_iso();
+            changed = true;
+        }
+    }
+
+    if changed {
+        save_managed_agents(app, &records)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct SeedRoomAgentsResult {
     pub channel_id: String,
@@ -191,6 +286,10 @@ pub async fn seed_room_agents(
 ) -> Result<SeedRoomAgentsResult, String> {
     let mut errors = Vec::new();
     let mut created_agents = Vec::new();
+
+    if let Err(error) = reconcile_room_agent_contracts(&app, &state) {
+        errors.push(format!("reconcile room agent contracts: {error}"));
+    }
 
     let existing_names: HashSet<String> = load_managed_agents(&app)
         .unwrap_or_default()
@@ -242,10 +341,7 @@ pub async fn seed_room_agents(
             // Room seats: one ACP child per agent. Default desktop parallelism
             // (10) forks ~10 grok/zeroclaw per seat and stalls Waking / relay.
             parallelism: Some(1),
-            system_prompt: Some(format!(
-                "{}\n\n(Local room agent: {} — {})",
-                spec.system_prompt, spec.name, spec.about
-            )),
+            system_prompt: Some(room_agent_system_prompt(&spec)),
             avatar_url: None,
             model: None,
             provider: None,
@@ -318,18 +414,13 @@ pub async fn seed_room_agents(
         .unwrap_or_default()
         .into_iter()
         .filter(|record| {
-            !record.pubkey.trim().is_empty()
-                && room_names.contains(&record.name.to_lowercase())
+            !record.pubkey.trim().is_empty() && room_names.contains(&record.name.to_lowercase())
         })
         .map(|record| record.pubkey)
         .collect();
 
     // Channel names (case-insensitive) that must host the room stack bots.
-    const SEED_CHANNEL_NAMES: &[&str] = &[
-        ROOM_CHANNEL_NAME,
-        "welcome-everyone",
-        "general",
-    ];
+    const SEED_CHANNEL_NAMES: &[&str] = &[ROOM_CHANNEL_NAME, "welcome-everyone", "general"];
     let seed_channel_ids: Vec<String> = {
         let mut ids = Vec::new();
         ids.push(channel_id.clone());
@@ -353,12 +444,7 @@ pub async fn seed_room_agents(
         let known: HashSet<String> = channels
             .iter()
             .find(|c| &c.id == seed_channel_id)
-            .map(|c| {
-                c.member_pubkeys
-                    .iter()
-                    .map(|p| p.to_lowercase())
-                    .collect()
-            })
+            .map(|c| c.member_pubkeys.iter().map(|p| p.to_lowercase()).collect())
             .unwrap_or_else(|| {
                 if seed_channel_id == &channel_id {
                     known_members.clone()
@@ -415,4 +501,64 @@ pub async fn seed_room_agents(
         created_agents,
         errors,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coding_workspace_prompt_migration_is_marker_gated() {
+        assert!(needs_coding_workspace_prompt_migration(None));
+        assert!(needs_coding_workspace_prompt_migration(Some(
+            "old room prompt"
+        )));
+        assert!(!needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v2"
+        )));
+    }
+
+    #[test]
+    fn seeded_grok_prompt_contains_workbench_contract() {
+        let grok = room_agent_specs()
+            .into_iter()
+            .find(|spec| spec.name == "Grok")
+            .expect("Grok room seat");
+        let prompt = room_agent_system_prompt(&grok);
+
+        assert!(prompt.contains(CODING_WORKSPACE_CLIENT_MARKER));
+        assert!(prompt.contains("Coding Workspace"));
+    }
+
+    #[test]
+    fn seeded_openmontage_prompt_contains_current_contract() {
+        let spec = room_agent_specs()
+            .into_iter()
+            .find(|spec| spec.name == "OpenMontage")
+            .expect("OpenMontage room seat");
+        let prompt = room_agent_system_prompt(&spec);
+
+        assert!(prompt.contains("media.video.*"));
+        assert!(prompt.contains("provider menu"));
+        assert!(prompt.contains("Layer 3"));
+    }
+
+    #[test]
+    fn legacy_openmontage_install_is_discovered() {
+        let home = std::env::temp_dir().join(format!(
+            "buzz-openmontage-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let legacy = home.join("OpenMontage");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("AGENT_GUIDE.md"), "contract").unwrap();
+
+        assert_eq!(openmontage_root_from_home(&home), legacy);
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }
