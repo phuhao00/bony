@@ -26427,12 +26427,8 @@ dependencies = [
  "indexmap 2.14.0",
  "infer 0.19.0",
  "libc",
-<<<<<<< HEAD
- "md5",
- "nix 0.30.1",
-=======
  "md5 0.8.1",
->>>>>>> 21daf24 (Add DocSmith room seat and heavy coding desktop handoff.)
+ "nix 0.30.1",
  "nohash-hasher",
  "nucleo",
  "parking_lot",
