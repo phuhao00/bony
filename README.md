@@ -18,7 +18,7 @@
 [与上游关系](#与上游关系) ·
 [开发](#开发)
 
-[▶ 播放 Bony 桌面工作区演示视频](docs/bony-desktop-demo.mp4?raw=1)
+[▶ 播放 Bony 桌面工作区演示视频](docs/bony-desktop-demo.mp4)
 
 </div>
 
