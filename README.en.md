@@ -18,7 +18,7 @@ Grok is available today over [ACP](https://agentclientprotocol.com/), with one e
 [Upstream relationship](#upstream-relationship) ·
 [Development](#development)
 
-[▶ Play the Bony desktop workspace demo](docs/bony-desktop-demo.mp4)
+[▶ Play the Bony desktop workspace demo](https://cdn.jsdelivr.net/gh/phuhao00/bony@main/docs/bony-desktop-demo.mp4)
 
 </div>
 
