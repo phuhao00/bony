@@ -550,6 +550,7 @@ export async function sendChannelMessage(
   kind?: number,
   emojiTags?: string[][],
   mentionTags?: string[][],
+  codingWorkspacePath?: string,
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -561,6 +562,7 @@ export async function sendChannelMessage(
       emojiTags: emojiTags ?? null,
       mentionTags: mentionTags ?? null,
       mentionPubkeys: mentionPubkeys ?? null,
+      codingWorkspacePath: codingWorkspacePath ?? null,
       kind: kind ?? null,
     },
   );
@@ -572,6 +574,37 @@ export async function sendChannelMessage(
     depth: response.depth,
     createdAt: response.created_at,
   };
+}
+
+export type CodingWorkspaceProject = {
+  id: string;
+  name: string;
+  path: string;
+  repositoryRoot: string | null;
+  gitBranch: string | null;
+};
+
+export async function listCodingWorkspaceProjects(): Promise<
+  CodingWorkspaceProject[]
+> {
+  return invokeTauri<CodingWorkspaceProject[]>(
+    "list_coding_workspace_projects",
+  );
+}
+
+export async function openCodingWorkspaceProject(
+  path?: string,
+): Promise<CodingWorkspaceProject | null> {
+  return invokeTauri<CodingWorkspaceProject | null>(
+    "open_coding_workspace_project",
+    { path: path ?? null },
+  );
+}
+
+export async function forgetCodingWorkspaceProject(
+  path: string,
+): Promise<void> {
+  await invokeTauri("forget_coding_workspace_project", { path });
 }
 
 export type BlobDescriptor = {

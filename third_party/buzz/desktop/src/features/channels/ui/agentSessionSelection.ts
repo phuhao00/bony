@@ -36,6 +36,8 @@ export function resolveSelectedAgentSession({
   return {
     pubkey: openAgentSessionPubkey,
     name: profile?.displayName?.trim() || "Agent",
+    agentCommand: null,
+    runtime: null,
     status: "deployed",
     agentSource: "relay",
     canInterruptTurn: false,
