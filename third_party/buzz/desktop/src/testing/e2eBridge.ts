@@ -8907,6 +8907,8 @@ async function handleSendChannelMessage(
     mentionPubkeys?: string[];
     mediaTags?: string[][] | null;
     emojiTags?: string[][] | null;
+    mentionTags?: string[][] | null;
+    codingWorkspacePath?: string | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -8926,8 +8928,12 @@ async function handleSendChannelMessage(
   // relay echoes them back on the stored event too, so mirror that here so the
   // emoji renderer keeps resolving `:shortcode:` after the round-trip.
   const emojiTags = args.emojiTags ?? [];
-  // Both kinds end up on the stored event's tag set, just like the real relay.
-  const extraTags = [...mediaTags, ...emojiTags];
+  const mentionTags = args.mentionTags ?? [];
+  const clientTags = args.codingWorkspacePath
+    ? [["client", "coding-workspace-v1", args.codingWorkspacePath]]
+    : [];
+  // All validated extras end up on the stored event, like the real relay.
+  const extraTags = [...mediaTags, ...emojiTags, ...mentionTags, ...clientTags];
   const identity = getIdentity(config);
   if (!identity) {
     const createdAt = Math.floor(Date.now() / 1000);
@@ -12400,6 +12406,30 @@ export function maybeInstallE2eTauriMocks() {
           payload as Parameters<typeof handleGetChannelWindow>[0],
           activeConfig,
         );
+      case "list_coding_workspace_projects":
+        return [
+          {
+            id: "mock-coding-workspace",
+            name: "buzz",
+            path: "C:\\mock\\buzz",
+            repositoryRoot: "C:\\mock\\buzz",
+            gitBranch: "main",
+          },
+        ];
+      case "open_coding_workspace_project": {
+        const requestedPath = (payload as { path?: string | null }).path;
+        const path = requestedPath ?? "C:\\mock\\buzz";
+        const name = path.split(/[\\/]/).filter(Boolean).at(-1) ?? "project";
+        return {
+          id: `mock-coding-workspace:${path}`,
+          name,
+          path,
+          repositoryRoot: path,
+          gitBranch: "main",
+        };
+      }
+      case "forget_coding_workspace_project":
+        return null;
       case "send_channel_message":
         return handleSendChannelMessage(
           payload as Parameters<typeof handleSendChannelMessage>[0],

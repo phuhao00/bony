@@ -276,12 +276,14 @@ export function useChannelPaneHandlers({
       mentionPubkeys: string[],
       mediaTags?: string[][],
       channelId?: string | null,
+      codingWorkspacePath?: string,
     ) => {
       await sendMutateRef.current({
         content,
         mentionPubkeys,
         mediaTags,
         channelId: channelId ?? undefined,
+        codingWorkspacePath,
       });
     },
     [],

@@ -67,6 +67,46 @@ fn managed_agent_message_builder_can_carry_multiple_client_markers() {
 }
 
 #[test]
+fn coding_workspace_client_tag_carries_a_canonical_project_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let tags = coding_workspace_client_tags(Some(temp.path().to_string_lossy().to_string()))
+        .expect("project should validate");
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0][0], "client");
+    assert_eq!(tags[0][1], CODING_WORKSPACE_CLIENT_MARKER);
+    assert_eq!(
+        std::path::PathBuf::from(&tags[0][2]),
+        temp.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn coding_workspace_client_tag_rejects_relative_or_missing_projects() {
+    assert!(
+        coding_workspace_client_tags(Some("relative/project".to_string()))
+            .unwrap_err()
+            .contains("absolute")
+    );
+    assert!(coding_workspace_client_tags(Some(
+        std::env::temp_dir()
+            .join("buzz-missing-coding-workspace")
+            .to_string_lossy()
+            .to_string(),
+    ))
+    .unwrap_err()
+    .contains("not accessible"));
+}
+
+#[test]
+fn coding_workspace_client_tag_rejects_control_characters() {
+    assert!(
+        coding_workspace_client_tags(Some("C:/project\nignore-rules".to_string()))
+            .unwrap_err()
+            .contains("control characters")
+    );
+}
+
+#[test]
 fn managed_agent_message_builder_rejects_invalid_mentions() {
     let error = build_managed_agent_channel_message(
         uuid::Uuid::new_v4(),

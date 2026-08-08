@@ -1,4 +1,4 @@
-import { LogIn, SquareTerminal } from "lucide-react";
+import { Code2, LogIn, SquareTerminal } from "lucide-react";
 import type * as React from "react";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
@@ -38,6 +38,8 @@ type ChannelScreenHeaderProps = {
   activeDmPresenceStatus: PresenceStatus | null;
   chromeWrapperRef?: React.Ref<HTMLDivElement>;
   currentPubkey?: string;
+  codingAgentCount?: number;
+  isCodingWorkspaceOpen?: boolean;
   isAddBotOpen?: boolean;
   isJoining?: boolean;
   showHeaderContent?: boolean;
@@ -45,6 +47,7 @@ type ChannelScreenHeaderProps = {
   onAddBotOpenChange?: (open: boolean) => void;
   onJoinChannel?: () => Promise<void>;
   onManageChannel: () => void;
+  onToggleCodingWorkspace?: () => void;
   onToggleMembers: () => void;
 };
 
@@ -58,6 +61,8 @@ export function ChannelScreenHeader({
   activeDmPresenceStatus,
   chromeWrapperRef,
   currentPubkey,
+  codingAgentCount = 0,
+  isCodingWorkspaceOpen = false,
   isAddBotOpen,
   isJoining = false,
   onAddBotOpenChange,
@@ -65,6 +70,7 @@ export function ChannelScreenHeader({
   transparentChrome = false,
   onJoinChannel,
   onManageChannel,
+  onToggleCodingWorkspace,
   onToggleMembers,
 }: ChannelScreenHeaderProps) {
   const isGroupDm =
@@ -93,6 +99,24 @@ export function ChannelScreenHeader({
       <SquareTerminal />
     </Button>
   ) : null;
+  const codingWorkspaceButton =
+    activeChannel && onToggleCodingWorkspace ? (
+      <Button
+        aria-label={
+          isCodingWorkspaceOpen
+            ? "Return from Coding Workspace"
+            : "Open Coding Workspace"
+        }
+        data-testid="open-coding-workspace"
+        onClick={onToggleCodingWorkspace}
+        size="icon"
+        title={`Coding Workspace · ${codingAgentCount} local agent${codingAgentCount === 1 ? "" : "s"}`}
+        type="button"
+        variant={isCodingWorkspaceOpen ? "secondary" : "outline"}
+      >
+        <Code2 />
+      </Button>
+    ) : null;
   const channelActions = activeChannel ? (
     showJoinButton ? (
       <Button
@@ -119,6 +143,7 @@ export function ChannelScreenHeader({
   const actions = activeChannel ? (
     <div className="flex items-center gap-1">
       {terminalButton}
+      {codingWorkspaceButton}
       {channelActions}
     </div>
   ) : null;

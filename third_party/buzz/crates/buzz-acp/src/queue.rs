@@ -1388,6 +1388,36 @@ pub(crate) fn base_section(base_prompt: &str) -> String {
     format!("[Base]\n{}", base_prompt.trim_end())
 }
 
+const CODING_WORKSPACE_CLIENT_MARKER: &str = "coding-workspace-v1";
+
+pub(crate) fn coding_workspace_path(event: &Event) -> Option<std::path::PathBuf> {
+    let raw = event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        (parts.first().map(String::as_str) == Some("client")
+            && parts.get(1).map(String::as_str) == Some(CODING_WORKSPACE_CLIENT_MARKER)
+            && parts.len() == 3)
+            .then(|| parts[2].as_str())
+    })?;
+    if raw.chars().any(char::is_control) {
+        return None;
+    }
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    canonical.is_dir().then_some(canonical)
+}
+
+fn coding_workspace_section(event: &Event) -> Option<String> {
+    let path = coding_workspace_path(event)?;
+    let quoted_path = serde_json::to_string(&path.to_string_lossy()).ok()?;
+    Some(format!(
+        "[Coding Workspace]\n\
+         This turn was started from Buzz's embedded Coding Workspace. The selected project directory is {quoted_path}. Work directly in that project using your coding, file, and shell tools, keep all repository operations scoped to it, and complete the requested edits and tests in this ACP session. Do not open or delegate to an external coding task."
+    ))
+}
+
 /// Format a [`FlushBatch`] into the per-section prompt blocks for the agent.
 ///
 /// Produces a stable prompt with these sections (in order):
@@ -1491,6 +1521,14 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
         args.conversation_context.is_some(),
         reply_anchor.as_deref(),
     ));
+
+    // The embedded coding surface is an execution mode, not just visual
+    // chrome. Keep the runtime directive attached to the marked event so
+    // already-seeded room agents also honor it before their stored system
+    // prompt has been reconciled or their process has restarted.
+    if let Some(section) = coding_workspace_section(&last_event.event) {
+        sections.push(section);
+    }
 
     // 3. Conversation context (thread or DM).
     if let Some(ctx) = args.conversation_context {
@@ -1701,6 +1739,80 @@ mod tests {
         assert_eq!(base_section("hello"), "[Base]\nhello");
         // Internal newlines and leading whitespace are preserved verbatim.
         assert_eq!(base_section("  line1\nline2 "), "[Base]\n  line1\nline2");
+    }
+
+    #[test]
+    fn test_format_prompt_injects_coding_workspace_project_from_client_marker() {
+        let project = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let channel_id = Uuid::new_v4();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event: make_event_with_tags(
+                    "fix the failing test",
+                    vec![vec![
+                        "client".into(),
+                        CODING_WORKSPACE_CLIENT_MARKER.into(),
+                        project.to_string_lossy().to_string(),
+                    ]],
+                ),
+                prompt_tag: "test".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: Vec::new(),
+            cancel_reason: None,
+        };
+
+        let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
+        assert!(prompt.contains("[Coding Workspace]"));
+        let quoted_project = serde_json::to_string(&project.to_string_lossy()).unwrap();
+        assert!(prompt.contains(&quoted_project));
+        assert!(prompt
+            .to_ascii_lowercase()
+            .contains("do not open or delegate to an external coding task"));
+    }
+
+    #[test]
+    fn test_format_prompt_omits_coding_workspace_without_marker() {
+        let channel_id = Uuid::new_v4();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event: make_event("ordinary room message"),
+                prompt_tag: "test".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: Vec::new(),
+            cancel_reason: None,
+        };
+
+        let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
+        assert!(!prompt.contains("[Coding Workspace]"));
+    }
+
+    #[test]
+    fn test_format_prompt_rejects_untrusted_coding_workspace_paths() {
+        let channel_id = Uuid::new_v4();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event: make_event_with_tags(
+                    "fix the failing test",
+                    vec![vec![
+                        "client".into(),
+                        CODING_WORKSPACE_CLIENT_MARKER.into(),
+                        "relative/project".into(),
+                    ]],
+                ),
+                prompt_tag: "test".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: Vec::new(),
+            cancel_reason: None,
+        };
+
+        let prompt = format_prompt(&batch, &FormatPromptArgs::default()).join("\n\n");
+        assert!(!prompt.contains("[Coding Workspace]"));
     }
 
     #[test]

@@ -3069,6 +3069,12 @@ fn try_native_steer(
     prompt_tag: String,
     steer_ack_tx: &mpsc::UnboundedSender<SteerAckEvent>,
 ) -> bool {
+    // ACP fixes cwd at session/new. Workspace tasks must take the universal
+    // cancel+merge path so the next dispatch can rotate/create the session in
+    // the selected project instead of steering into a session with stale cwd.
+    if queue::coding_workspace_path(&event).is_some() {
+        return false;
+    }
     // Build the steer body: framing strings come from
     // `queue::native_steer_framing()` (Eva's drift-proof requirement —
     // native and cancel+merge fallback share these so the agent gets the

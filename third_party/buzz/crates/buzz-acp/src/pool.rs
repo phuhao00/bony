@@ -88,6 +88,10 @@ pub struct AgentModelCapabilities {
 pub struct SessionState {
     /// channel_id → session_id
     pub sessions: HashMap<Uuid, String>,
+    /// Absolute working directory used to create each channel session.
+    /// Missing entries belong to sessions created before workspace-aware
+    /// routing and are treated as the process default cwd.
+    pub session_cwds: HashMap<Uuid, String>,
     pub heartbeat_session: Option<String>,
     /// Per-channel turn counters for proactive session rotation.
     /// Incremented on each successful prompt; reset when the session is rotated.
@@ -126,12 +130,14 @@ impl SessionState {
         self.turn_counts.remove(channel_id);
         self.core_sections.remove(channel_id);
         self.canvas_sections.remove(channel_id);
+        self.session_cwds.remove(channel_id);
         self.sessions.remove(channel_id).is_some()
     }
 
     /// Invalidate all sessions and turn counters (e.g. after agent exit).
     pub fn invalidate_all(&mut self) {
         self.sessions.clear();
+        self.session_cwds.clear();
         self.turn_counts.clear();
         self.heartbeat_session = None;
         self.heartbeat_turn_count = 0;
@@ -142,9 +148,33 @@ impl SessionState {
     #[cfg(test)]
     fn has_channel_state(&self, channel_id: &Uuid) -> bool {
         self.sessions.contains_key(channel_id)
+            || self.session_cwds.contains_key(channel_id)
             || self.turn_counts.contains_key(channel_id)
             || self.core_sections.contains_key(channel_id)
             || self.canvas_sections.contains_key(channel_id)
+    }
+
+    /// Rotate an existing channel session when its requested working directory
+    /// changes. Returns true when session state was invalidated.
+    fn rotate_for_cwd_change(
+        &mut self,
+        channel_id: &Uuid,
+        requested_cwd: &str,
+        default_cwd: &str,
+    ) -> bool {
+        if !self.sessions.contains_key(channel_id) {
+            return false;
+        }
+        let current_cwd = self
+            .session_cwds
+            .get(channel_id)
+            .map(String::as_str)
+            .unwrap_or(default_cwd);
+        if current_cwd == requested_cwd {
+            return false;
+        }
+        self.invalidate_channel(channel_id);
+        true
     }
 }
 
@@ -885,6 +915,7 @@ async fn resolve_new_session_channel_context(
 async fn create_session_and_apply_model(
     agent: &mut OwnedAgent,
     ctx: &PromptContext,
+    session_cwd: &str,
     agent_core: Option<&str>,
     agent_canvas: Option<&str>,
     channel_name: Option<&str>,
@@ -901,7 +932,7 @@ async fn create_session_and_apply_model(
     let combined_system_prompt = with_canvas(
         with_core(
             with_team(
-                framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+                framed_system_prompt(session_cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
                 ctx.team_instructions.as_deref(),
             ),
             agent_core,
@@ -923,7 +954,7 @@ async fn create_session_and_apply_model(
     let resp = agent
         .acp
         .session_new_full(
-            &ctx.cwd,
+            session_cwd,
             mcp_servers,
             session_new_system_prompt(
                 is_goose,
@@ -1478,6 +1509,32 @@ pub async fn run_prompt_task(
     let (_reaction_guard, reaction_outcome) =
         ReactionGuard::new(ctx.rest_client.clone(), reaction_ids.clone());
 
+    // ACP fixes cwd at session/new. Coding Workspace turns therefore own the
+    // session cwd; switching projects rotates the channel session, while an
+    // ordinary room message rotates back to the managed agent's default cwd.
+    let session_cwd = match (&source, batch.as_ref()) {
+        (PromptSource::Channel(_), Some(batch)) => batch
+            .events
+            .last()
+            .and_then(|event| crate::queue::coding_workspace_path(&event.event))
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| ctx.cwd.clone()),
+        _ => ctx.cwd.clone(),
+    };
+    if let PromptSource::Channel(channel_id) = &source {
+        if agent
+            .state
+            .rotate_for_cwd_change(channel_id, &session_cwd, &ctx.cwd)
+        {
+            tracing::info!(
+                target: "pool::session",
+                channel = %channel_id,
+                cwd = %session_cwd,
+                "rotating ACP session for Coding Workspace cwd change"
+            );
+        }
+    }
+
     //
     // Core memory is delivered inside the system prompt the harness already
     // builds (system role for protocol >= 2, the `[System]` user-message
@@ -1608,6 +1665,7 @@ pub async fn run_prompt_task(
                 match create_session_and_apply_model(
                     &mut agent,
                     &ctx,
+                    &session_cwd,
                     agent_core.as_deref(),
                     agent_canvas.as_deref(),
                     title_channel.as_deref(),
@@ -1622,6 +1680,10 @@ pub async fn run_prompt_task(
                             "created session {sid} for channel {cid}"
                         );
                         agent.state.sessions.insert(*cid, sid.clone());
+                        agent
+                            .state
+                            .session_cwds
+                            .insert(*cid, session_cwd.clone());
                         // Commit canvas only after session creation succeeds (I3).
                         if let Some((pending_cid, section)) = pending_canvas.take() {
                             agent.state.canvas_sections.insert(pending_cid, section);
@@ -1660,8 +1722,17 @@ pub async fn run_prompt_task(
             if let Some(sid) = &agent.state.heartbeat_session {
                 (sid.clone(), false)
             } else {
-                match create_session_and_apply_model(&mut agent, &ctx, None, None, None, None, None)
-                    .await
+                match create_session_and_apply_model(
+                    &mut agent,
+                    &ctx,
+                    &session_cwd,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
                 {
                     Ok(sid) => {
                         tracing::info!(
@@ -6125,6 +6196,8 @@ mod tests {
         let mut s = SessionState::default();
         s.sessions.insert(ch_a, "sess-a".into());
         s.sessions.insert(ch_b, "sess-b".into());
+        s.session_cwds.insert(ch_a, "C:/projects/a".into());
+        s.session_cwds.insert(ch_b, "C:/projects/b".into());
         s.turn_counts.insert(ch_a, 5);
         s.turn_counts.insert(ch_b, 3);
         s.core_sections.insert(ch_a, "core-a".into());
@@ -6145,6 +6218,7 @@ mod tests {
         );
 
         assert!(!s.sessions.contains_key(&ch_a));
+        assert!(!s.session_cwds.contains_key(&ch_a));
         assert!(!s.turn_counts.contains_key(&ch_a));
         assert!(!s.core_sections.contains_key(&ch_a));
         assert!(!s.has_channel_state(&ch_a));
@@ -6210,6 +6284,7 @@ mod tests {
         s.invalidate_all();
 
         assert!(s.sessions.is_empty());
+        assert!(s.session_cwds.is_empty());
         assert!(s.turn_counts.is_empty());
         assert!(s.core_sections.is_empty());
         assert!(s.heartbeat_session.is_none());
@@ -6236,6 +6311,7 @@ mod tests {
         let mut s = SessionState::default();
         s.invalidate_all(); // should not panic
         assert!(s.sessions.is_empty());
+        assert!(s.session_cwds.is_empty());
         assert!(s.turn_counts.is_empty());
         assert!(s.core_sections.is_empty());
     }
@@ -6255,6 +6331,41 @@ mod tests {
         // heartbeat untouched
         assert_eq!(s.heartbeat_session.as_deref(), Some("sess-hb"));
         assert_eq!(s.heartbeat_turn_count, 7);
+    }
+
+    #[test]
+    fn test_workspace_cwd_change_rotates_only_the_selected_channel() {
+        let (mut state, channel_a, channel_b) = make_state();
+
+        assert!(state.rotate_for_cwd_change(
+            &channel_a,
+            "C:/projects/new-a",
+            "C:/agents/default",
+        ));
+        assert!(!state.has_channel_state(&channel_a));
+        assert_eq!(
+            state.sessions.get(&channel_b).map(String::as_str),
+            Some("sess-b")
+        );
+        assert_eq!(
+            state.session_cwds.get(&channel_b).map(String::as_str),
+            Some("C:/projects/b")
+        );
+    }
+
+    #[test]
+    fn test_matching_workspace_cwd_preserves_session() {
+        let (mut state, channel_a, _) = make_state();
+
+        assert!(!state.rotate_for_cwd_change(
+            &channel_a,
+            "C:/projects/a",
+            "C:/agents/default",
+        ));
+        assert_eq!(
+            state.sessions.get(&channel_a).map(String::as_str),
+            Some("sess-a")
+        );
     }
 
     #[test]
