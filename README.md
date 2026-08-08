@@ -12,7 +12,6 @@
 [功能](#功能) ·
 [技术栈](#技术栈) ·
 [本地多 Agent 协作](#本地多-agent-协作) ·
-[Web 监控](#web-监控) ·
 [模型与供应商](#模型与供应商) ·
 [架构与运行链路](#架构与运行链路) ·
 [贡献者](#贡献者) ·
@@ -49,7 +48,6 @@ Bony 把桌面编程工作区与多 Agent 房间统一在一个客户端中，�
 | Bony 桌面交互 | Coding Workspace 与频道丝滑切换，共享主题、标题栏和窗口行为 |
 | 房间协作 | Grok 协调 ZeroClaw / Unity / OpenMontage / DocSmith，支持线程和状态反馈 |
 | 本地后端 | Rust + SQLite + 进程内 pubsub，单 workspace、单根 `target/` |
-| Web 监控 | 架构分层、「怎么工作」、功能影响矩阵与提交影响时间线 |
 
 ---
 
@@ -69,7 +67,6 @@ Bony 把桌面编程工作区与多 Agent 房间统一在一个客户端中，�
 | 数据层 | **SQLx · SQLite（WAL）· 进程内 pubsub** | 消息、成员、线程等持久化；使用 broadcast / DashMap 做本机 fan-out、限流和 presence |
 | 检索 | **SQLite FTS5 · LanceDB** | 房间全文检索与嵌入式语义检索 |
 | 安全 | **系统 Keyring · rustls · NIP-98 · PermissionManager / Sandbox** | 本机密钥、TLS、请求认证以及 Agent 工具执行权限 |
-| 可观测性 | **`bony-monitor` · Axum · Git 元数据** | 展示架构、运行流程、功能矩阵与提交影响 |
 
 仓库使用一个 Cargo workspace、一个根 `Cargo.lock` 和一个根 `target/`。`buzz-*` 是内嵌底层 crate 的技术前缀，Bony 是项目与产品名称。
 
@@ -92,27 +89,6 @@ powershell -File .\scripts\buzz-room\stop-room-stack.ps1               # 停止
 ```
 
 策略与架构细节见 [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md)、[`third_party/buzz/README.md`](third_party/buzz/README.md)、[`scripts/buzz-room`](scripts/buzz-room)。
-
----
-
-## Web 监控
-
-本地仪表盘，查看 **整体架构**、端到端「怎么工作」，以及 **每一次改动带来的影响**：
-
-```powershell
-cargo run -p bony-monitor -- --bind 127.0.0.1:8787
-# 浏览器打开 http://127.0.0.1:8787
-```
-
-能力：
-
-- **功能影响矩阵**：对话、模型切换、登录认证、多供应商、工具执行、权限、会话 ACP、工作区、TUI、监控、文档等
-- **多维度评估**：用户体验 / 功能能力 / 安全 / 稳定性 / 兼容性 / 性能 / 开发体验 / 文档
-- **怎么工作**：分层与 turn 流程说明（配合架构图）
-- 每次提交的**用户影响说明** + **建议验证清单**
-- 支持在 commit message 写 `Impact:` / `改进:` / `Risk:` / `风险:`
-
-实现：`crates/codegen/bony-monitor`（Axum）。
 
 ---
 
@@ -343,7 +319,7 @@ GitHub 的 Contributors 侧栏由提交关联账号自动生成；Bony 对应使
 | 层级 | 来源 |
 |------|------|
 | Agent / TUI / 工具栈 | 定期对齐 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)（`Synced from monorepo`） |
-| 产品层 | 本仓库自有：Bony 桌面集成、`bony-monitor`、品牌与协作文档 |
+| 产品层 | 本仓库自有：Bony 桌面集成、品牌与协作文档 |
 | 源码钉 | 根目录 [`SOURCE_REV`](SOURCE_REV) 记录上游 monorepo 同步点 |
 
 ### 同步上游
@@ -362,7 +338,6 @@ git push --force-with-lease origin main
 |------|------|
 | `third_party/buzz/desktop` | Bony 桌面客户端实现，包含频道与 Coding Workspace；技术包名为 `buzz-desktop` |
 | `third_party/buzz/crates/buzz-acp` | Coding Agent ACP 会话池与队列 |
-| `crates/codegen/bony-monitor` | 架构与改动影响 Web 监控 |
 | `crates/codegen/xai-grok-shell` | Agent 运行时、stdio / headless |
 | `crates/codegen/xai-grok-pager*` | 官方 TUI（`grok`） |
 | `crates/codegen/xai-grok-agent` / `*-tools` / `*-workspace` | Agent、工具、工作区 |
@@ -383,7 +358,7 @@ git push --force-with-lease origin main
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
 $env:PROTOC = "$PWD\.tools\protoc\bin\protoc.exe"   # 若已放置 protoc
-cargo check -p buzz-desktop -p bony-monitor
+cargo check -p buzz-desktop
 cargo test -p buzz-acp
 cargo build -p buzz-desktop
 ```

@@ -12,7 +12,6 @@ Grok is available today over [ACP](https://agentclientprotocol.com/), with one e
 [Features](#features) ·
 [Technology stack](#technology-stack) ·
 [Local multi-agent collaboration](#local-multi-agent-collaboration) ·
-[Web monitor](#web-monitor) ·
 [Models & providers](#models--providers) ·
 [Architecture & runtime](#architecture-and-runtime-flow) ·
 [Contributors](#contributors) ·
@@ -49,7 +48,6 @@ Bony brings the desktop coding workspace and multi-agent room together in one cl
 | Bony desktop interaction | Smooth workspace/channel transitions with shared theme, title bar, and window behavior |
 | Room collaboration | Grok coordinates ZeroClaw / Unity / OpenMontage / DocSmith with threads and progress feedback |
 | Local backend | Rust + SQLite + in-process pubsub, one workspace and one root `target/` |
-| Web monitor | Architecture layers, “how it works”, feature-impact matrix, commit impact timeline |
 
 ---
 
@@ -69,7 +67,6 @@ Bony brings the desktop coding workspace and multi-agent room together in one cl
 | Data layer | **SQLx · SQLite (WAL) · in-process pubsub** | Persist messages, members, and threads; use broadcast / DashMap for local fan-out, rate limiting, and presence |
 | Search | **SQLite FTS5 · LanceDB** | Room full-text search and embedded semantic search |
 | Security | **System keyring · rustls · NIP-98 · PermissionManager / Sandbox** | Local secrets, TLS, request authentication, and permissions for agent tool execution |
-| Observability | **`bony-monitor` · Axum · Git metadata** | Show architecture, runtime flow, capability matrices, and commit impact |
 
 The repository uses one Cargo workspace, one root `Cargo.lock`, and one root `target/`. `buzz-*` is the technical prefix retained by embedded lower-level crates; Bony is the project and product name.
 
@@ -92,27 +89,6 @@ powershell -File .\scripts\buzz-room\stop-room-stack.ps1               # stop ev
 ```
 
 Policy and architecture detail: [`docs/buzz-room-collab.md`](docs/buzz-room-collab.md), [`third_party/buzz/README.md`](third_party/buzz/README.md), [`scripts/buzz-room`](scripts/buzz-room).
-
----
-
-## Web monitor
-
-Local dashboard for **architecture**, end-to-end “how it works”, and **per-change impact**:
-
-```powershell
-cargo run -p bony-monitor -- --bind 127.0.0.1:8787
-# open http://127.0.0.1:8787
-```
-
-Capabilities:
-
-- **Feature-impact matrix**: chat, model switch, auth, multi-provider, tools, permissions, ACP session, workspace, TUI, monitor, docs, …
-- **Multi-axis scoring**: UX / capability / security / stability / compatibility / performance / DX / docs
-- **How it works**: layer and turn-flow notes (with architecture diagrams)
-- Per-commit **user impact** + **suggested verification checklist**
-- Commit messages may include `Impact:` / `改进:` / `Risk:` / `风险:`
-
-Implementation: `crates/codegen/bony-monitor` (Axum).
 
 ---
 
@@ -343,7 +319,7 @@ GitHub generates the Contributors sidebar from commit-linked accounts. Bony uses
 | Layer | Source |
 |-------|--------|
 | Agent / TUI / tool stack | Periodically aligned with [`xai-org/grok-build`](https://github.com/xai-org/grok-build) (`Synced from monorepo`) |
-| Product layer | Fork-owned: Bony desktop integration, `bony-monitor`, brand, and collaboration docs |
+| Product layer | Fork-owned: Bony desktop integration, brand, and collaboration docs |
 | Pin | Root [`SOURCE_REV`](SOURCE_REV) records the upstream monorepo sync point |
 
 ### Sync upstream
@@ -362,7 +338,6 @@ git push --force-with-lease origin main
 |------|-------------|
 | `third_party/buzz/desktop` | Bony desktop implementation, including channels and Coding Workspace (technical package name remains `buzz-desktop`) |
 | `third_party/buzz/crates/buzz-acp` | Coding-agent ACP session pool and queue |
-| `crates/codegen/bony-monitor` | Architecture & change-impact Web monitor |
 | `crates/codegen/xai-grok-shell` | Agent runtime, stdio / headless |
 | `crates/codegen/xai-grok-pager*` | Official TUI (`grok`) |
 | `crates/codegen/xai-grok-agent` / `*-tools` / `*-workspace` | Agent, tools, workspace |
@@ -381,7 +356,7 @@ Full upstream docs remain in each crate and the [user guide](crates/codegen/xai-
 ```powershell
 $env:CARGO_TARGET_DIR = "$PWD\target"
 $env:PROTOC = "$PWD\.tools\protoc\bin\protoc.exe"   # if you have protoc placed here
-cargo check -p buzz-desktop -p bony-monitor
+cargo check -p buzz-desktop
 cargo test -p buzz-acp
 cargo build -p buzz-desktop
 ```
