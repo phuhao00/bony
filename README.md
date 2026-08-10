@@ -378,3 +378,7 @@ cargo build -p buzz-desktop
 - 许可证：[`LICENSE`](LICENSE) 及各 crate 声明
 
 Agent 运行时与 `grok` CLI 能力来源于 [SpaceXAI / Grok Build](https://x.ai/cli) 与 [`xai-org/grok-build`](https://github.com/xai-org/grok-build)；房间与客户端基础代码来源于 [Block/Buzz](third_party/buzz)。
+# Rust 学习入口
+
+本仓库的 Rust 项目实战课程在 [`docs/rust-learning/`](docs/rust-learning/README.md)，
+性能与工程规范见 [`docs/RUST_ENGINEERING_GUIDE.md`](docs/RUST_ENGINEERING_GUIDE.md)。

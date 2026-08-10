@@ -12430,6 +12430,46 @@ export function maybeInstallE2eTauriMocks() {
       }
       case "forget_coding_workspace_project":
         return null;
+      case "get_coding_workspace_snapshot":
+        return {
+          files: [
+            { path: "Cargo.toml", size: 640 },
+            { path: "src/main.rs", size: 2048 },
+          ],
+          changes: [
+            {
+              path: "src/main.rs",
+              originalPath: null,
+              kind: "modified",
+              staged: false,
+              indexStatus: " ",
+              worktreeStatus: "M",
+            },
+          ],
+          commits: [
+            {
+              hash: "0123456789abcdef0123456789abcdef01234567",
+              shortHash: "0123456",
+              authorName: "Buzz Developer",
+              timestamp: 1_788_800_000,
+              subject: "Improve Coding Workspace",
+            },
+          ],
+          gitBranch: "main",
+          isGitRepository: true,
+          filesTruncated: false,
+          changesTruncated: false,
+        };
+      case "get_coding_workspace_file_diff": {
+        const filePath = (payload as { filePath: string }).filePath;
+        return {
+          path: filePath,
+          additions: 2,
+          deletions: 1,
+          patch: `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,2 +1,3 @@\n-old value\n+new value\n+another value\n context\n`,
+          truncated: false,
+        };
+      }
       case "send_channel_message":
         return handleSendChannelMessage(
           payload as Parameters<typeof handleSendChannelMessage>[0],

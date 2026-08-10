@@ -27,6 +27,7 @@ import {
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
 import { mergeChannelKnownAgentPubkeys } from "@/features/agents/knownAgentPubkeys";
+import { requestOpenEditAgent } from "@/features/agents/openEditAgentEvent";
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { pickWelcomeGuideAgent } from "@/features/onboarding/welcomeGuide";
 import { useWelcomeKickoffEntrance } from "@/features/onboarding/useWelcomeKickoffEntrance";
@@ -635,6 +636,13 @@ export function ChannelScreen({
       setThreadReplyTargetId,
       setThreadScrollTargetId,
     });
+  const handleEditCodingWorkspaceAgent = React.useCallback(
+    (pubkey: string) => {
+      handleOpenProfilePanel(pubkey);
+      requestOpenEditAgent(pubkey);
+    },
+    [handleOpenProfilePanel],
+  );
   const settledChannelIdRef = React.useRef<string | null>(null);
   const hasSettledThisChannel =
     activeChannelId !== null && settledChannelIdRef.current === activeChannelId;
@@ -1044,6 +1052,7 @@ export function ChannelScreen({
                     channel={activeChannel}
                     isSending={sendMessageMutation.isPending}
                     onClose={() => setIsCodingWorkspaceOpen(false)}
+                    onEditAgent={handleEditCodingWorkspaceAgent}
                     onSendPrompt={handleSendMessage}
                     profiles={messageProfiles}
                   />

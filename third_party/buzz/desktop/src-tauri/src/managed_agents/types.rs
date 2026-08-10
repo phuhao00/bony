@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Child};
 
+/// Internal persisted declaration used by the five legacy Local Room seats
+/// until `AgentDefinition` owns a first-class versioned capability profile.
+pub const MANAGED_AGENT_CAPABILITIES_ENV: &str = "BUZZ_MANAGED_AGENT_CAPABILITIES";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BackendKind {
@@ -529,6 +533,11 @@ pub struct ManagedAgentSummary {
     /// (definition → global for linked instances; instance → global for
     /// definition-less instances). `None` for an orphaned instance.
     pub provider: Option<String>,
+    /// Stable capability ids projected at the Rust catalog boundary. Empty
+    /// means the agent has no declared capability; the renderer must not infer
+    /// authority from its display name, prompt, or runtime command.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
     /// `true` when the linked persona has been edited since this agent was
     /// created — the running agent uses the older pinned snapshot. The UI
     /// flags it and tells the user to delete + respawn to pick up the edit.

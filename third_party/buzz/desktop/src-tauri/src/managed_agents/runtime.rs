@@ -311,6 +311,7 @@ pub fn build_managed_agent_summary(
         }
     });
     let effective_mcp_command = resolve_effective_mcp_command(record, &descriptor.command);
+    let capabilities = built_in_room_capabilities(record);
 
     Ok(ManagedAgentSummary {
         pubkey: record.pubkey.clone(),
@@ -333,6 +334,7 @@ pub fn build_managed_agent_summary(
         model: effective_model,
         model_source,
         provider: effective_provider,
+        capabilities,
         persona_out_of_date,
         persona_orphaned,
         needs_restart,
@@ -355,6 +357,29 @@ pub fn build_managed_agent_summary(
         respond_to: record.respond_to,
         respond_to_allowlist: record.respond_to_allowlist.clone(),
     })
+}
+
+/// Compatibility projection for capability declarations persisted by the
+/// fixed Local Room seeder. The seeder owns the legacy name-to-seat migration;
+/// this catalog boundary reads only the stable ids it persisted and never
+/// infers authority from a display name, prompt, or runtime command.
+pub(crate) fn built_in_room_capabilities(record: &ManagedAgentRecord) -> Vec<String> {
+    record
+        .env_vars
+        .get(super::types::MANAGED_AGENT_CAPABILITIES_ENV)
+        .into_iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                })
+        })
+        .take(32)
+        .map(str::to_string)
+        .collect()
 }
 
 pub fn find_managed_agent_mut<'a>(

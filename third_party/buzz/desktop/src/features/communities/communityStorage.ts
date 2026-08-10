@@ -145,9 +145,9 @@ function relayUrlKey(relayUrl: string): string {
 }
 
 /**
- * When Desktop is launched against a loopback default relay, ensure a Local Dev
- * community exists and is active so normal create-channel / add-agent lands on
- * the same open relay the room agents listen to.
+ * When Desktop is launched against a loopback default relay, collapse persisted
+ * community state to one active Local Dev entry. The Rust backend independently
+ * enforces the same boundary; this removes stale remote choices from the UI.
  */
 export function ensureLocalCommunityActive(args: {
   defaultRelayUrl: string;
@@ -172,28 +172,9 @@ export function ensureLocalCommunityActive(args: {
     .replace("://[::1]", "://localhost")
     .replace("://0.0.0.0", "://localhost");
   const preferredKey = relayUrlKey(preferredCanonical);
-  let communities = args.communities.slice();
-  let changed = false;
-
-  // Rewrite any 127.0.0.1 / ::1 entries onto the canonical preferred host.
-  communities = communities.map((c) => {
-    if (!isLocalRelayUrl(c.relayUrl)) {
-      return c;
-    }
-    const next = normalizeRelayUrl(c.relayUrl)
-      .replace("://127.0.0.1", "://localhost")
-      .replace("://[::1]", "://localhost")
-      .replace("://0.0.0.0", "://localhost");
-    if (next === c.relayUrl) {
-      return c;
-    }
-    changed = true;
-    return { ...c, relayUrl: next };
-  });
-
   let local =
-    communities.find((c) => relayUrlKey(c.relayUrl) === preferredKey) ??
-    communities.find((c) => isLocalRelayUrl(c.relayUrl));
+    args.communities.find((c) => relayUrlKey(c.relayUrl) === preferredKey) ??
+    args.communities.find((c) => isLocalRelayUrl(c.relayUrl));
 
   if (!local) {
     local = {
@@ -203,23 +184,20 @@ export function ensureLocalCommunityActive(args: {
       pubkey: args.identityPubkey,
       addedAt: new Date().toISOString(),
     };
-    communities = [...communities, local];
-    changed = true;
   } else if (relayUrlKey(local.relayUrl) !== preferredKey) {
-    // Prefer the env default host when several locals exist.
+    // Prefer the env default host over stale loopback aliases/ports.
     local = { ...local, relayUrl: preferredCanonical };
-    communities = communities.map((c) =>
-      c.id === local!.id ? local! : c,
-    );
-    changed = true;
   }
 
-  const active = communities.find((c) => c.id === args.activeId);
-  if (!active || !isLocalRelayUrl(active.relayUrl)) {
-    return { communities, activeId: local.id, changed: true };
-  }
+  const communities = [local];
+  const previous = args.communities;
+  const changed =
+    previous.length !== 1 ||
+    previous[0]?.id !== local.id ||
+    previous[0]?.relayUrl !== local.relayUrl ||
+    args.activeId !== local.id;
 
-  return { communities, activeId: args.activeId, changed };
+  return { communities, activeId: local.id, changed };
 }
 
 export function deriveCommunityName(relayUrl: string): string {

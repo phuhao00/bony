@@ -39,15 +39,24 @@ fn workspace_relay_override(state: &AppState) -> Option<String> {
         .and_then(|guard| guard.clone())
 }
 
-/// Returns the relay WebSocket URL, checking the workspace override first.
-/// Precedence: workspace override > env vars > build-time vars > default.
+/// Returns the relay WebSocket URL for the active workspace.
+///
+/// Local-only monorepo launches always use their configured loopback relay;
+/// otherwise precedence is workspace override > env vars > build-time vars >
+/// default.
 pub fn relay_ws_url_with_override(state: &AppState) -> String {
-    workspace_relay_override(state).unwrap_or_else(relay_ws_url)
+    let requested = workspace_relay_override(state).unwrap_or_else(relay_ws_url);
+    effective_workspace_relay_url(&requested)
 }
 
-/// Returns the relay HTTP API base URL, checking the workspace override first.
-/// Precedence: workspace override > env vars > build-time vars > default.
+/// Returns the relay HTTP API base URL for the active workspace.
+///
+/// Local-only monorepo launches always use their configured loopback relay;
+/// otherwise precedence is workspace override > explicit HTTP env/build value.
 pub fn relay_api_base_url_with_override(state: &AppState) -> String {
+    if let Some(forced) = forced_local_relay_url() {
+        return relay_http_base_url(&forced);
+    }
     match workspace_relay_override(state) {
         Some(url) => relay_http_base_url(&url),
         None => relay_api_base_url(),
@@ -83,21 +92,18 @@ pub(crate) fn canonicalize_loopback_relay_url(url: &str) -> String {
             .replace("://0.0.0.0", "://localhost")
             .to_string();
     };
-    if matches!(
-        parsed.host_str(),
-        Some("127.0.0.1" | "::1" | "0.0.0.0")
-    ) {
+    if matches!(parsed.host_str(), Some("127.0.0.1" | "::1" | "0.0.0.0")) {
         let _ = parsed.set_host(Some("localhost"));
         return parsed.to_string();
     }
     trimmed.to_string()
 }
 
-/// Monorepo `start-desktop` pins agents to the loopback `BUZZ_RELAY_URL` even if
-/// a stale non-local community is still marked active in localStorage. Without
-/// this, create-channel+@agent appears to work in UI while buzz-acp hits a
-/// closed production community and dies with `restricted: not a relay member`.
-fn monorepo_force_loopback_agent_relay() -> Option<String> {
+/// Resolve the authoritative relay for a local-only monorepo launch.
+///
+/// This is shared by human workspace operations and managed agents so a stale
+/// or manually selected remote community can never escape the Rust boundary.
+fn forced_local_relay_url() -> Option<String> {
     let force = match std::env::var("BUZZ_FORCE_LOCAL_COMMUNITY") {
         Ok(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
         Ok(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
@@ -115,10 +121,34 @@ fn monorepo_force_loopback_agent_relay() -> Option<String> {
         .map(|u| canonicalize_loopback_relay_url(&u))
 }
 
+fn effective_workspace_relay_url_with_forced(
+    requested_relay: &str,
+    forced_relay: Option<&str>,
+) -> String {
+    if let Some(forced) = forced_relay {
+        return canonicalize_loopback_relay_url(forced);
+    }
+    if is_loopback_relay_url(requested_relay) {
+        return canonicalize_loopback_relay_url(requested_relay);
+    }
+    requested_relay.trim().to_string()
+}
+
+/// Selects the relay allowed for a workspace operation.
+///
+/// In local-only monorepo mode the configured loopback relay is authoritative,
+/// regardless of a stale or manually selected community URL. Other builds keep
+/// the requested workspace relay unchanged (apart from loopback
+/// canonicalization).
+pub fn effective_workspace_relay_url(requested_relay: &str) -> String {
+    let forced = forced_local_relay_url();
+    effective_workspace_relay_url_with_forced(requested_relay, forced.as_deref())
+}
+
 /// Selects the relay a managed agent should use for a relay operation.
 ///
 /// Always the active workspace relay, except monorepo local stacks (see
-/// [`monorepo_force_loopback_agent_relay`]). The legacy per-record `relay_url`
+/// [`effective_workspace_relay_url`]). The legacy per-record `relay_url`
 /// pin is deliberately IGNORED (agents-everywhere, #2122): every agent is
 /// eligible on every community, and the pair the caller is acting on is
 /// identified by the workspace relay, never by a stored pin. The record field
@@ -129,15 +159,7 @@ fn monorepo_force_loopback_agent_relay() -> Option<String> {
 /// also means a stale stored value can never leak into reconcile, spawn, or
 /// profile sync. Uniform for both Local and Provider backends.
 pub fn effective_agent_relay_url(_record_relay: &str, workspace_relay: &str) -> String {
-    if let Some(forced) = monorepo_force_loopback_agent_relay() {
-        return forced;
-    }
-    // Always canonicalize loopback workspace hosts — even non-forced paths —
-    // so 127.0.0.1 never leaks into buzz-acp (Host-keyed multi-tenant 404).
-    if is_loopback_relay_url(workspace_relay) {
-        return canonicalize_loopback_relay_url(workspace_relay);
-    }
-    workspace_relay.to_string()
+    effective_workspace_relay_url(workspace_relay)
 }
 
 pub fn relay_http_base_url(relay_url: &str) -> String {
@@ -674,8 +696,8 @@ pub async fn submit_signed_event_with_keys(
 mod tests {
     use super::{
         build_profile_event, classify_intercepted_response, effective_agent_relay_url,
-        extract_retry_in_hint, parse_command_response, relay_http_base_url,
-        MALFORMED_RESPONSE_MESSAGE,
+        effective_workspace_relay_url_with_forced, extract_retry_in_hint, parse_command_response,
+        relay_http_base_url, MALFORMED_RESPONSE_MESSAGE,
     };
     use serde::Deserialize;
 
@@ -802,6 +824,25 @@ mod tests {
         assert_eq!(
             effective_agent_relay_url("   ", "wss://staging.example.com"),
             "wss://staging.example.com"
+        );
+    }
+
+    #[test]
+    fn local_only_workspace_rejects_remote_override() {
+        assert_eq!(
+            effective_workspace_relay_url_with_forced(
+                "wss://huhao.communities.buzz.xyz",
+                Some("ws://127.0.0.1:3000"),
+            ),
+            "ws://localhost:3000/"
+        );
+    }
+
+    #[test]
+    fn regular_workspace_keeps_remote_relay() {
+        assert_eq!(
+            effective_workspace_relay_url_with_forced("  wss://community.example.com  ", None,),
+            "wss://community.example.com"
         );
     }
 

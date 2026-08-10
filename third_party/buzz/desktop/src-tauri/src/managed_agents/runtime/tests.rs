@@ -1222,6 +1222,39 @@ fn receipt_invalid_when_process_not_running() {
 
 // ── Test helpers ────────────────────────────────────────────────────────────
 
+#[test]
+fn built_in_room_capabilities_distinguish_coding_and_tool_seats() {
+    let mut grok = minimal_record(&"aa".repeat(32));
+    grok.name = "Grok".to_string();
+    grok.start_on_app_launch = true;
+    grok.env_vars.insert(
+        crate::managed_agents::types::MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
+        "coordination.route,code.repo.read,code.rust.change".to_string(),
+    );
+    let grok_capabilities = super::built_in_room_capabilities(&grok);
+    assert!(grok_capabilities
+        .iter()
+        .any(|value| value == "code.rust.change"));
+
+    let mut unity = minimal_record(&"bb".repeat(32));
+    unity.name = "Unity".to_string();
+    unity.start_on_app_launch = true;
+    unity.env_vars.insert(
+        crate::managed_agents::types::MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
+        "unity.scene.edit".to_string(),
+    );
+    let unity_capabilities = super::built_in_room_capabilities(&unity);
+    assert_eq!(unity_capabilities, vec!["unity.scene.edit"]);
+    assert!(!unity_capabilities
+        .iter()
+        .any(|value| value.starts_with("code.")));
+
+    let mut user_named_grok = minimal_record(&"cc".repeat(32));
+    user_named_grok.name = "Grok".to_string();
+    user_named_grok.start_on_app_launch = true;
+    assert!(super::built_in_room_capabilities(&user_named_grok).is_empty());
+}
+
 fn minimal_record(pubkey: &str) -> crate::managed_agents::ManagedAgentRecord {
     serde_json::from_str(&format!(
         r#"{{

@@ -688,6 +688,8 @@ pub fn run() {
             list_coding_workspace_projects,
             open_coding_workspace_project,
             forget_coding_workspace_project,
+            get_coding_workspace_snapshot,
+            get_coding_workspace_file_diff,
             create_channel,
             ensure_starter_channels,
             open_dm,

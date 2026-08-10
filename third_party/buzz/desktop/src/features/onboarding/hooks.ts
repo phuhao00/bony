@@ -18,7 +18,10 @@ import {
 import { forceFreshOnboarding } from "@/features/onboarding/devFreshOnboarding";
 import { ensureWelcomeCanvas } from "@/features/onboarding/welcomeCanvas";
 import { ensureWelcomeTeam } from "@/features/onboarding/welcomeGuide";
-import { useProfileQuery, useUpdateProfileMutation } from "@/features/profile/hooks";
+import {
+  useProfileQuery,
+  useUpdateProfileMutation,
+} from "@/features/profile/hooks";
 import { emojiAvatarDataUrl } from "@/features/profile/ui/ProfileAvatarEditor.utils";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -263,13 +266,19 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
         if (result.errors.length > 0) {
           console.warn("seed_room_agents reported errors:", result.errors);
         }
+        // Seeding also reconciles built-in capability declarations on existing
+        // seats, so their summaries must be refreshed even when no seat was
+        // newly created.
+        const refreshes = [
+          queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey }),
+        ];
         if (result.createdAgents.length > 0 || result.createdChannel) {
-          void Promise.all([
-            queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey }),
+          refreshes.push(
             queryClient.invalidateQueries({ queryKey: relayAgentsQueryKey }),
             queryClient.invalidateQueries({ queryKey: channelsQueryKey }),
-          ]);
+          );
         }
+        void Promise.all(refreshes);
       })
       .catch((error) => {
         console.warn("Failed to seed local room agents.", error);
@@ -358,7 +367,8 @@ export function useAppOnboardingState(isSharedIdentity: boolean) {
     [requestStarterChannels],
   );
 
-  const identityReady = identityQuery.status === "success" && !identityResetFailed;
+  const identityReady =
+    identityQuery.status === "success" && !identityResetFailed;
   const profileSettled =
     profileQuery.status === "success" || profileQuery.status === "error";
 

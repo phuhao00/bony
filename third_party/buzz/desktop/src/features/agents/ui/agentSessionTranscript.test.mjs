@@ -924,6 +924,29 @@ test("buildTranscript renders usage_update with cost when present", () => {
   assert.equal(transcript[0].text, "Tokens: 800/4096 ($0.0025 USD)");
 });
 
+test("buildTranscript renders the effective model and cumulative usage from goose updates", () => {
+  const event = acpToolUpdate(1, {
+    sessionUpdate: "usage_update",
+    used: 1500,
+    contextLimit: 0,
+    accumulatedInputTokens: 1000,
+    accumulatedOutputTokens: 500,
+    accumulatedCachedInputTokens: 250,
+    accumulatedTotalTokens: 1600,
+    accumulatedCost: 0.0025,
+    model: "grok-code-fast-1",
+  });
+  event.payload.method = "_goose/unstable/session/update";
+
+  const transcript = buildTranscript([event]);
+  assert.equal(transcript.length, 1);
+  assert.equal(transcript[0].title, "Model usage");
+  assert.equal(
+    transcript[0].text,
+    "Model: grok-code-fast-1 · Tokens: 1500 · Session total: 1600 · input: 1000 · output: 500 · cache read: 250 · Cost: $0.0025 USD",
+  );
+});
+
 test("buildTranscript coalesces usage_update to latest-per-turn (replace, not append)", () => {
   // Three usage frames in the same turn must produce exactly ONE lifecycle item
   // showing the LAST value — not an accumulation of all three.

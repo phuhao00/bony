@@ -339,6 +339,8 @@ export type ManagedAgent = {
   modelSource: "definition" | "global" | "instance_legacy" | null;
   /** LLM inference provider, from the agent's pinned record snapshot. */
   provider: string | null;
+  /** Stable capability ids declared by the Rust managed-agent catalog. */
+  capabilities?: string[];
   /**
    * `true` when the linked persona has been edited since this agent was
    * created — the running agent uses the older pinned snapshot. Surface a

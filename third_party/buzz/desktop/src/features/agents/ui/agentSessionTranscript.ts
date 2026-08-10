@@ -927,7 +927,11 @@ export function processTranscriptEvent(
           );
         }
       }
-    } else if (event.kind === "acp_read" && method === "session/update") {
+    } else if (
+      event.kind === "acp_read" &&
+      (method === "session/update" ||
+        method === "_goose/unstable/session/update")
+    ) {
       const params = asRecord(payload.params);
       const update = asRecord(params.update);
       const updateType = asString(update.sessionUpdate) ?? "unknown";
@@ -1041,22 +1045,77 @@ export function processTranscriptEvent(
         }
       } else if (updateType === "usage_update") {
         const used = typeof update.used === "number" ? update.used : null;
-        const size = typeof update.size === "number" ? update.size : null;
-        if (used !== null && size !== null) {
+        const size =
+          typeof update.size === "number"
+            ? update.size
+            : typeof update.contextLimit === "number"
+              ? update.contextLimit
+              : null;
+        const model = asString(update.model);
+        const input =
+          typeof update.accumulatedInputTokens === "number"
+            ? update.accumulatedInputTokens
+            : null;
+        const output =
+          typeof update.accumulatedOutputTokens === "number"
+            ? update.accumulatedOutputTokens
+            : null;
+        const cachedInput =
+          typeof update.accumulatedCachedInputTokens === "number"
+            ? update.accumulatedCachedInputTokens
+            : null;
+        const total =
+          typeof update.accumulatedTotalTokens === "number"
+            ? update.accumulatedTotalTokens
+            : null;
+        const hasExtendedUsage =
+          model !== null ||
+          input !== null ||
+          output !== null ||
+          cachedInput !== null ||
+          total !== null ||
+          typeof update.accumulatedCost === "number";
+        if ((used !== null && size !== null) || hasExtendedUsage) {
           const costRecord = asRecord(update.cost);
           const costAmount =
-            typeof costRecord.amount === "number" ? costRecord.amount : null;
-          const costCurrency = asString(costRecord.currency);
-          const costStr =
-            costAmount !== null && costCurrency
-              ? ` ($${costAmount.toFixed(4)} ${costCurrency})`
-              : "";
+            typeof costRecord.amount === "number"
+              ? costRecord.amount
+              : typeof update.accumulatedCost === "number"
+                ? update.accumulatedCost
+                : null;
+          const costCurrency = asString(costRecord.currency) ?? "USD";
+          const legacyShape = !hasExtendedUsage;
+          const usageParts: string[] = [];
+          if (model) usageParts.push(`Model: ${model}`);
+          if (used !== null) {
+            usageParts.push(
+              size !== null && size > 0
+                ? `Tokens: ${used}/${size}`
+                : `Tokens: ${used}`,
+            );
+          }
+          if (total !== null) usageParts.push(`Session total: ${total}`);
+          if (input !== null) usageParts.push(`input: ${input}`);
+          if (output !== null) usageParts.push(`output: ${output}`);
+          if (cachedInput !== null)
+            usageParts.push(`cache read: ${cachedInput}`);
+          if (costAmount !== null) {
+            usageParts.push(`Cost: $${costAmount.toFixed(4)} ${costCurrency}`);
+          }
+          const text =
+            legacyShape && used !== null && size !== null
+              ? `Tokens: ${used}/${size}${
+                  costAmount !== null
+                    ? ` ($${costAmount.toFixed(4)} ${costCurrency})`
+                    : ""
+                }`
+              : usageParts.join(" · ");
           replaceLifecycleItem(
             d,
             `usage:${ch}:${turnKey}`,
             "status",
-            "Usage",
-            `Tokens: ${used}/${size}${costStr}`,
+            model ? "Model usage" : "Usage",
+            text,
             event.timestamp,
             ctx,
             updateType,
