@@ -131,6 +131,10 @@ pub async fn apply_workspace(
     agent_managed_profiles: Option<bool>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // Rust is the authoritative local-only boundary. The frontend may still
+    // briefly present a stale remote community while its persisted state is
+    // being reconciled, but no workspace operation may escape localhost.
+    let relay_url = relay::effective_workspace_relay_url(&relay_url);
     let restore_app = app.clone();
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();

@@ -23,6 +23,7 @@ use tauri::{AppHandle, State};
 use crate::app_state::AppState;
 use crate::managed_agents::{
     load_managed_agents, save_managed_agents, BackendKind, CreateManagedAgentRequest, RespondTo,
+    MANAGED_AGENT_CAPABILITIES_ENV,
 };
 use crate::util::now_iso;
 
@@ -50,6 +51,7 @@ const DOCSMITH_PROMPT: &str =
 struct RoomAgentSpec {
     name: &'static str,
     about: &'static str,
+    capabilities: &'static [&'static str],
     /// Bare command resolved the same way any managed-agent harness is
     /// resolved (`resolve_command` — PATH + npm `.cmd` shims on Windows).
     /// `None` means "resolve dynamically" (only ZeroClaw, whose install path
@@ -112,6 +114,7 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
         RoomAgentSpec {
             name: "Grok",
             about: "Room coordinator",
+            capabilities: &["coordination.route", "code.repo.read", "code.rust.change"],
             agent_command: Some("grok"),
             agent_args: &["agent", "stdio"],
             mcp_command: "buzz-dev-mcp",
@@ -134,6 +137,7 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
         RoomAgentSpec {
             name: "ZeroClaw",
             about: "ZeroClaw specialist",
+            capabilities: &["research.web"],
             agent_command: None,
             agent_args: &["acp"],
             mcp_command: "",
@@ -159,6 +163,7 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
         RoomAgentSpec {
             name: "Unity",
             about: "Unity specialist",
+            capabilities: &["unity.scene.edit"],
             agent_command: Some("grok"),
             agent_args: &["agent", "stdio"],
             mcp_command: "bony-room-tools-mcp",
@@ -168,6 +173,7 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
         RoomAgentSpec {
             name: "OpenMontage",
             about: "OpenMontage specialist",
+            capabilities: &["media.video.render"],
             agent_command: Some("grok"),
             agent_args: &["agent", "stdio"],
             mcp_command: "bony-room-tools-mcp",
@@ -177,6 +183,7 @@ fn room_agent_specs() -> [RoomAgentSpec; 5] {
         RoomAgentSpec {
             name: "DocSmith",
             about: "Docs specialist (PDF/Word/Excel/PPT)",
+            capabilities: &["document.create"],
             agent_command: Some("grok"),
             agent_args: &["agent", "stdio"],
             mcp_command: "bony-docs-tools-mcp",
@@ -224,6 +231,29 @@ fn reconcile_room_agent_contracts(app: &AppHandle, state: &AppState) -> Result<(
     let mut records = load_managed_agents(app)?;
     let mut changed = false;
     for record in &mut records {
+        let room_spec = room_agent_specs().into_iter().find(|spec| {
+            !record.pubkey.trim().is_empty()
+                && record.persona_id.is_none()
+                && record.start_on_app_launch
+                && record.name.eq_ignore_ascii_case(spec.name)
+        });
+        if let Some(spec) = room_spec {
+            let desired_capabilities = spec.capabilities.join(",");
+            if record
+                .env_vars
+                .get(MANAGED_AGENT_CAPABILITIES_ENV)
+                .map(String::as_str)
+                != Some(desired_capabilities.as_str())
+            {
+                record.env_vars.insert(
+                    MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
+                    desired_capabilities,
+                );
+                record.updated_at = now_iso();
+                changed = true;
+            }
+        }
+
         let is_fixed_grok_seat = !record.pubkey.trim().is_empty()
             && record.persona_id.is_none()
             && record.name.eq_ignore_ascii_case("Grok");
@@ -311,6 +341,10 @@ pub async fn seed_room_agents(
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect();
+        env_vars.insert(
+            MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
+            spec.capabilities.join(","),
+        );
         if spec.name == "OpenMontage" {
             if let Some(root) = openmontage_root() {
                 env_vars.insert("OPENMONTAGE_ROOT".to_string(), root);
@@ -528,6 +562,23 @@ mod tests {
 
         assert!(prompt.contains(CODING_WORKSPACE_CLIENT_MARKER));
         assert!(prompt.contains("Coding Workspace"));
+    }
+
+    #[test]
+    fn room_seats_declare_distinct_capabilities() {
+        let specs = room_agent_specs();
+        let grok = specs.iter().find(|spec| spec.name == "Grok").unwrap();
+        let unity = specs.iter().find(|spec| spec.name == "Unity").unwrap();
+
+        assert!(grok
+            .capabilities
+            .iter()
+            .any(|capability| capability.starts_with("code.")));
+        assert_eq!(unity.capabilities, &["unity.scene.edit"]);
+        assert!(!unity
+            .capabilities
+            .iter()
+            .any(|capability| capability.starts_with("code.")));
     }
 
     #[test]

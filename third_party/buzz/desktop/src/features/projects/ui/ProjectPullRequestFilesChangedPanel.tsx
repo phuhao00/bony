@@ -38,6 +38,11 @@ import type { ProjectPullRequestComment } from "@/features/projects/projectPullR
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { cn } from "@/shared/lib/cn";
+import {
+  buildPathTree,
+  type PathTreeNode,
+  sortedPathTreeChildren,
+} from "@/shared/lib/pathTree";
 import type { ProjectRepoDiff, ProjectRepoDiffFile } from "@/shared/api/types";
 import { PROJECT_DETAIL_PANEL_CLASS } from "./projectPanelStyles";
 import { ProjectPullRequestInlineCommentThread } from "./ProjectPullRequestInlineComments";
@@ -75,13 +80,6 @@ type InlineCommentControls = {
     decision?: "request-changes",
   ) => Promise<unknown>;
   profiles?: UserProfileLookup;
-};
-
-type FileTreeNode = {
-  children: Map<string, FileTreeNode>;
-  file: ProjectRepoDiffFile | null;
-  name: string;
-  path: string;
 };
 
 type ChangedFileIconVisual = {
@@ -136,38 +134,6 @@ const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "wav"]);
 const VIDEO_EXTENSIONS = new Set(["avi", "m4v", "mov", "mp4", "webm"]);
 const SPREADSHEET_EXTENSIONS = new Set(["csv", "ods", "tsv", "xls", "xlsx"]);
 const TEXT_EXTENSIONS = new Set(["md", "mdx", "rst", "txt"]);
-
-function createFileTreeNode(name: string, path: string): FileTreeNode {
-  return { children: new Map(), file: null, name, path };
-}
-
-function buildFileTree(files: ProjectRepoDiffFile[]) {
-  const root = createFileTreeNode("", "");
-  for (const file of files) {
-    const segments = file.path.split("/").filter(Boolean);
-    let node = root;
-    segments.forEach((segment, index) => {
-      const path = segments.slice(0, index + 1).join("/");
-      let child = node.children.get(segment);
-      if (!child) {
-        child = createFileTreeNode(segment, path);
-        node.children.set(segment, child);
-      }
-      node = child;
-    });
-    node.file = file;
-  }
-  return root;
-}
-
-function sortedFileTreeChildren(node: FileTreeNode) {
-  return [...node.children.values()].sort((left, right) => {
-    if (Boolean(left.file) !== Boolean(right.file)) {
-      return left.file ? 1 : -1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-}
 
 function extensionForPath(path: string) {
   const name = fileName(path).toLowerCase();
@@ -602,31 +568,40 @@ function DiffPreview({
   );
 }
 
+/** Shared, read-only line diff used by project PRs and Coding Workspace review. */
+export function ProjectFileDiffPreview({
+  file,
+}: {
+  file: ProjectRepoDiffFile;
+}) {
+  return <DiffPreview file={file} />;
+}
+
 function FileTreeItems({
   node,
   onSelect,
   selectedPath,
   depth = 0,
 }: {
-  node: FileTreeNode;
+  node: PathTreeNode<ProjectRepoDiffFile>;
   onSelect: (path: string) => void;
   selectedPath: string | null;
   depth?: number;
 }) {
-  return sortedFileTreeChildren(node).map((child) => {
-    if (child.file) {
+  return sortedPathTreeChildren(node).map((child) => {
+    if (child.item) {
       return (
         <button
           className={cn(
             "flex w-full min-w-0 items-center gap-2 py-1.5 pr-3 text-left text-xs text-muted-foreground hover:bg-muted/35 hover:text-foreground focus-visible:bg-muted/35 focus-visible:outline-hidden",
-            selectedPath === child.file.path && "bg-muted/45 text-foreground",
+            selectedPath === child.item.path && "bg-muted/45 text-foreground",
           )}
           key={child.path}
-          onClick={() => onSelect(child.file?.path ?? child.path)}
+          onClick={() => onSelect(child.item?.path ?? child.path)}
           style={{ paddingLeft: `${0.75 + depth * 0.9}rem` }}
           type="button"
         >
-          <ChangedFileTreeIcon path={child.file.path} />
+          <ChangedFileTreeIcon path={child.item.path} />
           <span className="min-w-0 flex-1 truncate">{child.name}</span>
         </button>
       );
@@ -786,7 +761,7 @@ export function ProjectDiffFilesPanel({
   }, [files, query]);
   const stats = React.useMemo(() => changedFileStats(diff), [diff]);
   const fileTree = React.useMemo(
-    () => buildFileTree(filteredFiles),
+    () => buildPathTree(filteredFiles),
     [filteredFiles],
   );
   const selectedFile =

@@ -721,6 +721,7 @@ fn summary_fixture(
         model: None,
         model_source: None,
         provider: None,
+        capabilities: Vec::new(),
         persona_out_of_date: false,
         persona_orphaned: false,
         // Both fields derive from one vector in `build_managed_agent_summary`;

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   clearCommunityStorage,
+  ensureLocalCommunityActive,
   initFirstCommunity,
   migrateLegacyCommunityStorage,
   shouldAutoConnectDefaultRelay,
@@ -103,4 +104,58 @@ test("clearCommunityStorage removes new and legacy state", () => {
   migrateLegacyCommunityStorage(storage);
 
   assert.equal(storage.length, 0);
+});
+
+test("local-only launch drops remote communities and activates localhost", () => {
+  const result = ensureLocalCommunityActive({
+    defaultRelayUrl: "ws://localhost:3000",
+    identityPubkey: "local-pubkey",
+    communities: [
+      {
+        id: "huhao",
+        name: "huhao",
+        relayUrl: "wss://huhao.communities.buzz.xyz",
+        addedAt: "2026-08-08T00:00:00.000Z",
+      },
+      {
+        id: "local",
+        name: "Local Dev",
+        relayUrl: "ws://127.0.0.1:3000",
+        addedAt: "2026-08-08T00:00:00.000Z",
+      },
+    ],
+    activeId: "huhao",
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.activeId, "local");
+  assert.deepEqual(result.communities, [
+    {
+      id: "local",
+      name: "Local Dev",
+      relayUrl: "ws://localhost:3000",
+      addedAt: "2026-08-08T00:00:00.000Z",
+    },
+  ]);
+});
+
+test("remote default preserves remote community choices", () => {
+  const communities = [
+    {
+      id: "remote",
+      name: "Remote",
+      relayUrl: "wss://community.example.com",
+      addedAt: "2026-08-08T00:00:00.000Z",
+    },
+  ];
+  const result = ensureLocalCommunityActive({
+    defaultRelayUrl: "wss://community.example.com",
+    identityPubkey: "remote-pubkey",
+    communities,
+    activeId: "remote",
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.activeId, "remote");
+  assert.equal(result.communities, communities);
 });

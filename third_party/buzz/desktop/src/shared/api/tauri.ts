@@ -607,6 +607,73 @@ export async function forgetCodingWorkspaceProject(
   await invokeTauri("forget_coding_workspace_project", { path });
 }
 
+export type CodingWorkspaceFile = {
+  path: string;
+  size: number | null;
+};
+
+export type CodingWorkspaceChangeKind =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "conflict";
+
+export type CodingWorkspaceChange = {
+  path: string;
+  originalPath: string | null;
+  kind: CodingWorkspaceChangeKind;
+  staged: boolean;
+  indexStatus: string;
+  worktreeStatus: string;
+};
+
+export type CodingWorkspaceCommit = {
+  hash: string;
+  shortHash: string;
+  authorName: string;
+  timestamp: number;
+  subject: string;
+};
+
+export type CodingWorkspaceSnapshot = {
+  files: CodingWorkspaceFile[];
+  changes: CodingWorkspaceChange[];
+  commits: CodingWorkspaceCommit[];
+  gitBranch: string | null;
+  isGitRepository: boolean;
+  filesTruncated: boolean;
+  changesTruncated: boolean;
+};
+
+export async function getCodingWorkspaceSnapshot(
+  path: string,
+): Promise<CodingWorkspaceSnapshot> {
+  return invokeTauri<CodingWorkspaceSnapshot>("get_coding_workspace_snapshot", {
+    path,
+  });
+}
+
+export type CodingWorkspaceFileDiff = {
+  path: string;
+  additions: number;
+  deletions: number;
+  patch: string;
+  truncated: boolean;
+};
+
+export async function getCodingWorkspaceFileDiff(
+  path: string,
+  filePath: string,
+): Promise<CodingWorkspaceFileDiff> {
+  return invokeTauri<CodingWorkspaceFileDiff>(
+    "get_coding_workspace_file_diff",
+    { path, filePath },
+  );
+}
+
 export type BlobDescriptor = {
   url: string;
   sha256: string;

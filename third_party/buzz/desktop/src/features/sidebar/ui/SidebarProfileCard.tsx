@@ -12,6 +12,7 @@ import { ProfilePopover } from "@/features/profile/ui/ProfilePopover";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import type { Community } from "@/features/communities/types";
 import { CommunitySwitcher } from "@/features/communities/ui/CommunitySwitcher";
+import { isLocalRelayUrl } from "@/features/communities/communityStorage";
 import { useMyRelayMembershipLookupQuery } from "@/features/community-members/hooks";
 import type { SettingsSection } from "@/features/settings/ui/SettingsPanels";
 import type { PresenceStatus, Profile, UserStatus } from "@/shared/api/types";
@@ -82,6 +83,9 @@ export function SidebarProfileCard({
   );
   const hasStatus = Boolean(selfUserStatus?.text || selfUserStatus?.emoji);
   const communityLabel = activeCommunity?.name ?? "No community";
+  const isLocalOnly = activeCommunity
+    ? isLocalRelayUrl(activeCommunity.relayUrl)
+    : false;
   const readonlyCommunityLabel = (
     <span
       className="flex min-w-0 cursor-pointer items-center gap-1 text-xs leading-snug text-sidebar-foreground/70"
@@ -162,23 +166,25 @@ export function SidebarProfileCard({
             userStatusEmoji={selfUserStatus?.emoji}
             userStatusText={selfUserStatus?.text}
             communitySwitcherSlot={
-              <CommunitySwitcher
-                activeCommunity={activeCommunity}
-                canInvite={canInvite}
-                onAddCommunity={() => {
-                  setProfilePopoverOpen(false);
-                  onOpenAddCommunity();
-                }}
-                onInvite={() => {
-                  setProfilePopoverOpen(false);
-                  onOpenSettings("community-members");
-                }}
-                onRemoveCommunity={onRemoveCommunity}
-                onSwitchCommunity={onSwitchCommunity}
-                onUpdateCommunity={onUpdateCommunity}
-                variant="profile-menu"
-                communities={communities}
-              />
+              isLocalOnly ? undefined : (
+                <CommunitySwitcher
+                  activeCommunity={activeCommunity}
+                  canInvite={canInvite}
+                  onAddCommunity={() => {
+                    setProfilePopoverOpen(false);
+                    onOpenAddCommunity();
+                  }}
+                  onInvite={() => {
+                    setProfilePopoverOpen(false);
+                    onOpenSettings("community-members");
+                  }}
+                  onRemoveCommunity={onRemoveCommunity}
+                  onSwitchCommunity={onSwitchCommunity}
+                  onUpdateCommunity={onUpdateCommunity}
+                  variant="profile-menu"
+                  communities={communities}
+                />
+              )
             }
           >
             <button

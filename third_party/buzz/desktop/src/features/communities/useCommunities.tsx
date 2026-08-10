@@ -170,6 +170,7 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
   communitiesRef.current = communities;
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
+  const localOnlyRef = useRef(false);
 
   // Monorepo/local-relay launch: pin active community to loopback so the normal
   // create-channel + create-agent path hits the open local stack, not a leftover
@@ -182,6 +183,7 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
         if (cancelled || !isLocalRelayUrl(defaultRelayUrl)) {
           return;
         }
+        localOnlyRef.current = true;
         const identity = await getIdentity();
         if (cancelled) {
           return;
@@ -219,6 +221,14 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
   );
 
   const addCommunity = useCallback((community: Community): string => {
+    if (localOnlyRef.current && !isLocalRelayUrl(community.relayUrl)) {
+      return (
+        communitiesRef.current.find((item) => isLocalRelayUrl(item.relayUrl))
+          ?.id ??
+        activeIdRef.current ??
+        community.id
+      );
+    }
     const existing = communitiesRef.current.find(
       (w) => w.relayUrl === community.relayUrl,
     );
@@ -294,6 +304,13 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
   const switchCommunity = useCallback(
     (id: string) => {
       if (id === activeId) return;
+      const target = communitiesRef.current.find((item) => item.id === id);
+      if (
+        localOnlyRef.current &&
+        (!target || !isLocalRelayUrl(target.relayUrl))
+      ) {
+        return;
+      }
       saveActiveCommunityId(id);
       setActiveId(id);
     },
@@ -311,6 +328,13 @@ function useCommunitiesInternal(): UseCommunitiesReturn {
         Pick<Community, "name" | "relayUrl" | "token" | "pubkey" | "reposDir">
       >,
     ): UpdateCommunityResult => {
+      if (
+        localOnlyRef.current &&
+        updates.relayUrl !== undefined &&
+        !isLocalRelayUrl(updates.relayUrl)
+      ) {
+        return { kind: "unchanged" };
+      }
       const result = resolveCommunityUpdateResult(
         communitiesRef.current,
         activeId,

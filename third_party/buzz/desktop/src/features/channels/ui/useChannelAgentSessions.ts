@@ -17,10 +17,11 @@ import type { PanelValueSetter } from "./useChannelPanelHistoryState";
 
 export type ChannelAgentSessionAgent = Pick<
   ManagedAgent,
-  "pubkey" | "name" | "runtime" | "status"
+  "pubkey" | "name" | "runtime" | "status" | "model" | "provider"
 > & {
   agentCommand: string | null;
   agentSource: "managed" | "member-bot" | "relay";
+  capabilities: string[];
   canInterruptTurn: boolean;
   channelIds?: string[];
   channels?: string[];
@@ -69,6 +70,9 @@ export function buildChannelAgentSessionCandidates({
       name: agent.name,
       agentCommand: null,
       runtime: agent.agentType || null,
+      model: null,
+      provider: null,
+      capabilities: agent.capabilities,
       status: relayStatusToManagedStatus(agent.status),
       agentSource: "relay",
       canInterruptTurn: false,
@@ -85,6 +89,9 @@ export function buildChannelAgentSessionCandidates({
       name: agent.name,
       agentCommand: agent.agentCommand,
       runtime: agent.runtime,
+      model: agent.model,
+      provider: agent.provider,
+      capabilities: agent.capabilities ?? [],
       status: agent.status,
       agentSource: "managed",
       canInterruptTurn: true,
@@ -104,6 +111,9 @@ export function buildChannelAgentSessionCandidates({
       name: member.displayName ?? truncatePubkey(member.pubkey),
       agentCommand: null,
       runtime: null,
+      model: null,
+      provider: null,
+      capabilities: [],
       status: "deployed",
       agentSource: "member-bot",
       canInterruptTurn: false,

@@ -54,12 +54,14 @@
 | 正文 → PDF/PPT/Word | `document.*.create` | DocSmith |
 | 3D/场景 | `unity.scene.*` | Unity |
 | 视频生成/剪辑 | `media.video.*` | OpenMontage |
-| 代码分析/改动 | `code.repo.read` / `code.rust.change` | Buzz Coding Workspace 中显式选择的已授权 Agent |
+| 代码分析/改动 | `code.repo.read` / `code.rust.change` | 当前固定房间座席仅 Grok；未来由显式授权 capability profile 扩展 |
 | 跨域组合 | `coordination.route` 先规划，再逐 capability 指派 | 当前 Grok |
 
 “实时检索→文档”仍是安全 policy pin：先 `research.web`，再把完整正文交给 `document.*.create`。当前实例是 ZeroClaw→DocSmith，但兼容的授权 Agent 可以替换具体实现；每帖仍只出现一个 `@Agent`。
 
 路由优先级：用户显式选择 → 安全 policy pin → capability/版本/输入匹配 → 权限/readiness → 历史质量与偏好 → 负载/延迟 → stable ID 确定性 tie-break。
+
+固定 Local Room 座席的旧记录早于 capability profile。原生 room seeder 因此在兼容迁移时持久化稳定 capability ID，再由 Rust managed-agent 摘要边界投影：Grok 是 coding/coordinator，ZeroClaw 是 research，Unity 是 tool agent（`unity.scene.edit`），DocSmith 是 document，OpenMontage 是 media；其他或用户创建的 Agent 不按显示名、prompt、runtime 猜测能力。Coding Workspace 使用这些稳定 ID 分组和标识，并只把具有 `code.*` capability 的座席标为 Coding agent。
 
 ## 4. 动态 Agent 与用户创建
 
