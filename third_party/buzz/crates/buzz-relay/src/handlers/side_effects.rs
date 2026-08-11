@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use nostr::{Event, EventBuilder, Kind, Tag};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use buzz_core::kind::{
@@ -995,16 +995,20 @@ async fn emit_addressable_discovery_event(
     // (e.g. set topic then set purpose in the same second) can produce events with
     // identical created_at, causing the second to be rejected by stale-write protection
     // (NIP-16 tiebreaker: lower event ID wins, which is random).
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let min_ts = {
+    //
+    // Key min_ts against the *relay-authored* row this replace will overwrite. A
+    // channel-wide newest-of-any-author probe can advance us past real history but
+    // still leave replace_addressable silent-failing (`was_inserted=false` + Ok)
+    // when the store treats the write as a dominated NIP-16/collision. Treat that
+    // as hard failure and retry with a strictly larger timestamp.
+    let relay_pubkey_bytes = state.relay_keypair.public_key().to_bytes();
+    let baseline_ts = {
         let existing = state
             .db
             .query_events(&buzz_db::event::EventQuery {
                 kinds: Some(vec![kind as i32]),
                 channel_id: Some(channel_id),
+                authors: Some(vec![relay_pubkey_bytes.to_vec()]),
                 limit: Some(1),
                 ..buzz_db::event::EventQuery::for_community(tenant.community())
             })
@@ -1012,26 +1016,69 @@ async fn emit_addressable_discovery_event(
             .unwrap_or_default();
         existing
             .first()
-            .map(|e| e.event.created_at.as_secs() + 1)
-            .unwrap_or(now)
+            .map(|e| e.event.created_at.as_secs())
+            .unwrap_or(0)
     };
-    let ts = now.max(min_ts);
 
-    let event = EventBuilder::new(Kind::Custom(kind as u16), "")
-        .tags(tags)
-        .custom_created_at(nostr::Timestamp::from(ts))
-        .sign_with_keys(&state.relay_keypair)
-        .map_err(|e| anyhow::anyhow!("failed to sign kind:{kind}: {e}"))?;
+    // Up to a few attempts: same-second races and pk conflicts both surface as
+    // was_inserted=false; bump created_at and re-sign a fresh id each time.
+    for attempt in 0u64..4 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let ts = now.max(baseline_ts.saturating_add(1 + attempt));
 
-    let (stored, was_inserted) = state
-        .db
-        .replace_addressable_event(tenant.community(), &event, Some(channel_id))
-        .await?;
-    if was_inserted {
-        let kind_u32 = event_kind_u32(&stored.event);
-        dispatch_persistent_event(tenant, state, &stored, kind_u32, relay_pubkey_hex, None).await;
+        let event = EventBuilder::new(Kind::Custom(kind as u16), "")
+            .tags(tags.clone())
+            .custom_created_at(nostr::Timestamp::from(ts))
+            .sign_with_keys(&state.relay_keypair)
+            .map_err(|e| anyhow::anyhow!("failed to sign kind:{kind}: {e}"))?;
+
+        let (stored, was_inserted) = match state
+            .db
+            .replace_addressable_event(tenant.community(), &event, Some(channel_id))
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                // SQLite single-writer: concurrent put_user emissions can hit
+                // "database is locked". Treat as retriable rather than
+                // aborting the whole 39002/01/00 cascade mid-flight.
+                let msg = e.to_string();
+                if msg.contains("database is locked") || msg.contains("SQLITE_BUSY") {
+                    warn!(
+                        channel = %channel_id,
+                        kind,
+                        attempt,
+                        error = %msg,
+                        "NIP-29 discovery replace locked; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(50 * (attempt + 1))).await;
+                    continue;
+                }
+                return Err(e.into());
+            }
+        };
+        if was_inserted {
+            let kind_u32 = event_kind_u32(&stored.event);
+            dispatch_persistent_event(tenant, state, &stored, kind_u32, relay_pubkey_hex, None)
+                .await;
+            return Ok(());
+        }
+
+        warn!(
+            channel = %channel_id,
+            kind,
+            attempt,
+            ts,
+            "NIP-29 discovery replace did not insert; retrying with newer created_at"
+        );
     }
-    Ok(())
+
+    Err(anyhow::anyhow!(
+        "failed to replace NIP-29 discovery kind:{kind} for channel {channel_id} after retries"
+    ))
 }
 
 /// Emit NIP-29 group discovery events (39000, 39001, 39002) signed by the relay keypair.
@@ -1052,6 +1099,32 @@ pub async fn emit_group_discovery_events(
 
     let relay_pubkey_hex = hex::encode(state.relay_keypair.public_key().to_bytes());
     let group_id = channel_id.to_string();
+    // Collect per-kind errors so a 39000/39001 failure cannot skip 39002 (the
+    // discovery document the desktop members list / count actually reads).
+    let mut errors: Vec<String> = Vec::new();
+
+    // ── 39002 members first: desktop membership UI sources this event ────────
+    {
+        let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
+        for m in &members {
+            let pubkey_hex = hex::encode(&m.pubkey);
+            // NIP-29 convention: ["p", pubkey, relay_url, role]. Empty relay_url
+            // because the canonical relay is implicit (this event is signed by it).
+            tags.push(Tag::parse(["p", &pubkey_hex, "", &m.role])?);
+        }
+        if let Err(e) = emit_addressable_discovery_event(
+            tenant,
+            state,
+            channel_id,
+            KIND_NIP29_GROUP_MEMBERS,
+            tags,
+            &relay_pubkey_hex,
+        )
+        .await
+        {
+            errors.push(format!("kind:39002: {e}"));
+        }
+    }
 
     {
         let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
@@ -1105,7 +1178,7 @@ pub async fn emit_group_discovery_events(
         if let Some(ref deadline) = channel.ttl_deadline {
             tags.push(Tag::parse(["ttl_deadline", &deadline.to_rfc3339()])?);
         }
-        emit_addressable_discovery_event(
+        if let Err(e) = emit_addressable_discovery_event(
             tenant,
             state,
             channel_id,
@@ -1113,7 +1186,10 @@ pub async fn emit_group_discovery_events(
             tags,
             &relay_pubkey_hex,
         )
-        .await?;
+        .await
+        {
+            errors.push(format!("kind:39000: {e}"));
+        }
     }
 
     {
@@ -1125,7 +1201,7 @@ pub async fn emit_group_discovery_events(
             let pubkey_hex = hex::encode(&m.pubkey);
             tags.push(Tag::parse(["p", &pubkey_hex, &m.role])?);
         }
-        emit_addressable_discovery_event(
+        if let Err(e) = emit_addressable_discovery_event(
             tenant,
             state,
             channel_id,
@@ -1133,29 +1209,20 @@ pub async fn emit_group_discovery_events(
             tags,
             &relay_pubkey_hex,
         )
-        .await?;
-    }
-
-    {
-        let mut tags: Vec<Tag> = vec![Tag::parse(["d", &group_id])?];
-        for m in &members {
-            let pubkey_hex = hex::encode(&m.pubkey);
-            // NIP-29 convention: ["p", pubkey, relay_url, role]. Empty relay_url
-            // because the canonical relay is implicit (this event is signed by it).
-            tags.push(Tag::parse(["p", &pubkey_hex, "", &m.role])?);
+        .await
+        {
+            errors.push(format!("kind:39001: {e}"));
         }
-        emit_addressable_discovery_event(
-            tenant,
-            state,
-            channel_id,
-            KIND_NIP29_GROUP_MEMBERS,
-            tags,
-            &relay_pubkey_hex,
-        )
-        .await?;
     }
 
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "NIP-29 group discovery partial failure: {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 async fn handle_agent_profile(
@@ -1337,7 +1404,10 @@ async fn handle_put_user(
     .await?;
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
-        warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
+        // error!, not warn!: desktop membership UI reads kind:39002 discovery.
+        // When this fails after add_member, channel_members is correct but clients
+        // permanently show the prior member list until a later successful emit.
+        error!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
     }
 
     if let Err(e) = emit_membership_notification(
@@ -1409,7 +1479,10 @@ async fn handle_remove_user(
     .await?;
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
-        warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
+        // error!, not warn!: desktop membership UI reads kind:39002 discovery.
+        // When this fails after add_member, channel_members is correct but clients
+        // permanently show the prior member list until a later successful emit.
+        error!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
     }
 
     if let Err(e) = emit_membership_notification(
@@ -1647,7 +1720,10 @@ async fn handle_edit_metadata(
     }
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
-        warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
+        // error!, not warn!: desktop membership UI reads kind:39002 discovery.
+        // When this fails after add_member, channel_members is correct but clients
+        // permanently show the prior member list until a later successful emit.
+        error!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
     }
 
     Ok(())
@@ -1986,7 +2062,10 @@ async fn handle_join_request(
     .await?;
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
-        warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
+        // error!, not warn!: desktop membership UI reads kind:39002 discovery.
+        // When this fails after add_member, channel_members is correct but clients
+        // permanently show the prior member list until a later successful emit.
+        error!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
     }
 
     if let Err(e) = emit_membership_notification(
@@ -2049,7 +2128,10 @@ async fn handle_leave_request(
     .await?;
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
-        warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
+        // error!, not warn!: desktop membership UI reads kind:39002 discovery.
+        // When this fails after add_member, channel_members is correct but clients
+        // permanently show the prior member list until a later successful emit.
+        error!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
     }
 
     if let Err(e) = emit_membership_notification(
@@ -3043,19 +3125,25 @@ pub async fn publish_nip43_member_removed(
     publish_nip43_delta(tenant, state, 8001, target_pubkey_hex, "member-removed").await
 }
 
-/// Reconcile channels that exist in the DB but don't have kind:39000 events.
+/// Reconcile channels whose NIP-29 discovery events are missing **or stale**.
 ///
-/// This handles the case where channels were created via direct SQL inserts
-/// (e.g. test seed scripts) rather than through the Nostr event pipeline.
-/// Emits kind:39000 (metadata) and kind:39002 (members) for each channel
-/// that is missing its discovery events.
+/// Covers:
+/// - channels seeded via direct SQL without going through the event pipeline
+/// - membership rows updated via kind:9000 while kind:39002 emission silently
+///   failed (`was_inserted=false` historically returned Ok, leaving the
+///   desktop members UI permanently stuck on the prior snapshot)
 ///
-/// Idempotent: checks for existing kind:39000 events before emitting.
+/// Idempotent: only re-emits when 39000 is missing or 39002's p-set diverges
+/// from live `channel_members`.
+///
+/// Only runs when `BUZZ_RECONCILE_CHANNELS` is set (dev/CI) — production creates
+/// channels solely through the event pipeline and relies on put_user emission.
 pub async fn reconcile_channel_events(
     tenant: &TenantContext,
     state: &Arc<AppState>,
 ) -> anyhow::Result<()> {
     use buzz_db::event::EventQuery;
+    use std::collections::BTreeSet;
 
     let channels = state.db.list_channels(tenant.community(), None).await?;
     if channels.is_empty() {
@@ -3064,9 +3152,8 @@ pub async fn reconcile_channel_events(
 
     let mut reconciled = 0u32;
     for channel in &channels {
-        // Check if kind:39000 event already exists for this channel.
         let channel_id_str = channel.id.to_string();
-        let existing = match state
+        let existing_meta = match state
             .db
             .query_events(&EventQuery {
                 kinds: Some(vec![39000]),
@@ -3087,17 +3174,79 @@ pub async fn reconcile_channel_events(
             }
         };
 
-        if existing.is_empty() {
-            // No discovery event — emit one.
-            if let Err(e) = emit_group_discovery_events(tenant, state, channel.id).await {
+        let missing_meta = existing_meta.is_empty();
+
+        let members = match state.db.get_members(tenant.community(), channel.id).await {
+            Ok(m) => m,
+            Err(e) => {
                 tracing::warn!(
                     channel_id = %channel.id,
                     error = %e,
-                    "reconcile: failed to emit discovery events"
+                    "reconcile: failed to list channel members"
                 );
-            } else {
-                reconciled += 1;
+                continue;
             }
+        };
+        let member_pubkeys: BTreeSet<String> =
+            members.iter().map(|m| hex::encode(&m.pubkey)).collect();
+
+        let existing_members = match state
+            .db
+            .query_events(&EventQuery {
+                kinds: Some(vec![39002]),
+                d_tag: Some(channel_id_str.clone()),
+                limit: Some(1),
+                ..EventQuery::for_community(tenant.community())
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    channel_id = %channel.id,
+                    error = %e,
+                    "reconcile: failed to query kind:39002"
+                );
+                continue;
+            }
+        };
+
+        let discovered_pubkeys: BTreeSet<String> = existing_members
+            .first()
+            .map(|ev| {
+                ev.event
+                    .tags
+                    .iter()
+                    .filter_map(|t| {
+                        let s = t.as_slice();
+                        (s.len() >= 2 && s[0] == "p").then(|| s[1].to_ascii_lowercase())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let membership_stale = member_pubkeys != discovered_pubkeys;
+        if !missing_meta && !membership_stale {
+            continue;
+        }
+
+        if let Err(e) = emit_group_discovery_events(tenant, state, channel.id).await {
+            tracing::warn!(
+                channel_id = %channel.id,
+                error = %e,
+                missing_meta,
+                membership_stale,
+                "reconcile: failed to emit discovery events"
+            );
+        } else {
+            reconciled += 1;
+            tracing::info!(
+                channel_id = %channel.id,
+                missing_meta,
+                membership_stale,
+                members = member_pubkeys.len(),
+                "reconciled channel discovery events"
+            );
         }
     }
 
@@ -3372,6 +3521,37 @@ fn topic_for_subscription(channel_id: Option<Uuid>) -> EventTopic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nip29_member_p_tag_allows_empty_relay_url() {
+        // Discovery 39002 uses NIP-29 form `["p", pubkey, relay_url, role]` with an
+        // empty relay_url (canonical relay is implicit). If Tag::parse rejects
+        // empty values, emit_group_discovery_events aborts after 39000/39001 and
+        // the members UI stays on a stale 39002 snapshot forever.
+        let pubkey = "a".repeat(64);
+        let tag = Tag::parse(["p", &pubkey, "", "bot"]).expect("empty relay_url must parse");
+        let slices = tag.as_slice();
+        assert_eq!(slices.get(1).map(String::as_str), Some(pubkey.as_str()));
+        assert_eq!(slices.get(2).map(String::as_str), Some(""));
+        assert_eq!(slices.get(3).map(String::as_str), Some("bot"));
+    }
+
+    #[test]
+    fn nip29_group_members_event_signs_with_empty_relay_urls() {
+        let keys = nostr::Keys::generate();
+        let mut tags = vec![Tag::parse(["d", &Uuid::new_v4().to_string()]).unwrap()];
+        for i in 0..7 {
+            let mut pk = [0_u8; 32];
+            pk[0] = i;
+            let hex = hex::encode(pk);
+            let role = if i == 0 { "owner" } else { "bot" };
+            tags.push(Tag::parse(["p", &hex, "", role]).expect("parse"));
+        }
+        EventBuilder::new(Kind::Custom(KIND_NIP29_GROUP_MEMBERS as u16), "")
+            .tags(tags)
+            .sign_with_keys(&keys)
+            .expect("sign 39002 discovery");
+    }
 
     #[test]
     fn delete_tombstone_omits_absent_moderation_metadata() {
