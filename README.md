@@ -14,7 +14,6 @@
 [本地多 Agent 协作](#本地多-agent-协作) ·
 [模型与供应商](#模型与供应商) ·
 [架构与运行链路](#架构与运行链路) ·
-[贡献者](#贡献者) ·
 [与上游关系](#与上游关系) ·
 [开发](#开发)
 
@@ -299,18 +298,6 @@ Codex、Claude Code 和自定义 Agent 不要求复用 Grok 的内部实现；�
 | 密钥 | 操作系统 Keyring / 环境变量 | Nostr 身份与供应商 BYOK 凭证 |
 
 更深入的 Agent、Session、工具、权限、memory、compaction 与 subagent 说明见 [`ARCHITECTURE.md`](ARCHITECTURE.md)，分层图与 turn 图见 [`docs/architecture-layers.png`](docs/architecture-layers.png) 和 [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png)。
-
----
-
-## 贡献者
-
-| 名称 | 角色 |
-|------|------|
-| [phuhao（@phuhao00）](https://github.com/phuhao00) | Bony 创建者、产品负责人和核心维护者 |
-| [OpenAI Codex](https://github.com/apps/openai-codex) | Agentic 编程协作：设计、实现、测试与文档 |
-| [Cursor Agent](https://github.com/cursoragent) | AI 编程协作：代码探索、重构与交互迭代 |
-
-GitHub 的 Contributors 侧栏由提交关联账号自动生成；Bony 对应使用 `phuhao00`、`openai-codex[bot]` 与 `cursoragent`，页面显示可能受 GitHub 统计缓存影响。
 
 ---
 
