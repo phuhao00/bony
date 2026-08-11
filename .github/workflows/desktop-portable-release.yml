@@ -85,18 +85,40 @@ jobs:
         working-directory: third_party/buzz/desktop
         run: pnpm build
 
-      - name: Build desktop + sidecars (release)
+      - name: Build sidecars (release)
         shell: bash
         run: |
           set -euo pipefail
           cargo build --release \
-            -p buzz-desktop \
             -p buzz-acp \
             -p buzz-agent \
             -p buzz-backend-kubernetes \
             -p buzz-dev-mcp \
             -p git-credential-nostr \
             -p buzz-cli
+
+      - name: Stage Tauri externalBin sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST=$(rustc -vV | sed -n 's|host: ||p')
+          BIN_DIR="third_party/buzz/desktop/src-tauri/binaries"
+          mkdir -p "$BIN_DIR"
+          if [[ "$HOST" == *windows* ]]; then EXE=.exe; else EXE=; fi
+          for name in buzz-acp buzz-agent buzz-backend-kubernetes buzz-dev-mcp git-credential-nostr buzz; do
+            src="target/release/${name}${EXE}"
+            dst="$BIN_DIR/${name}-${HOST}${EXE}"
+            test -f "$src" || { echo "missing $src"; exit 1; }
+            cp "$src" "$dst"
+            [[ -n "$EXE" ]] || chmod 755 "$dst"
+            echo "staged $dst"
+          done
+
+      - name: Build desktop (release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p buzz-desktop
 
       - name: Stage portable zip
         shell: bash
@@ -197,17 +219,36 @@ jobs:
           brew list cmake >/dev/null 2>&1 || brew install cmake
           brew list protobuf >/dev/null 2>&1 || brew install protobuf
 
-      - name: Build desktop + sidecars (release)
+      - name: Build sidecars (release)
         run: |
           set -euo pipefail
           cargo build --release \
-            -p buzz-desktop \
             -p buzz-acp \
             -p buzz-agent \
             -p buzz-backend-kubernetes \
             -p buzz-dev-mcp \
             -p git-credential-nostr \
             -p buzz-cli
+
+      - name: Stage Tauri externalBin sidecars
+        run: |
+          set -euo pipefail
+          HOST=$(rustc -vV | sed -n 's|host: ||p')
+          BIN_DIR="third_party/buzz/desktop/src-tauri/binaries"
+          mkdir -p "$BIN_DIR"
+          for name in buzz-acp buzz-agent buzz-backend-kubernetes buzz-dev-mcp git-credential-nostr buzz; do
+            src="target/release/${name}"
+            dst="$BIN_DIR/${name}-${HOST}"
+            test -f "$src" || { echo "missing $src"; exit 1; }
+            cp "$src" "$dst"
+            chmod 755 "$dst"
+            echo "staged $dst"
+          done
+
+      - name: Build desktop (release)
+        run: |
+          set -euo pipefail
+          cargo build --release -p buzz-desktop
 
       - name: Stage portable zip
         env:
