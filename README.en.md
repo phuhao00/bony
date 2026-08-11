@@ -14,7 +14,6 @@ Grok is available today over [ACP](https://agentclientprotocol.com/), with one e
 [Local multi-agent collaboration](#local-multi-agent-collaboration) ·
 [Models & providers](#models--providers) ·
 [Architecture & runtime](#architecture-and-runtime-flow) ·
-[Contributors](#contributors) ·
 [Upstream relationship](#upstream-relationship) ·
 [Development](#development)
 
@@ -299,18 +298,6 @@ Codex, Claude Code, and custom agents do not need to reuse Grok's internal imple
 | Secrets | Operating-system keyring / environment variables | Nostr identity and provider BYOK credentials |
 
 For deeper coverage of agents, sessions, tools, permissions, memory, compaction, and sub-agents, see [`ARCHITECTURE.md`](ARCHITECTURE.md). The rendered layer and turn diagrams are available in [`docs/architecture-layers.png`](docs/architecture-layers.png) and [`docs/architecture-turn-flow.png`](docs/architecture-turn-flow.png).
-
----
-
-## Contributors
-
-| Name | Role |
-|------|------|
-| [phuhao (@phuhao00)](https://github.com/phuhao00) | Creator, product lead, and core maintainer of Bony |
-| [OpenAI Codex](https://github.com/apps/openai-codex) | Agentic coding collaborator across design, implementation, testing, and documentation |
-| [Cursor Agent](https://github.com/cursoragent) | AI coding collaborator for code exploration, refactoring, and interaction iteration |
-
-GitHub generates the Contributors sidebar from commit-linked accounts. Bony uses `phuhao00`, `openai-codex[bot]`, and `cursoragent`; the page can lag while GitHub refreshes contributor statistics.
 
 ---
 
