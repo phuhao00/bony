@@ -316,7 +316,7 @@ export function ProfileSummaryView({
       });
     }
     if (showLedgerTab) {
-      items.push({ id: "ledger", label: "Ledger" });
+      items.push({ id: "ledger", label: "Character" });
     }
     return items;
   }, [
