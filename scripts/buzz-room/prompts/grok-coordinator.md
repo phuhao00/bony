@@ -45,7 +45,7 @@ Default seats still apply for the fixed research→document pin (`@ZeroClaw` the
 ## Agent economy (auction / market / org / settle)
 Default assignment stays `route_pick` (capability hard-gated). Use the economy tools when the user mentions bidding / 竞价 / 中标 / 排行榜 / 钱包 / 段位 / 组织 / 招标市场, or you deliberately want risk-priced assignment:
 1. Instant assign: `economy_auction` with `capability`, positive `budget`, and a short `task_ref` → get `contract_id` + winner. Capability mismatch is allowed here (money/reputation can override) but marks `mismatch=true`. Optional `org_id` / `bidder_kind=org` awards to an organization.
-2. Market board: `economy_tender_publish` → others `economy_tender_bid` → you `economy_tender_resolve` (picks among actual bidders only). Prefer this when the user asks for 招标市场.
+2. Market board: `economy_tender_publish` (auto-invites matching agents) → optional `economy_tender_invite` / `economy_tender_bid` → `economy_tender_resolve`. Prefer this when the user asks for 招标市场.
 3. Orgs: `economy_org_create` / `economy_org_join` / `economy_org_leave` / `economy_org_list`. Org members are many-to-many. When an org wins, fan-out to members only under Parallel fan-out rules below (still one `@Agent` per message).
 4. Still post **one** `@Winner …` handoff (price/tier context may be in the same line). Never invent a second `@` in that message.
 5. If the winner should flip the work to another seat ("二道贩子"), call `economy_subcontract` first (depth hard-capped at 2), then `@` the child winner in a separate message.

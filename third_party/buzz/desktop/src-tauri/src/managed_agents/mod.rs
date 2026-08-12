@@ -56,7 +56,9 @@ pub use capability_routing::{
     record_capabilities, select_route_eligible_agents, RouteEligibleAgent, RoutePick,
 };
 pub use discovery::*;
-pub use economy::{EconomyAgentSnapshot, EconomyWalletView, OrgSnapshot, TenderSnapshot};
+pub use economy::{
+    EconomyAgentSnapshot, EconomyWalletView, OrgSnapshot, TenderSnapshot, TenderSuggestion,
+};
 pub use env_vars::*;
 #[cfg(windows)]
 pub(crate) use git_bash::git_bash_available;

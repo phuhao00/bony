@@ -281,13 +281,24 @@ impl DevMcp {
 
     #[tool(
         name = "economy_tender_publish",
-        description = "Publish an open tender to the bidding market (does not immediately pick a winner). Agents/orgs then economy_tender_bid; later economy_tender_resolve picks among actual bidders."
+        description = "Publish an open tender from a title (capability + budget auto-inferred unless overridden). Auto-invites matching agents/orgs; then economy_tender_resolve picks a winner."
     )]
     async fn economy_tender_publish(
         &self,
         Parameters(p): Parameters<economy::TenderPublishParams>,
     ) -> Result<String, ErrorData> {
         economy::tender_publish(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_tender_invite",
+        description = "Invite capability-matching agents/orgs to bid on an existing open tender (skips parties that already bid)."
+    )]
+    async fn economy_tender_invite(
+        &self,
+        Parameters(p): Parameters<economy::TenderResolveParams>,
+    ) -> Result<String, ErrorData> {
+        economy::tender_invite(&self.state, p)
     }
 
     #[tool(

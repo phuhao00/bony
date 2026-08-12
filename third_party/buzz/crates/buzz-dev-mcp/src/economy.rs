@@ -117,8 +117,12 @@ pub struct OrgListParams {}
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TenderPublishParams {
     pub title: String,
-    pub capability: String,
-    pub budget: i64,
+    /// Optional. Empty/omitted → inferred from title.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Optional. Omitted or `<= 0` → inferred from title.
+    #[serde(default)]
+    pub budget: Option<i64>,
     pub task_ref: String,
 }
 
@@ -421,19 +425,43 @@ pub fn org_list(state: &SharedState, _p: OrgListParams) -> Result<String, ErrorD
 
 pub fn tender_publish(state: &SharedState, p: TenderPublishParams) -> Result<String, ErrorData> {
     let paths = paths_from_state(state);
-    let t = eco::publish_tender(
+    let roster = route::load_roster(state).map_err(map_route_err)?;
+    let agents = overlay_grants(&paths, to_eco_agents(&roster.agents));
+    let invited = eco::publish_tender_with_invite(
         &paths,
         eco::TenderPublishParams {
             title: p.title,
-            capability: p.capability,
-            budget: p.budget,
+            capability: p.capability.unwrap_or_default(),
+            budget: p.budget.unwrap_or(0),
             task_ref: p.task_ref,
         },
+        &agents,
     )
     .map_err(map_err)?;
     Ok(format!(
-        "tender published {} | {} | cap={} | budget={} | task={}",
-        t.tender_id, t.title, t.capability, t.budget, t.task_ref
+        "tender published {} | {} | cap={} | budget={} | winner=@{} | contract={} | auto-invited={}",
+        invited.tender.tender_id,
+        invited.tender.title,
+        invited.tender.capability,
+        invited.tender.budget,
+        invited.tender.winner_name.as_deref().unwrap_or("-"),
+        invited.tender.contract_id.as_deref().unwrap_or("-"),
+        invited.invited
+    ))
+}
+
+pub fn tender_invite(state: &SharedState, p: TenderResolveParams) -> Result<String, ErrorData> {
+    let paths = paths_from_state(state);
+    let roster = route::load_roster(state).map_err(map_route_err)?;
+    let agents = overlay_grants(&paths, to_eco_agents(&roster.agents));
+    let invited = eco::complete_open_tender(&paths, &p.tender_id, &agents).map_err(map_err)?;
+    Ok(format!(
+        "tender {} status={} winner=@{} invited={} bids={}",
+        invited.tender.tender_id,
+        invited.tender.status,
+        invited.tender.winner_name.as_deref().unwrap_or("-"),
+        invited.invited,
+        invited.tender.bids.len()
     ))
 }
 

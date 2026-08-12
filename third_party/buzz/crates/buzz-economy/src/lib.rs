@@ -39,8 +39,11 @@ pub use paths::{
     tenders_path, EconomyPaths,
 };
 pub use tender::{
-    list_tenders, publish_tender, resolve_tender, tender_bid, BidRecord, TenderBidParams,
+    complete_open_tender, invite_tender_bids_by_capability, list_tenders, publish_tender,
+    publish_tender_with_invite, record_tender_outcome, resolve_tender, suggest_tender_fields,
+    sweep_open_tenders, tender_bid, BidRecord, TenderBidParams, TenderInviteResult,
     TenderListParams, TenderPublishParams, TenderRecord, TenderResolveParams, TenderSnapshot,
+    TenderSuggestion,
 };
 pub use types::{
     BidderKind, ContractRecord, LedgerEntry, LedgerKind, OrgEvent, OrgEventKind, RosterAgent,

@@ -1002,6 +1002,8 @@ export type TenderSnapshot = {
   winnerPubkey?: string | null;
   winnerName?: string | null;
   contractId?: string | null;
+  /** Winning agent's task answer / deliverable (e.g. `2` for `1+1=?`). */
+  outcome?: string | null;
   bids: TenderBid[];
   createdAt: string;
 };
@@ -1040,6 +1042,20 @@ export async function createEconomyOrg(input: {
   });
 }
 
+export type TenderSuggestion = {
+  capability: string;
+  budget: number;
+  reason: string;
+};
+
+export async function suggestEconomyTender(
+  title: string,
+): Promise<TenderSuggestion> {
+  return await invokeTauri<TenderSuggestion>("economy_suggest_tender", {
+    title,
+  });
+}
+
 export async function listEconomyTenders(
   status?: string,
 ): Promise<TenderSnapshot[]> {
@@ -1050,16 +1066,39 @@ export async function listEconomyTenders(
 
 export async function publishEconomyTender(input: {
   title: string;
-  capability: string;
-  budget: number;
+  capability?: string;
+  budget?: number;
   taskRef: string;
 }): Promise<TenderSnapshot> {
   return await invokeTauri<TenderSnapshot>("economy_publish_tender", {
     title: input.title,
-    capability: input.capability,
-    budget: input.budget,
+    capability: input.capability?.trim() ? input.capability : null,
+    budget:
+      input.budget != null && Number.isFinite(input.budget) && input.budget > 0
+        ? Math.floor(input.budget)
+        : null,
     taskRef: input.taskRef,
   });
+}
+
+export async function inviteEconomyTenderBids(
+  tenderId: string,
+): Promise<TenderSnapshot> {
+  return await invokeTauri<TenderSnapshot>("economy_invite_tender_bids", {
+    tenderId,
+  });
+}
+
+export async function resolveEconomyTender(
+  tenderId: string,
+): Promise<TenderSnapshot> {
+  return await invokeTauri<TenderSnapshot>("economy_resolve_tender", {
+    tenderId,
+  });
+}
+
+export async function sweepEconomyTenders(): Promise<TenderSnapshot[]> {
+  return await invokeTauri<TenderSnapshot[]>("economy_sweep_tenders");
 }
 
 export async function economyAdminAdjustBalance(input: {

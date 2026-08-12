@@ -18,6 +18,7 @@ mod clipboard;
 mod coding_workspace;
 mod dms;
 mod economy;
+mod economy_fulfill;
 mod engrams;
 mod export_util;
 mod global_agent_config;

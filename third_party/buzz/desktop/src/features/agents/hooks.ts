@@ -40,6 +40,9 @@ import {
   listEconomyOrgs,
   listEconomyTenders,
   publishEconomyTender,
+  inviteEconomyTenderBids,
+  resolveEconomyTender,
+  sweepEconomyTenders,
   economyAdminAdjustBalance,
   economyAdminAdjustReputation,
   economyAdminSetTags,
@@ -445,11 +448,26 @@ export function useEconomyAdminMutation() {
     mutationFn: publishEconomyTender,
     onSettled: invalidate,
   });
+  const inviteTenderBids = useMutation({
+    mutationFn: (tenderId: string) => inviteEconomyTenderBids(tenderId),
+    onSettled: invalidate,
+  });
+  const resolveTender = useMutation({
+    mutationFn: (tenderId: string) => resolveEconomyTender(tenderId),
+    onSettled: invalidate,
+  });
+  const sweepTenders = useMutation({
+    mutationFn: () => sweepEconomyTenders(),
+    onSettled: invalidate,
+  });
   return {
     adjustBalance,
     adjustReputation,
     setTags,
     publishTender,
+    inviteTenderBids,
+    resolveTender,
+    sweepTenders,
   };
 }
 

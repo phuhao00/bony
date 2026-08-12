@@ -8,10 +8,15 @@ use serde::Serialize;
 
 pub use eco::{
     AgentEconomySnapshot as EconomyAgentSnapshot, EconomyWalletView, OrgSnapshot, TenderSnapshot,
+    TenderSuggestion,
 };
 
 fn paths() -> EconomyPaths {
     EconomyPaths::resolve()
+}
+
+pub fn suggest_tender(title: &str) -> TenderSuggestion {
+    eco::suggest_tender_fields(title)
 }
 
 pub fn tier_for(reputation: i32) -> String {
@@ -104,20 +109,68 @@ pub fn list_tenders(status: Option<&str>) -> Result<Vec<TenderSnapshot>, String>
 
 pub fn publish_tender(
     title: &str,
-    capability: &str,
-    budget: i64,
+    capability: Option<&str>,
+    budget: Option<i64>,
     task_ref: &str,
-) -> Result<TenderSnapshot, String> {
-    eco::publish_tender(
+    agents: &[eco::RosterAgent],
+) -> Result<eco::TenderInviteResult, String> {
+    eco::publish_tender_with_invite(
         &paths(),
         eco::TenderPublishParams {
             title: title.to_string(),
-            capability: capability.to_string(),
-            budget,
+            capability: capability.unwrap_or("").to_string(),
+            budget: budget.unwrap_or(0),
             task_ref: task_ref.to_string(),
+        },
+        agents,
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn invite_tender_bids(
+    tender_id: &str,
+    agents: &[eco::RosterAgent],
+) -> Result<eco::TenderInviteResult, String> {
+    eco::complete_open_tender(&paths(), tender_id, agents).map_err(|e| e.to_string())
+}
+
+pub fn resolve_tender(
+    tender_id: &str,
+    agents: &[eco::RosterAgent],
+) -> Result<TenderSnapshot, String> {
+    eco::resolve_tender(
+        &paths(),
+        agents,
+        eco::TenderResolveParams {
+            tender_id: tender_id.to_string(),
         },
     )
     .map_err(|e| e.to_string())
+}
+
+pub fn sweep_open_tenders(agents: &[eco::RosterAgent]) -> Result<Vec<TenderSnapshot>, String> {
+    eco::sweep_open_tenders(&paths(), agents).map_err(|e| e.to_string())
+}
+
+pub fn record_tender_outcome(
+    tender_id: &str,
+    outcome: &str,
+    success: bool,
+) -> Result<TenderSnapshot, String> {
+    eco::record_tender_outcome(&paths(), tender_id, outcome, success).map_err(|e| e.to_string())
+}
+
+pub fn roster_from_known(agents: &[(String, String, Vec<String>)]) -> Vec<eco::RosterAgent> {
+    agents
+        .iter()
+        .filter(|(pubkey, _, _)| !pubkey.trim().is_empty())
+        .map(|(pubkey, name, capabilities)| eco::RosterAgent {
+            name: name.clone(),
+            pubkey: pubkey.clone(),
+            capabilities: capabilities.clone(),
+            status: "running".into(),
+        })
+        .collect()
 }
 
 pub fn admin_adjust_balance(
