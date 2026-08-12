@@ -28,6 +28,7 @@ use crate::managed_agents::{
 use crate::util::now_iso;
 
 use super::{add_channel_members, create_channel, create_managed_agent, get_channels};
+use super::room_agent_avatars;
 
 const ROOM_CHANNEL_NAME: &str = "Local Room";
 const ROOM_CHANNEL_DESCRIPTION: &str = "Local room stack agents";
@@ -231,31 +232,49 @@ fn reconcile_room_agent_contracts(app: &AppHandle, state: &AppState) -> Result<(
     let mut records = load_managed_agents(app)?;
     let mut changed = false;
     for record in &mut records {
-        let room_spec = room_agent_specs().into_iter().find(|spec| {
-            !record.pubkey.trim().is_empty()
-                && record.persona_id.is_none()
-                && record.start_on_app_launch
-                && record.name.eq_ignore_ascii_case(spec.name)
-        });
+        // Room seats are keyed by display name + live pubkey. Older seeds stamped
+        // persona_id = pubkey, so avatar/env reconcile must not require
+        // persona_id.is_none().
+        let room_spec = room_agent_specs()
+            .into_iter()
+            .find(|spec| !record.pubkey.trim().is_empty() && record.name.eq_ignore_ascii_case(spec.name));
         if let Some(spec) = room_spec {
-            let desired_capabilities = spec.capabilities.join(",");
-            if record
-                .env_vars
-                .get(MANAGED_AGENT_CAPABILITIES_ENV)
-                .map(String::as_str)
-                != Some(desired_capabilities.as_str())
-            {
-                record.env_vars.insert(
-                    MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
-                    desired_capabilities,
-                );
+            if let Some(desired_avatar) = room_agent_avatars::room_agent_avatar_url(spec.name) {
+                if record.avatar_url.as_deref() != Some(desired_avatar) {
+                    record.avatar_url = Some(desired_avatar.to_string());
+                    record.updated_at = now_iso();
+                    changed = true;
+                }
+            }
+
+            let mut desired_env: BTreeMap<String, String> = spec
+                .extra_env
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect();
+            desired_env.insert(
+                MANAGED_AGENT_CAPABILITIES_ENV.to_string(),
+                spec.capabilities.join(","),
+            );
+            if spec.name.eq_ignore_ascii_case("OpenMontage") {
+                if let Some(root) = desired_openmontage_root.as_deref() {
+                    desired_env.insert("OPENMONTAGE_ROOT".to_string(), root.to_string());
+                }
+            }
+            let mut env_changed = false;
+            for (key, value) in desired_env {
+                if record.env_vars.get(&key).map(String::as_str) != Some(value.as_str()) {
+                    record.env_vars.insert(key, value);
+                    env_changed = true;
+                }
+            }
+            if env_changed {
                 record.updated_at = now_iso();
                 changed = true;
             }
         }
 
         let is_fixed_grok_seat = !record.pubkey.trim().is_empty()
-            && record.persona_id.is_none()
             && record.name.eq_ignore_ascii_case("Grok");
         if is_fixed_grok_seat
             && needs_coding_workspace_prompt_migration(record.system_prompt.as_deref())
@@ -266,7 +285,6 @@ fn reconcile_room_agent_contracts(app: &AppHandle, state: &AppState) -> Result<(
         }
 
         let is_fixed_openmontage_seat = !record.pubkey.trim().is_empty()
-            && record.persona_id.is_none()
             && record.name.eq_ignore_ascii_case("OpenMontage");
         if !is_fixed_openmontage_seat {
             continue;
@@ -275,14 +293,6 @@ fn reconcile_room_agent_contracts(app: &AppHandle, state: &AppState) -> Result<(
         if record.system_prompt.as_deref() != Some(desired_openmontage_prompt.as_str()) {
             record.system_prompt = Some(desired_openmontage_prompt.clone());
             openmontage_changed = true;
-        }
-        if let Some(root) = desired_openmontage_root.as_deref() {
-            if record.env_vars.get("OPENMONTAGE_ROOT").map(String::as_str) != Some(root) {
-                record
-                    .env_vars
-                    .insert("OPENMONTAGE_ROOT".to_string(), root.to_string());
-                openmontage_changed = true;
-            }
         }
         if openmontage_changed {
             record.updated_at = now_iso();
@@ -376,7 +386,8 @@ pub async fn seed_room_agents(
             // (10) forks ~10 grok/zeroclaw per seat and stalls Waking / relay.
             parallelism: Some(1),
             system_prompt: Some(room_agent_system_prompt(&spec)),
-            avatar_url: None,
+            avatar_url: room_agent_avatars::room_agent_avatar_url(spec.name)
+                .map(str::to_string),
             model: None,
             provider: None,
             env_vars,
@@ -639,5 +650,16 @@ mod tests {
         assert_eq!(openmontage_root_from_home(&home), legacy);
 
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn room_agent_avatar_urls_cover_all_seats() {
+        for spec in room_agent_specs() {
+            assert!(
+                room_agent_avatars::room_agent_avatar_url(spec.name).is_some(),
+                "missing logo for {}",
+                spec.name
+            );
+        }
     }
 }

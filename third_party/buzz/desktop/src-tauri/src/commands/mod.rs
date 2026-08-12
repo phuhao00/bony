@@ -56,6 +56,7 @@ mod project_terminal;
 mod qr_download;
 mod relay_members;
 mod relay_reconnect;
+mod room_agent_avatars;
 mod room_seed;
 mod social;
 mod team_snapshot;

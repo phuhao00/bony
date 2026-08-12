@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { resolveAgentCardModelLabel } from "@/features/agents/lib/agentCardModelLabel";
 import { friendlyAgentLastError } from "@/features/agents/lib/friendlyAgentLastError";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
+import { resolveRoomAwareAvatarUrl } from "@/features/agents/lib/roomAgentAvatars";
 import { useEconomyLeaderboardQuery } from "@/features/agents/hooks";
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import type { AgentPersona, ManagedAgent } from "@/shared/api/types";
@@ -281,9 +282,14 @@ function AgentPersonaCard({
   });
   const isActive = agent ? isManagedAgentActive(agent) : false;
   const profileQuery = useUserProfileQuery(agent?.pubkey);
-  const avatarUrl = agent
-    ? firstAvatarUrl(persona.avatarUrl, profileQuery.data?.avatarUrl)
-    : persona.avatarUrl;
+  const avatarUrl = resolveRoomAwareAvatarUrl({
+    // Prefer the managed-agent seat name so room logos match even when the
+    // linked persona display name differs.
+    name: agent?.name ?? title,
+    candidates: agent
+      ? [agent.avatarUrl, persona.avatarUrl, profileQuery.data?.avatarUrl]
+      : [persona.avatarUrl],
+  });
   const friendlyError = agent
     ? friendlyAgentLastError(agent.lastError, agent.lastErrorCode)?.copy
     : null;
@@ -375,6 +381,10 @@ function StandaloneAgentCard({
   const profileQuery = useUserProfileQuery(agent.pubkey);
   const economyQuery = useEconomyLeaderboardQuery();
   const economy = economySnapshotForPubkey(economyQuery.data, agent.pubkey);
+  const avatarUrl = resolveRoomAwareAvatarUrl({
+    name: title,
+    candidates: [agent.avatarUrl, profileQuery.data?.avatarUrl],
+  });
   const friendlyError = friendlyAgentLastError(
     agent.lastError,
     agent.lastErrorCode,
@@ -388,7 +398,7 @@ function StandaloneAgentCard({
       avatar={
         <AgentRuntimeAvatarControl
           activeTestId={`agent-runtime-active-${agent.pubkey}`}
-          avatarUrl={profileQuery.data?.avatarUrl}
+          avatarUrl={avatarUrl}
           errorLabel={friendlyError}
           errorTestId={`agent-runtime-error-${agent.pubkey}`}
           isActive={isActive}
@@ -401,7 +411,7 @@ function StandaloneAgentCard({
           onStart={() => onStartAgent(agent.pubkey)}
         />
       }
-      avatarUrl={profileQuery.data?.avatarUrl}
+      avatarUrl={avatarUrl}
       dataTestId={`managed-agent-${agent.pubkey}`}
       label={title}
       modelLabel={resolveAgentCardModelLabel({
@@ -432,16 +442,6 @@ function StandaloneAgentCard({
       }
     />
   );
-}
-
-function firstAvatarUrl(
-  ...candidates: Array<string | null | undefined>
-): string | null {
-  for (const candidate of candidates) {
-    const trimmed = candidate?.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
 }
 
 function NewAgentCard({
