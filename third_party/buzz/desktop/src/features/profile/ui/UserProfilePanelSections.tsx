@@ -26,6 +26,7 @@ import {
   ProfileFieldGroup,
 } from "@/features/profile/ui/UserProfilePanelFields";
 import { AGENT_DETAILS_FIELD_LABELS } from "@/features/profile/ui/UserProfilePanelAgentDetails";
+import { LedgerFocusedView } from "@/features/profile/ui/LedgerFocusedView";
 import {
   ProfileInfoTabContent,
   ProfileIngressRow,
@@ -226,6 +227,7 @@ export function ProfileSummaryView({
   const activeTurns = useAgentWorking(isBot ? pubkey : null).channels;
 
   const showMemoriesTab = isOwner === true && Boolean(pubkey);
+  const showLedgerTab = Boolean(pubkey) && (isBot || isOwner === true);
   const showInstructionBlock =
     isOwner === true &&
     (agentInstruction !== null || handleEditPersona !== undefined);
@@ -313,6 +315,9 @@ export function ProfileSummaryView({
             : undefined,
       });
     }
+    if (showLedgerTab) {
+      items.push({ id: "ledger", label: "Ledger" });
+    }
     return items;
   }, [
     channelCount,
@@ -322,6 +327,7 @@ export function ProfileSummaryView({
     runtimeTabStatus,
     showChannelsTab,
     showInfoTab,
+    showLedgerTab,
     showMemoriesTab,
     showRuntimeTab,
   ]);
@@ -467,6 +473,14 @@ export function ProfileSummaryView({
               agentPubkey={pubkey}
               variant="embedded"
               viewerIsOwner={isOwner}
+            />
+          ) : null}
+          {activeTab === "ledger" && pubkey ? (
+            <LedgerFocusedView
+              agentName={displayName}
+              agentPubkey={pubkey}
+              canAdmin={isOwner === true}
+              variant="embedded"
             />
           ) : null}
         </section>

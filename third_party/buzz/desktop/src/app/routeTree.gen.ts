@@ -10,6 +10,8 @@ import { Route as settingsRouteImport } from "./routes/settings";
 import { Route as remindersRouteImport } from "./routes/reminders";
 import { Route as pulseRouteImport } from "./routes/pulse";
 import { Route as projectsRouteImport } from "./routes/projects";
+import { Route as marketRouteImport } from "./routes/market";
+import { Route as economyRouteImport } from "./routes/economy";
 import { Route as agentsRouteImport } from "./routes/agents";
 import { Route as indexRouteImport } from "./routes/index";
 import { Route as workflowsDotworkflowIdRouteImport } from "./routes/workflows.$workflowId";
@@ -41,6 +43,16 @@ const pulseRoute = pulseRouteImport.update({
 const projectsRoute = projectsRouteImport.update({
   id: "/projects",
   path: "/projects",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const marketRoute = marketRouteImport.update({
+  id: "/market",
+  path: "/market",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const economyRoute = economyRouteImport.update({
+  id: "/economy",
+  path: "/economy",
   getParentRoute: () => rootRouteImport,
 } as any);
 const agentsRoute = agentsRouteImport.update({
@@ -83,6 +95,8 @@ const channelsDotchannelIdDotpostsDotpostIdRoute =
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/economy": typeof economyRoute;
+  "/market": typeof marketRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
@@ -97,6 +111,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/economy": typeof economyRoute;
+  "/market": typeof marketRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
@@ -112,6 +128,8 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
   "/agents": typeof agentsRoute;
+  "/economy": typeof economyRoute;
+  "/market": typeof marketRoute;
   "/projects": typeof projectsRoute;
   "/pulse": typeof pulseRoute;
   "/reminders": typeof remindersRoute;
@@ -128,6 +146,8 @@ export interface FileRouteTypes {
   fullPaths:
     | "/"
     | "/agents"
+    | "/economy"
+    | "/market"
     | "/projects"
     | "/pulse"
     | "/reminders"
@@ -142,6 +162,8 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/agents"
+    | "/economy"
+    | "/market"
     | "/projects"
     | "/pulse"
     | "/reminders"
@@ -156,6 +178,8 @@ export interface FileRouteTypes {
     | "__root__"
     | "/"
     | "/agents"
+    | "/economy"
+    | "/market"
     | "/projects"
     | "/pulse"
     | "/reminders"
@@ -171,6 +195,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
   agentsRoute: typeof agentsRoute;
+  economyRoute: typeof economyRoute;
+  marketRoute: typeof marketRoute;
   projectsRoute: typeof projectsRoute;
   pulseRoute: typeof pulseRoute;
   remindersRoute: typeof remindersRoute;
@@ -218,6 +244,20 @@ declare module "@tanstack/react-router" {
       path: "/projects";
       fullPath: "/projects";
       preLoaderRoute: typeof projectsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/market": {
+      id: "/market";
+      path: "/market";
+      fullPath: "/market";
+      preLoaderRoute: typeof marketRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/economy": {
+      id: "/economy";
+      path: "/economy";
+      fullPath: "/economy";
+      preLoaderRoute: typeof economyRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/agents": {
@@ -275,6 +315,8 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
   agentsRoute: agentsRoute,
+  economyRoute: economyRoute,
+  marketRoute: marketRoute,
   projectsRoute: projectsRoute,
   pulseRoute: pulseRoute,
   remindersRoute: remindersRoute,

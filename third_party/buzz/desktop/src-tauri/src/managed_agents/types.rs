@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, process::Child};
 
-/// Internal persisted declaration used by the five legacy Local Room seats
-/// until `AgentDefinition` owns a first-class versioned capability profile.
+/// Env key for a comma-separated list of stable capability ids on any managed
+/// agent (built-in room seats and user-created). Projected into
+/// `ManagedAgentSummary.capabilities` and kind:10100 directory profiles.
+/// First-class `AgentDefinition.capabilities` remains a follow-up (D1 full);
+/// this env key is the current authoritative declaration channel.
 pub const MANAGED_AGENT_CAPABILITIES_ENV: &str = "BUZZ_MANAGED_AGENT_CAPABILITIES";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

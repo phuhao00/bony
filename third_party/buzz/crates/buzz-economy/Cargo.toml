@@ -1,0 +1,19 @@
+[package]
+name = "buzz-economy"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+description = "Room agent economy: hash-chained ledger, auctions, orgs, tenders, achievements"
+
+[dependencies]
+blake3 = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

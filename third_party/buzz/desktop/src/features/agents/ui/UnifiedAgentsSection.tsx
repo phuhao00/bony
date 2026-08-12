@@ -4,6 +4,7 @@ import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { resolveAgentCardModelLabel } from "@/features/agents/lib/agentCardModelLabel";
 import { friendlyAgentLastError } from "@/features/agents/lib/friendlyAgentLastError";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
+import { useEconomyLeaderboardQuery } from "@/features/agents/hooks";
 import { useUserProfileQuery } from "@/features/profile/hooks";
 import type { AgentPersona, ManagedAgent } from "@/shared/api/types";
 import type { ProfilePanelOpenOptions } from "@/shared/context/ProfilePanelContext";
@@ -11,6 +12,10 @@ import { useFeedbackToasts } from "@/shared/hooks/useToastEffect";
 import { useFileImportZone } from "@/shared/hooks/useFileImportZone";
 import { Badge } from "@/shared/ui/badge";
 import { RestartDiffBadge } from "./RestartDiffBadge";
+import {
+  EconomyTierBadge,
+  economySnapshotForPubkey,
+} from "./EconomyLeaderboardPanel";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -368,6 +373,8 @@ function StandaloneAgentCard({
 }) {
   const title = agent.name;
   const profileQuery = useUserProfileQuery(agent.pubkey);
+  const economyQuery = useEconomyLeaderboardQuery();
+  const economy = economySnapshotForPubkey(economyQuery.data, agent.pubkey);
   const friendlyError = friendlyAgentLastError(
     agent.lastError,
     agent.lastErrorCode,
@@ -419,6 +426,8 @@ function StandaloneAgentCard({
             autoRestartEnabled={agent.autoRestartOnConfigChange}
             restartDiff={agent.restartDiff}
           />
+        ) : economy ? (
+          <EconomyTierBadge balance={economy.balance} tier={economy.tier} />
         ) : null
       }
     />

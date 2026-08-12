@@ -941,6 +941,169 @@ export async function listManagedAgents(): Promise<ManagedAgent[]> {
     fromRawManagedAgent,
   );
 }
+
+export type EconomyAgentSnapshot = {
+  name: string;
+  pubkey: string;
+  balance: number;
+  reputation: number;
+  tier: string;
+  tags?: string[];
+  achievements?: string[];
+};
+
+export type EconomyLedgerHistoryEntry = {
+  ts: string;
+  kind: string;
+  amount: number;
+  reputationDelta: number;
+  taskRef?: string | null;
+  note?: string | null;
+};
+
+export type EconomyWalletView = {
+  name: string;
+  pubkey: string;
+  balance: number;
+  reputation: number;
+  tier: string;
+  tags?: string[];
+  achievements?: string[];
+  capabilityGrants?: string[];
+  history?: EconomyLedgerHistoryEntry[];
+};
+
+export type OrgSnapshot = {
+  orgId: string;
+  name: string;
+  memberPubkeys: string[];
+  memberNames: string[];
+  tags: string[];
+  createdAt: string;
+};
+
+export type TenderBid = {
+  ts: string;
+  tenderId: string;
+  bidderPubkey: string;
+  bidderName: string;
+  bidderKind: string;
+  stake: number;
+  note?: string | null;
+};
+
+export type TenderSnapshot = {
+  tenderId: string;
+  title: string;
+  capability: string;
+  budget: number;
+  taskRef: string;
+  status: string;
+  winnerPubkey?: string | null;
+  winnerName?: string | null;
+  contractId?: string | null;
+  bids: TenderBid[];
+  createdAt: string;
+};
+
+export async function getEconomyLeaderboard(
+  limit?: number,
+): Promise<EconomyAgentSnapshot[]> {
+  return await invokeTauri<EconomyAgentSnapshot[]>("economy_get_leaderboard", {
+    limit: limit ?? null,
+  });
+}
+
+export async function getEconomyWallet(
+  pubkeyOrName: string,
+): Promise<EconomyWalletView | null> {
+  return await invokeTauri<EconomyWalletView | null>("economy_get_wallet", {
+    pubkeyOrName,
+  });
+}
+
+export async function listEconomyOrgs(): Promise<OrgSnapshot[]> {
+  return await invokeTauri<OrgSnapshot[]>("economy_list_orgs");
+}
+
+export async function createEconomyOrg(input: {
+  name: string;
+  founderPubkey: string;
+  founderName?: string;
+  tags?: string[];
+}): Promise<OrgSnapshot> {
+  return await invokeTauri<OrgSnapshot>("economy_create_org", {
+    name: input.name,
+    founderPubkey: input.founderPubkey,
+    founderName: input.founderName ?? null,
+    tags: input.tags ?? null,
+  });
+}
+
+export async function listEconomyTenders(
+  status?: string,
+): Promise<TenderSnapshot[]> {
+  return await invokeTauri<TenderSnapshot[]>("economy_list_tenders", {
+    status: status ?? null,
+  });
+}
+
+export async function publishEconomyTender(input: {
+  title: string;
+  capability: string;
+  budget: number;
+  taskRef: string;
+}): Promise<TenderSnapshot> {
+  return await invokeTauri<TenderSnapshot>("economy_publish_tender", {
+    title: input.title,
+    capability: input.capability,
+    budget: input.budget,
+    taskRef: input.taskRef,
+  });
+}
+
+export async function economyAdminAdjustBalance(input: {
+  pubkey: string;
+  name?: string;
+  delta: number;
+  note?: string;
+}): Promise<void> {
+  await invokeTauri("economy_admin_adjust_balance", {
+    pubkey: input.pubkey,
+    name: input.name ?? null,
+    delta: input.delta,
+    note: input.note ?? null,
+  });
+}
+
+export async function economyAdminAdjustReputation(input: {
+  pubkey: string;
+  name?: string;
+  delta: number;
+  note?: string;
+}): Promise<void> {
+  await invokeTauri("economy_admin_adjust_reputation", {
+    pubkey: input.pubkey,
+    name: input.name ?? null,
+    delta: input.delta,
+    note: input.note ?? null,
+  });
+}
+
+export async function economyAdminSetTags(input: {
+  pubkey: string;
+  name?: string;
+  tags: string[];
+  note?: string;
+}): Promise<void> {
+  await invokeTauri("economy_admin_set_tags", {
+    pubkey: input.pubkey,
+    name: input.name ?? null,
+    tags: input.tags,
+    note: input.note ?? null,
+  });
+}
+
 export async function createManagedAgent(input: CreateManagedAgentInput) {
   const response = await invokeTauri<RawCreateManagedAgentResponse>(
     "create_managed_agent",

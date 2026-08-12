@@ -35,6 +35,14 @@ import {
   installAcpRuntime,
   invokeTauri,
   listManagedAgents,
+  getEconomyLeaderboard,
+  getEconomyWallet,
+  listEconomyOrgs,
+  listEconomyTenders,
+  publishEconomyTender,
+  economyAdminAdjustBalance,
+  economyAdminAdjustReputation,
+  economyAdminSetTags,
   listRelayAgents,
   saveCustomHarness,
   updateManagedAgent,
@@ -107,6 +115,11 @@ export type {
 
 export const relayAgentsQueryKey = ["relay-agents"] as const;
 export const managedAgentsQueryKey = ["managed-agents"] as const;
+export const economyLeaderboardQueryKey = ["economy-leaderboard"] as const;
+export const economyOrgsQueryKey = ["economy-orgs"] as const;
+export const economyTendersQueryKey = ["economy-tenders"] as const;
+export const economyWalletQueryKey = (pubkey: string) =>
+  ["economy-wallet", pubkey] as const;
 export const personasQueryKey = ["personas"] as const;
 export const acpRuntimesQueryKey = ["acp-runtimes"] as const;
 export const acpAuthMethodsQueryKey = ["acp-auth-methods"] as const;
@@ -358,6 +371,86 @@ export function useManagedAgentsQuery(options?: { enabled?: boolean }) {
         : false;
     },
   });
+}
+
+export function useEconomyLeaderboardQuery(options?: { enabled?: boolean }) {
+  return useQuery({
+    enabled: options?.enabled ?? true,
+    queryKey: economyLeaderboardQueryKey,
+    queryFn: () => getEconomyLeaderboard(20),
+    staleTime: 10_000,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useEconomyWalletQuery(
+  pubkeyOrName: string | null | undefined,
+  options?: { enabled?: boolean },
+) {
+  const key = pubkeyOrName?.trim() ?? "";
+  return useQuery({
+    enabled: (options?.enabled ?? true) && key.length > 0,
+    queryKey: economyWalletQueryKey(key),
+    queryFn: () => getEconomyWallet(key),
+    staleTime: 5_000,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useEconomyOrgsQuery(options?: { enabled?: boolean }) {
+  return useQuery({
+    enabled: options?.enabled ?? true,
+    queryKey: economyOrgsQueryKey,
+    queryFn: () => listEconomyOrgs(),
+    staleTime: 10_000,
+  });
+}
+
+export function useEconomyTendersQuery(
+  status?: string,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    enabled: options?.enabled ?? true,
+    queryKey: [...economyTendersQueryKey, status ?? "all"] as const,
+    queryFn: () => listEconomyTenders(status),
+    staleTime: 10_000,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useEconomyAdminMutation() {
+  const queryClient = useQueryClient();
+  const invalidate = async () => {
+    await queryClient.invalidateQueries({
+      queryKey: economyLeaderboardQueryKey,
+    });
+    await queryClient.invalidateQueries({ queryKey: ["economy-wallet"] });
+    await queryClient.invalidateQueries({ queryKey: economyOrgsQueryKey });
+    await queryClient.invalidateQueries({ queryKey: economyTendersQueryKey });
+  };
+  const adjustBalance = useMutation({
+    mutationFn: economyAdminAdjustBalance,
+    onSettled: invalidate,
+  });
+  const adjustReputation = useMutation({
+    mutationFn: economyAdminAdjustReputation,
+    onSettled: invalidate,
+  });
+  const setTags = useMutation({
+    mutationFn: economyAdminSetTags,
+    onSettled: invalidate,
+  });
+  const publishTender = useMutation({
+    mutationFn: publishEconomyTender,
+    onSettled: invalidate,
+  });
+  return {
+    adjustBalance,
+    adjustReputation,
+    setTags,
+    publishTender,
+  };
 }
 
 export function useCreateManagedAgentMutation() {

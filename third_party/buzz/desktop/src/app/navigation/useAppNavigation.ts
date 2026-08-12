@@ -68,6 +68,28 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goEconomy = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/economy",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
+  const goMarket = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/market",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goPulse = React.useCallback(
     (behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -316,8 +338,10 @@ export function useAppNavigation() {
     closeWorkflowDetail,
     goAgents,
     goChannel,
+    goEconomy,
     goForumPost,
     goHome,
+    goMarket,
     goNewMessage,
     goProject,
     goProjects,

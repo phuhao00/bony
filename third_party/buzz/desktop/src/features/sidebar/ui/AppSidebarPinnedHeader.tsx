@@ -1,4 +1,4 @@
-import { Activity, Bot, FolderGit2, Inbox, Zap } from "lucide-react";
+import { Activity, Bot, FolderGit2, Gavel, Inbox, Trophy, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { FeatureGate } from "@/shared/features";
@@ -17,6 +17,8 @@ type SidebarSelectedView =
   | "channel"
   | "messages"
   | "agents"
+  | "economy"
+  | "market"
   | "workflows"
   | "pulse"
   | "projects";
@@ -38,7 +40,9 @@ type AppSidebarPinnedHeaderProps = {
 type AppSidebarPrimaryMenuProps = {
   homeBadgeCount: number;
   onSelectAgents: () => void;
+  onSelectEconomy: () => void;
   onSelectHome: () => void;
+  onSelectMarket: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
@@ -83,7 +87,9 @@ export function AppSidebarPinnedHeader({
 export function AppSidebarPrimaryMenu({
   homeBadgeCount,
   onSelectAgents,
+  onSelectEconomy,
   onSelectHome,
+  onSelectMarket,
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
@@ -170,6 +176,48 @@ export function AppSidebarPrimaryMenu({
               className={selectedView !== "agents" ? "opacity-80" : undefined}
             >
               Agents
+            </SidebarMenuLabel>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            className="data-[active=true]:font-normal"
+            data-testid="open-market-view"
+            isActive={selectedView === "market"}
+            onClick={onSelectMarket}
+            tooltip="Tender Market"
+            type="button"
+          >
+            <Gavel
+              className={
+                selectedView !== "market" ? "h-4 w-4 opacity-80" : "h-4 w-4"
+              }
+            />
+            <SidebarMenuLabel
+              className={selectedView !== "market" ? "opacity-80" : undefined}
+            >
+              Tender Market
+            </SidebarMenuLabel>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            className="data-[active=true]:font-normal"
+            data-testid="open-economy-view"
+            isActive={selectedView === "economy"}
+            onClick={onSelectEconomy}
+            tooltip="Room Economy"
+            type="button"
+          >
+            <Trophy
+              className={
+                selectedView !== "economy" ? "h-4 w-4 opacity-80" : "h-4 w-4"
+              }
+            />
+            <SidebarMenuLabel
+              className={selectedView !== "economy" ? "opacity-80" : undefined}
+            >
+              Room Economy
             </SidebarMenuLabel>
           </SidebarMenuButton>
         </SidebarMenuItem>

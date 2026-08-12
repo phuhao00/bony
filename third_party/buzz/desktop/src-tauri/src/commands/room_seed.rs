@@ -32,7 +32,7 @@ use super::{add_channel_members, create_channel, create_managed_agent, get_chann
 const ROOM_CHANNEL_NAME: &str = "Local Room";
 const ROOM_CHANNEL_DESCRIPTION: &str = "Local room stack agents";
 const CODING_WORKSPACE_CLIENT_MARKER: &str = "coding-workspace-v1";
-const CODING_WORKSPACE_PROMPT_REVISION: &str = "coding-workspace-contract-v2";
+const CODING_WORKSPACE_PROMPT_REVISION: &str = "coding-workspace-contract-v7";
 
 const GROK_PROMPT: &str =
     include_str!("../../../../../../scripts/buzz-room/prompts/grok-coordinator.md");
@@ -529,6 +529,11 @@ pub async fn seed_room_agents(
         }
     }
 
+    // Refresh live-roster.json for Grok route_list / route_pick (best-effort).
+    if let Err(error) = crate::commands::list_managed_agents(app.clone()).await {
+        errors.push(format!("refresh live roster: {error}"));
+    }
+
     Ok(SeedRoomAgentsResult {
         channel_id,
         created_channel,
@@ -548,7 +553,30 @@ mod tests {
             "old room prompt"
         )));
         assert!(!needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v7"
+        )));
+    }
+
+    /// A seat already migrated to a *prior* revision must still be picked up
+    /// by the next reconcile pass — the marker check compares against the
+    /// *current* `CODING_WORKSPACE_PROMPT_REVISION`, not "any known marker
+    /// ever shipped".
+    #[test]
+    fn stale_prior_revision_marker_still_needs_migration() {
+        assert!(needs_coding_workspace_prompt_migration(Some(
             "workbench marker: coding-workspace-contract-v2"
+        )));
+        assert!(needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v3"
+        )));
+        assert!(needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v4"
+        )));
+        assert!(needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v5"
+        )));
+        assert!(needs_coding_workspace_prompt_migration(Some(
+            "workbench marker: coding-workspace-contract-v6"
         )));
     }
 

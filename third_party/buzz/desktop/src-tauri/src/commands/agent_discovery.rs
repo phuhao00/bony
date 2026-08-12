@@ -1039,7 +1039,10 @@ pub async fn discover_managed_agent_prereqs(
 }
 
 #[tauri::command]
-pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAgentInfo>, String> {
+pub async fn list_relay_agents(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<RelayAgentInfo>, String> {
     // Query kind:10100 agent profile events from the relay.
     let events = query_relay(
         &state,
@@ -1056,7 +1059,67 @@ pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAg
         .get("agents")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
-    serde_json::from_value(agents).map_err(|e| format!("agent parse failed: {e}"))
+    let mut agents: Vec<RelayAgentInfo> =
+        serde_json::from_value(agents).map_err(|e| format!("agent parse failed: {e}"))?;
+
+    // Pre-capability kind:10100 rows publish `capabilities: []`. Overlay local
+    // managed-agent declarations so Coding Workspace / profile can still group
+    // by stable capability ids without waiting for every agent to republish.
+    if let Ok(records) = crate::managed_agents::load_managed_agents(&app) {
+        crate::managed_agents::overlay_local_capabilities(&mut agents, &records);
+    }
+
+    Ok(agents)
+}
+
+/// List managed agents that declare `capability` (exact id or namespace prefix
+/// like `code.`). Used for capability-based routing / Coding Workspace grouping.
+/// Does not grant permissions — only filters declared capabilities + optional
+/// running status. Deterministic order by pubkey.
+#[tauri::command]
+pub async fn list_route_eligible_agents(
+    app: tauri::AppHandle,
+    capability: String,
+    require_running: Option<bool>,
+) -> Result<Vec<crate::managed_agents::RouteEligibleAgent>, String> {
+    let capability = capability.trim().to_string();
+    if capability.is_empty() {
+        return Err("capability query must not be empty".into());
+    }
+    let require_running = require_running.unwrap_or(true);
+    let agents = crate::commands::list_managed_agents(app).await?;
+    Ok(crate::managed_agents::select_route_eligible_agents(
+        &agents,
+        &capability,
+        require_running,
+    ))
+}
+
+/// Pick a single assignee for `capability` using D3 order: explicit pin →
+/// soft preference names → deterministic tie-break. Preferences never bypass
+/// capability / running filters.
+#[tauri::command]
+pub async fn pick_route_agent(
+    app: tauri::AppHandle,
+    capability: String,
+    preferred_name: Option<String>,
+    preference_names: Option<Vec<String>>,
+    require_running: Option<bool>,
+) -> Result<Option<crate::managed_agents::RoutePick>, String> {
+    let capability = capability.trim().to_string();
+    if capability.is_empty() {
+        return Err("capability must not be empty".into());
+    }
+    let require_running = require_running.unwrap_or(true);
+    let preference_names = preference_names.unwrap_or_default();
+    let agents = crate::commands::list_managed_agents(app).await?;
+    Ok(crate::managed_agents::pick_route_agent(
+        &agents,
+        &capability,
+        preferred_name.as_deref(),
+        &preference_names,
+        require_running,
+    ))
 }
 
 #[cfg(test)]

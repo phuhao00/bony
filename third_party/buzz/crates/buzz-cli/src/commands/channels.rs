@@ -1048,24 +1048,44 @@ pub async fn cmd_set_add_policy(client: &BuzzClient, policy: &str) -> Result<(),
         "channel_add_policy".into(),
         serde_json::Value::String(policy.into()),
     );
-    profile.insert(
-        "status".into(),
-        serde_json::Value::String("online".into()),
-    );
+    profile.insert("status".into(), serde_json::Value::String("online".into()));
     profile.insert(
         "agent_type".into(),
         serde_json::Value::String("agent".into()),
     );
     if let Some(name) = display_name {
         profile.insert("name".into(), serde_json::Value::String(name.clone()));
-        profile.insert(
-            "display_name".into(),
-            serde_json::Value::String(name),
-        );
+        profile.insert("display_name".into(), serde_json::Value::String(name));
     }
     if let Some(mode) = respond_to {
         profile.insert("respond_to".into(), serde_json::Value::String(mode));
     }
+    let capabilities: Vec<serde_json::Value> = std::env::var("BUZZ_MANAGED_AGENT_CAPABILITIES")
+        .ok()
+        .into_iter()
+        .flat_map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 64
+                        && value
+                            .chars()
+                            .any(|character| character.is_ascii_alphanumeric())
+                        && value.chars().all(|character| {
+                            character.is_ascii_alphanumeric()
+                                || matches!(character, '.' | '_' | '-')
+                        })
+                })
+                .take(32)
+                .map(|value| serde_json::Value::String(value.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    profile.insert(
+        "capabilities".into(),
+        serde_json::Value::Array(capabilities),
+    );
     let content = serde_json::Value::Object(profile).to_string();
     use nostr::{EventBuilder, Kind};
     let builder = EventBuilder::new(
