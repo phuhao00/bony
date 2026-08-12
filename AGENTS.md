@@ -32,6 +32,7 @@ Cursor 规则：`.cursor/rules/`（始终生效）
 | 性能优化 | `.cursor/skills/rust-performance-optimization/SKILL.md` |
 | 代码评审 | `.cursor/skills/rust-change-review/SKILL.md` |
 | Buzz Agent / Prompt / 动态能力注册 | `.cursor/skills/buzz-agent-contracts/SKILL.md` |
+| 重大架构决策 / 长期卡点求突破 | `.cursor/skills/frontier-research-checkpoint/SKILL.md` |
 
 - 一个文件 / 权威实现点同时只允许一个写入者；共享契约先串行固定，再并行独立模块。
 - 调查、实现、评审、验证职责分离；交接必须带实际证据，禁止让下一 Agent 从零重查。

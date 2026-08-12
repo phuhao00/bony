@@ -1,9 +1,15 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 
 const host = process.env.TAURI_DEV_HOST;
+// ESM-safe absolute path: bare `/src` or a missing `__dirname` alias both
+// break `@/...` resolution on Windows (Vite reports "Failed to resolve
+// import @/app/App" even when the file exists).
+const desktopRoot = path.dirname(fileURLToPath(import.meta.url));
+const srcRoot = path.resolve(desktopRoot, "src");
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -22,12 +28,14 @@ export default defineConfig(async () => ({
     react(),
   ],
   resolve: {
-    alias: {
-      // Absolute project path — bare "/src" resolves from the drive root and
-      // breaks `@/...` imports under Windows (Vite can't find src/app/App).
-      "@": path.resolve(__dirname, "src"),
-      "@features-manifest": path.resolve(__dirname, "../preview-features.json"),
-    },
+    alias: [
+      // Prefer `@/` prefix so we never collide with scoped packages named `@`.
+      { find: /^@\//, replacement: `${srcRoot}/` },
+      {
+        find: "@features-manifest",
+        replacement: path.resolve(desktopRoot, "../preview-features.json"),
+      },
+    ],
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -38,7 +46,9 @@ export default defineConfig(async () => ({
   server: {
     port: parseInt(process.env.VITE_PORT || "1420", 10),
     strictPort: true,
-    host: host || false,
+    // Prefer explicit IPv4 loopback on Windows so `localhost` and `127.0.0.1`
+    // both work (default `false` often binds ::1 only).
+    host: host || true,
     hmr: host
       ? {
           protocol: "ws",

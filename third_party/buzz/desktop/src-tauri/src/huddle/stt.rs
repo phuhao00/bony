@@ -228,159 +228,159 @@ fn stt_worker(
 
     #[cfg(feature = "local-stt")]
     {
-    // ── 1. Initialise rubato resampler (48 kHz → 16 kHz, mono) ───────────────
-    use rubato::{Fft, FixedSync, Resampler};
+        // ── 1. Initialise rubato resampler (48 kHz → 16 kHz, mono) ───────────────
+        use rubato::{Fft, FixedSync, Resampler};
 
-    let mut resampler = match Fft::<f32>::new(48_000, 16_000, 1024, 2, 1, FixedSync::Input) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("buzz-desktop: STT resampler init failed: {e}");
-            return;
-        }
-    };
-    let chunk_in = resampler.input_frames_next();
+        let mut resampler = match Fft::<f32>::new(48_000, 16_000, 1024, 2, 1, FixedSync::Input) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("buzz-desktop: STT resampler init failed: {e}");
+                return;
+            }
+        };
+        let chunk_in = resampler.input_frames_next();
 
-    // ── 2. Initialise earshot VAD ─────────────────────────────────────────────
-    use earshot::{DefaultPredictor, Detector};
-    let mut vad = Detector::new(DefaultPredictor::new());
+        // ── 2. Initialise earshot VAD ─────────────────────────────────────────────
+        use earshot::{DefaultPredictor, Detector};
+        let mut vad = Detector::new(DefaultPredictor::new());
 
-    // ── 3. Initialise sherpa-onnx recognizer ─────────────────────────────────
-    //
-    // Parakeet TDT-CTC 110M ships as a single `model.int8.onnx` (CTC head) plus
-    // `tokens.txt`. sherpa-onnx infers the model family from which inner config
-    // has a `model` path set, so we don't need to set `model_type` explicitly.
-    // (See rust-api-examples/parakeet_tdt_ctc_simulate_streaming_microphone.rs
-    // in k2-fsa/sherpa-onnx.)
-    use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
+        // ── 3. Initialise sherpa-onnx recognizer ─────────────────────────────────
+        //
+        // Parakeet TDT-CTC 110M ships as a single `model.int8.onnx` (CTC head) plus
+        // `tokens.txt`. sherpa-onnx infers the model family from which inner config
+        // has a `model` path set, so we don't need to set `model_type` explicitly.
+        // (See rust-api-examples/parakeet_tdt_ctc_simulate_streaming_microphone.rs
+        // in k2-fsa/sherpa-onnx.)
+        use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig};
 
-    let tokens_path = model_dir.join("tokens.txt");
-    let model_path = model_dir.join("model.int8.onnx");
-    if !tokens_path.exists() || !model_path.exists() {
-        eprintln!(
-            "buzz-desktop: STT model not found at {} — STT disabled",
-            model_dir.display()
-        );
-        drain_until_shutdown(audio_rx, &shutdown);
-        return;
-    }
-
-    let mut cfg = OfflineRecognizerConfig::default();
-    cfg.model_config.nemo_ctc.model = Some(model_path.to_string_lossy().into_owned());
-    cfg.model_config.tokens = Some(tokens_path.to_string_lossy().into_owned());
-    cfg.model_config.num_threads = STT_NUM_THREADS;
-    // Explicit — defaults are not part of the API contract, and noisy debug
-    // logging in release builds would be expensive on every VAD chunk.
-    cfg.model_config.debug = false;
-
-    let recognizer = match OfflineRecognizer::create(&cfg) {
-        Some(r) => r,
-        None => {
-            eprintln!("buzz-desktop: OfflineRecognizer::create returned None — STT disabled");
+        let tokens_path = model_dir.join("tokens.txt");
+        let model_path = model_dir.join("model.int8.onnx");
+        if !tokens_path.exists() || !model_path.exists() {
+            eprintln!(
+                "buzz-desktop: STT model not found at {} — STT disabled",
+                model_dir.display()
+            );
             drain_until_shutdown(audio_rx, &shutdown);
             return;
         }
-    };
 
-    // ── 4. Processing state ───────────────────────────────────────────────────
-    // Leftover 48 kHz samples that didn't fill a full resampler chunk.
-    let mut input_buf_48k: Vec<f32> = Vec::with_capacity(chunk_in * 2);
-    // Leftover 16 kHz samples that didn't fill a full VAD frame.
-    let mut leftover_16k: Vec<f32> = Vec::new();
-    // Accumulated speech frames (16 kHz).
-    let mut speech_buf: Vec<f32> = Vec::new();
-    // Consecutive silence frame count.
-    let mut silence_frames: usize = 0;
-    // Whether we're currently in a speech segment.
-    let mut in_speech = false;
-    // Number of frames earshot classified as voiced in the current segment.
-    let mut voiced_frames = 0;
-    // Timestamp when TTS last stopped — used for the playback-tail cooldown.
-    let mut tts_stopped_at: Option<std::time::Instant> = None;
+        let mut cfg = OfflineRecognizerConfig::default();
+        cfg.model_config.nemo_ctc.model = Some(model_path.to_string_lossy().into_owned());
+        cfg.model_config.tokens = Some(tokens_path.to_string_lossy().into_owned());
+        cfg.model_config.num_threads = STT_NUM_THREADS;
+        // Explicit — defaults are not part of the API contract, and noisy debug
+        // logging in release builds would be expensive on every VAD chunk.
+        cfg.model_config.debug = false;
 
-    // ── 5. Main loop ──────────────────────────────────────────────────────────
-    let mut tts_was_active = false;
-    let mut transmit_was_active = ptt_active
-        .as_ref()
-        .is_some_and(|ptt| ptt.load(Ordering::Acquire))
-        || manual_mic_unmuted
-            .as_ref()
-            .is_some_and(|manual| manual.load(Ordering::Acquire));
-    loop {
-        // Check shutdown flag before blocking.
-        if shutdown.load(Ordering::Acquire) {
-            break;
-        }
-
-        // Track TTS transitions to set the cooldown timer.
-        let tts_now = tts_active.load(Ordering::Acquire);
-        if tts_was_active && !tts_now {
-            // TTS just stopped — record the timestamp for the cooldown window.
-            tts_stopped_at = Some(std::time::Instant::now());
-        }
-        tts_was_active = tts_now;
-
-        // Track the combined manual/PTT transmission edge. When both paths
-        // close, the worklet stops sending frames, so flush here rather than
-        // waiting for silence that will never arrive.
-        if let Some(ref ptt) = ptt_active {
-            let transmit_now = ptt.load(Ordering::Acquire)
-                || manual_mic_unmuted
-                    .as_ref()
-                    .is_some_and(|manual| manual.load(Ordering::Acquire));
-            if transmit_was_active && !transmit_now && in_speech && !speech_buf.is_empty() {
-                flush_to_stt(&speech_buf, voiced_frames, &recognizer, &text_tx);
-                speech_buf.clear();
-                silence_frames = 0;
-                in_speech = false;
-                voiced_frames = 0;
+        let recognizer = match OfflineRecognizer::create(&cfg) {
+            Some(r) => r,
+            None => {
+                eprintln!("buzz-desktop: OfflineRecognizer::create returned None — STT disabled");
+                drain_until_shutdown(audio_rx, &shutdown);
+                return;
             }
-            transmit_was_active = transmit_now;
-        }
-
-        // Use recv_timeout so we can periodically check the shutdown flag.
-        let bytes = match audio_rx.recv_timeout(RECV_TIMEOUT) {
-            Ok(b) => b,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break, // Sender dropped.
         };
 
-        // Drain any additional pending messages to batch-process.
-        let mut batch = vec![bytes];
-        while let Ok(b) = audio_rx.try_recv() {
-            batch.push(b);
-        }
+        // ── 4. Processing state ───────────────────────────────────────────────────
+        // Leftover 48 kHz samples that didn't fill a full resampler chunk.
+        let mut input_buf_48k: Vec<f32> = Vec::with_capacity(chunk_in * 2);
+        // Leftover 16 kHz samples that didn't fill a full VAD frame.
+        let mut leftover_16k: Vec<f32> = Vec::new();
+        // Accumulated speech frames (16 kHz).
+        let mut speech_buf: Vec<f32> = Vec::new();
+        // Consecutive silence frame count.
+        let mut silence_frames: usize = 0;
+        // Whether we're currently in a speech segment.
+        let mut in_speech = false;
+        // Number of frames earshot classified as voiced in the current segment.
+        let mut voiced_frames = 0;
+        // Timestamp when TTS last stopped — used for the playback-tail cooldown.
+        let mut tts_stopped_at: Option<std::time::Instant> = None;
 
-        for bytes in batch {
-            // Convert raw bytes to f32 samples (little-endian).
-            let samples_48k = bytes_to_f32(&bytes);
-            input_buf_48k.extend_from_slice(&samples_48k);
+        // ── 5. Main loop ──────────────────────────────────────────────────────────
+        let mut tts_was_active = false;
+        let mut transmit_was_active = ptt_active
+            .as_ref()
+            .is_some_and(|ptt| ptt.load(Ordering::Acquire))
+            || manual_mic_unmuted
+                .as_ref()
+                .is_some_and(|manual| manual.load(Ordering::Acquire));
+        loop {
+            // Check shutdown flag before blocking.
+            if shutdown.load(Ordering::Acquire) {
+                break;
+            }
 
-            // Resample in chunk_in-sized blocks.
-            while input_buf_48k.len() >= chunk_in {
-                let chunk: Vec<f32> = input_buf_48k.drain(..chunk_in).collect();
-                let resampled = resample_chunk(&mut resampler, &chunk);
-                process_16k_samples(
-                    &resampled,
-                    &mut leftover_16k,
-                    &mut vad,
-                    &mut speech_buf,
-                    &mut silence_frames,
-                    &mut in_speech,
-                    &mut voiced_frames,
-                    &recognizer,
-                    &text_tx,
-                    &tts_active,
-                    &mut tts_stopped_at,
-                    ptt_active.as_ref(),
-                    manual_mic_unmuted.as_ref(),
-                );
+            // Track TTS transitions to set the cooldown timer.
+            let tts_now = tts_active.load(Ordering::Acquire);
+            if tts_was_active && !tts_now {
+                // TTS just stopped — record the timestamp for the cooldown window.
+                tts_stopped_at = Some(std::time::Instant::now());
+            }
+            tts_was_active = tts_now;
+
+            // Track the combined manual/PTT transmission edge. When both paths
+            // close, the worklet stops sending frames, so flush here rather than
+            // waiting for silence that will never arrive.
+            if let Some(ref ptt) = ptt_active {
+                let transmit_now = ptt.load(Ordering::Acquire)
+                    || manual_mic_unmuted
+                        .as_ref()
+                        .is_some_and(|manual| manual.load(Ordering::Acquire));
+                if transmit_was_active && !transmit_now && in_speech && !speech_buf.is_empty() {
+                    flush_to_stt(&speech_buf, voiced_frames, &recognizer, &text_tx);
+                    speech_buf.clear();
+                    silence_frames = 0;
+                    in_speech = false;
+                    voiced_frames = 0;
+                }
+                transmit_was_active = transmit_now;
+            }
+
+            // Use recv_timeout so we can periodically check the shutdown flag.
+            let bytes = match audio_rx.recv_timeout(RECV_TIMEOUT) {
+                Ok(b) => b,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break, // Sender dropped.
+            };
+
+            // Drain any additional pending messages to batch-process.
+            let mut batch = vec![bytes];
+            while let Ok(b) = audio_rx.try_recv() {
+                batch.push(b);
+            }
+
+            for bytes in batch {
+                // Convert raw bytes to f32 samples (little-endian).
+                let samples_48k = bytes_to_f32(&bytes);
+                input_buf_48k.extend_from_slice(&samples_48k);
+
+                // Resample in chunk_in-sized blocks.
+                while input_buf_48k.len() >= chunk_in {
+                    let chunk: Vec<f32> = input_buf_48k.drain(..chunk_in).collect();
+                    let resampled = resample_chunk(&mut resampler, &chunk);
+                    process_16k_samples(
+                        &resampled,
+                        &mut leftover_16k,
+                        &mut vad,
+                        &mut speech_buf,
+                        &mut silence_frames,
+                        &mut in_speech,
+                        &mut voiced_frames,
+                        &recognizer,
+                        &text_tx,
+                        &tts_active,
+                        &mut tts_stopped_at,
+                        ptt_active.as_ref(),
+                        manual_mic_unmuted.as_ref(),
+                    );
+                }
             }
         }
-    }
 
-    // No final flush — leave_huddle/end_huddle emit lifecycle events before
-    // the STT worker exits, so a final flush would post a kind:9 message AFTER
-    // the user has "left." Losing the last partial utterance is acceptable.
+        // No final flush — leave_huddle/end_huddle emit lifecycle events before
+        // the STT worker exits, so a final flush would post a kind:9 message AFTER
+        // the user has "left." Losing the last partial utterance is acceptable.
     } // cfg feature local-stt
 }
 

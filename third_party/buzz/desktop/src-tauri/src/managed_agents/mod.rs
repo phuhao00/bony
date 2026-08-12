@@ -2,6 +2,9 @@ mod agent_env;
 pub(crate) mod agent_events;
 pub(crate) mod agent_snapshot;
 pub(crate) mod agent_snapshot_envelope;
+pub(crate) mod capability_routing;
+pub(crate) mod economy;
+pub(crate) mod live_roster;
 pub(crate) mod team_snapshot;
 pub(crate) use agent_env::{
     baked_build_env, build_buzz_agent_provider_defaults, discovery_env_with_baked_floor,
@@ -48,7 +51,12 @@ pub(crate) fn lock_path_mutex() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub use backend::*;
+pub use capability_routing::{
+    capability_matches, overlay_local_capabilities, parse_capability_ids, pick_route_agent,
+    record_capabilities, select_route_eligible_agents, RouteEligibleAgent, RoutePick,
+};
 pub use discovery::*;
+pub use economy::{EconomyAgentSnapshot, EconomyWalletView, OrgSnapshot, TenderSnapshot};
 pub use env_vars::*;
 #[cfg(windows)]
 pub(crate) use git_bash::git_bash_available;
@@ -57,6 +65,7 @@ pub(crate) use global_config::{
     load_global_agent_config, resolve_effective_model_provider, save_global_agent_config,
     validate_global_config, GlobalAgentConfig,
 };
+pub use live_roster::write_live_roster;
 pub(crate) use managed_node_paths::*;
 pub use nest::*;
 pub use personas::*;

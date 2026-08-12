@@ -10,9 +10,12 @@ use rmcp::{
 use std::path::Path;
 use std::sync::Arc;
 
+mod economy;
+mod memory;
 mod paths;
 mod read_file;
 mod rg;
+mod route;
 mod shell;
 mod shim;
 mod str_replace;
@@ -120,6 +123,204 @@ impl DevMcp {
         Parameters(_): Parameters<todo::HookParams>,
     ) -> Result<CallToolResult, ErrorData> {
         todo::text_result(self.todos.post_compact())
+    }
+
+    #[tool(
+        name = "memory_append",
+        description = "Append one structured summary of a finished room task to the durable task-log (append-only, JSONL, human-readable). Call this once, after the task chain you coordinated is fully delivered — not mid-task. topic should be phrased the way a future similar request would be worded, since it is the primary search key for memory_search."
+    )]
+    async fn memory_append(
+        &self,
+        Parameters(p): Parameters<memory::MemoryAppendParams>,
+    ) -> Result<String, ErrorData> {
+        memory::append(&self.state, p)
+    }
+
+    #[tool(
+        name = "memory_search",
+        description = "Look up past room task-log entries by keyword (case-insensitive substring over topic/notes/agents/outputs) before proposing how to handle a new request, so repeated preferences and known pitfalls carry forward. Returns up to `limit` matches, most recent first."
+    )]
+    async fn memory_search(
+        &self,
+        Parameters(p): Parameters<memory::MemorySearchParams>,
+    ) -> Result<String, ErrorData> {
+        memory::search(&self.state, p)
+    }
+
+    #[tool(
+        name = "memory_preferences_extract",
+        description = "Scan the task-log for notes/feedback that repeat (≥ min_count times). Use occasionally on multi-step or '像上次一样' requests to surface soft format/routing preferences. Never rewrite specialist prompts from this — fold hints into this turn's routing only."
+    )]
+    async fn memory_preferences_extract(
+        &self,
+        Parameters(p): Parameters<memory::MemoryPreferencesParams>,
+    ) -> Result<String, ErrorData> {
+        memory::preferences_extract(&self.state, p)
+    }
+
+    #[tool(
+        name = "route_list",
+        description = "List room agents from the live roster that declare a capability (exact id or namespace prefix like code.). Prefer this over guessing display names when a non-default specialist might own the work. Empty capability lists all declared seats."
+    )]
+    async fn route_list(
+        &self,
+        Parameters(p): Parameters<route::RouteListParams>,
+    ) -> Result<String, ErrorData> {
+        route::list(&self.state, p)
+    }
+
+    #[tool(
+        name = "route_pick",
+        description = "Pick one eligible @Agent for a capability. Order: user preferred_name pin (if eligible) → memory preference_names soft rank → deterministic pubkey/name tie-break. Never invent an agent when this returns none — ask the user or fall back to the fixed ZeroClaw→DocSmith policy pin for research+document."
+    )]
+    async fn route_pick(
+        &self,
+        Parameters(p): Parameters<route::RoutePickParams>,
+    ) -> Result<String, ErrorData> {
+        route::pick(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_auction",
+        description = "Market path: auction a room task to one running agent using score = 0.5*capability_match + 0.3*reputation + 0.2*stake. Capability mismatch is allowed (money/reputation can override) but marks the contract mismatch=true for heavier failure penalties. Returns contract_id + winner. Prefer route_pick for the default safe capability-hard path; use this when the user asks for bidding/economy or you want risk-priced assignment."
+    )]
+    async fn economy_auction(
+        &self,
+        Parameters(p): Parameters<economy::AuctionParams>,
+    ) -> Result<String, ErrorData> {
+        economy::auction(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_subcontract",
+        description = "Middleman path: subcontract an awarded economy contract to another agent, taking cut_bp (basis points, default 1000=10%) as immediate brokerage. Depth hard-capped at 2. On descendant failure the broker also takes a reputation hit."
+    )]
+    async fn economy_subcontract(
+        &self,
+        Parameters(p): Parameters<economy::SubcontractParams>,
+    ) -> Result<String, ErrorData> {
+        economy::subcontract(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_settle",
+        description = "Settle an economy contract as success or failed. Success pays remaining budget + reputation; mismatch success pays bonus rep. Failed+mismatch deducts up to 25% budget (floor 0) and heavy rep; failed+match only small rep hit. Call once at end of the auctioned chain alongside memory_append."
+    )]
+    async fn economy_settle(
+        &self,
+        Parameters(p): Parameters<economy::SettleParams>,
+    ) -> Result<String, ErrorData> {
+        economy::settle(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_leaderboard",
+        description = "List room agents by reputation then balance (virtual credits + tiers Novice/Adept/Expert/Master/Legend). Use when the user asks for rankings/standings."
+    )]
+    async fn economy_leaderboard(
+        &self,
+        Parameters(p): Parameters<economy::LeaderboardParams>,
+    ) -> Result<String, ErrorData> {
+        economy::leaderboard(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_wallet",
+        description = "Show one agent's virtual balance, reputation tier, tags, achievements, capability grants, and recent ledger lines. pubkey_or_name accepts display name or pubkey."
+    )]
+    async fn economy_wallet(
+        &self,
+        Parameters(p): Parameters<economy::WalletParams>,
+    ) -> Result<String, ErrorData> {
+        economy::wallet(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_org_create",
+        description = "Create an agent organization (multi-member economic entity). founder_pubkey is the first member. Org id becomes org:<slug> and can bid on tenders / appear on the leaderboard."
+    )]
+    async fn economy_org_create(
+        &self,
+        Parameters(p): Parameters<economy::OrgCreateParams>,
+    ) -> Result<String, ErrorData> {
+        economy::org_create(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_org_join",
+        description = "Add a member pubkey to an existing organization (many-to-many: one agent may join multiple orgs)."
+    )]
+    async fn economy_org_join(
+        &self,
+        Parameters(p): Parameters<economy::OrgJoinParams>,
+    ) -> Result<String, ErrorData> {
+        economy::org_join(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_org_leave",
+        description = "Remove a member pubkey from an organization."
+    )]
+    async fn economy_org_leave(
+        &self,
+        Parameters(p): Parameters<economy::OrgLeaveParams>,
+    ) -> Result<String, ErrorData> {
+        economy::org_leave(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_org_list",
+        description = "List room organizations with member counts and tags."
+    )]
+    async fn economy_org_list(
+        &self,
+        Parameters(p): Parameters<economy::OrgListParams>,
+    ) -> Result<String, ErrorData> {
+        economy::org_list(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_tender_publish",
+        description = "Publish an open tender to the bidding market (does not immediately pick a winner). Agents/orgs then economy_tender_bid; later economy_tender_resolve picks among actual bidders."
+    )]
+    async fn economy_tender_publish(
+        &self,
+        Parameters(p): Parameters<economy::TenderPublishParams>,
+    ) -> Result<String, ErrorData> {
+        economy::tender_publish(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_tender_bid",
+        description = "Place a bid on an open tender as an agent or org (bidder_kind=agent|org). bidder_pubkey for orgs is org:<slug>."
+    )]
+    async fn economy_tender_bid(
+        &self,
+        Parameters(p): Parameters<economy::TenderBidParams>,
+    ) -> Result<String, ErrorData> {
+        economy::tender_bid(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_tender_resolve",
+        description = "Resolve an open tender by scoring actual bidders (capability+reputation+stake) and awarding a contract. Prefer this over economy_auction when the market board has open tenders."
+    )]
+    async fn economy_tender_resolve(
+        &self,
+        Parameters(p): Parameters<economy::TenderResolveParams>,
+    ) -> Result<String, ErrorData> {
+        economy::tender_resolve(&self.state, p)
+    }
+
+    #[tool(
+        name = "economy_tender_list",
+        description = "List tenders on the bidding market. Optional status filter: open|resolved|cancelled."
+    )]
+    async fn economy_tender_list(
+        &self,
+        Parameters(p): Parameters<economy::TenderListParams>,
+    ) -> Result<String, ErrorData> {
+        economy::tender_list(&self.state, p)
     }
 }
 

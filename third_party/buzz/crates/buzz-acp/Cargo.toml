@@ -62,6 +62,7 @@ tracing-subscriber = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+dunce = { workspace = true }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

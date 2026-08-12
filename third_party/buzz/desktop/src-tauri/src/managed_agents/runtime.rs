@@ -359,27 +359,12 @@ pub fn build_managed_agent_summary(
     })
 }
 
-/// Compatibility projection for capability declarations persisted by the
-/// fixed Local Room seeder. The seeder owns the legacy name-to-seat migration;
-/// this catalog boundary reads only the stable ids it persisted and never
-/// infers authority from a display name, prompt, or runtime command.
+/// Compatibility projection for capability declarations persisted on any
+/// managed agent (room seeder or user-set `BUZZ_MANAGED_AGENT_CAPABILITIES`).
+/// Reads only stable ids from that env declaration and never infers authority
+/// from a display name, prompt, or runtime command.
 pub(crate) fn built_in_room_capabilities(record: &ManagedAgentRecord) -> Vec<String> {
-    record
-        .env_vars
-        .get(super::types::MANAGED_AGENT_CAPABILITIES_ENV)
-        .into_iter()
-        .flat_map(|value| value.split(','))
-        .map(str::trim)
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 64
-                && value.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-                })
-        })
-        .take(32)
-        .map(str::to_string)
-        .collect()
+    super::capability_routing::record_capabilities(record)
 }
 
 pub fn find_managed_agent_mut<'a>(
@@ -575,8 +560,7 @@ pub fn spawn_agent_child(
     // Hard-canonicalize loopback: buzz-relay multi-tenant Host keys treat
     // `localhost:3000` and `127.0.0.1:3000` as different communities — the latter
     // returns WebSocket HTTP 404 and the agent dies immediately as Stopped.
-    let effective_relay_url =
-        crate::relay::canonicalize_loopback_relay_url(&runtime_key.relay_url);
+    let effective_relay_url = crate::relay::canonicalize_loopback_relay_url(&runtime_key.relay_url);
 
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink

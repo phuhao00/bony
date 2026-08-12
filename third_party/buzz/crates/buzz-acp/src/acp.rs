@@ -172,6 +172,10 @@ pub struct AcpClient {
     observer_agent_index: Option<usize>,
     /// Best-effort context attached to raw ACP wire events.
     observer_context: ObserverContext,
+    /// Current session write-domain root (ACP session cwd). When set, tool
+    /// calls that report `locations[].path` outside this root are rejected.
+    /// Fail-open when locations are absent (harnesses that don't report paths).
+    write_domain_root: Option<std::path::PathBuf>,
     /// Most recently observed `_meta.goose.activeRunId` from a
     /// `session/update` notification of kind `session_info_update`.
     ///
@@ -575,6 +579,7 @@ impl AcpClient {
             observer: None,
             observer_agent_index: None,
             observer_context: ObserverContext::default(),
+            write_domain_root: None,
             active_run_id: None,
             steering_supported: false,
             steer_rx: None,
@@ -728,6 +733,11 @@ impl AcpClient {
             .as_str()
             .ok_or_else(|| AcpError::Protocol("session/new response missing sessionId".into()))?
             .to_owned();
+        // Bind write-domain to the session cwd (best-effort canonicalize).
+        self.write_domain_root = Some(std::path::PathBuf::from(cwd));
+        if let Ok(canon) = dunce::canonicalize(cwd) {
+            self.write_domain_root = Some(canon);
+        }
         tracing::info!(target: "acp::session", "session created: {session_id}");
         Ok(SessionNewResponse {
             session_id,
@@ -2004,7 +2014,11 @@ impl AcpClient {
             options.len()
         );
 
-        let denied = is_denied_tool_call(&msg["params"]["toolCall"]);
+        let denied = is_denied_tool_call(&msg["params"]["toolCall"])
+            || tool_call_outside_write_domain(
+                &msg["params"]["toolCall"],
+                self.write_domain_root.as_deref(),
+            );
 
         // Find allow_once by kind — NEVER hardcode optionId.
         let allow_once = if denied {
@@ -2028,7 +2042,7 @@ impl AcpClient {
             if denied {
                 tracing::warn!(
                     target: "acp::permission",
-                    "auto-rejecting permission id={id}: tool call matches BUZZ_ACP_DENY_TOOLS"
+                    "auto-rejecting permission id={id}: tool call matches BUZZ_ACP_DENY_TOOLS or write-domain"
                 );
             } else {
                 // No allow_once — fall back to reject_once.
@@ -2193,6 +2207,48 @@ fn tool_call_matches_denylist(tool_call: &serde_json::Value, denied: &[String]) 
     .join(" ")
     .to_ascii_lowercase();
     denied.iter().any(|token| haystack.contains(token.as_str()))
+}
+
+/// Reject tool calls whose reported `locations[].path` fall outside `root`.
+///
+/// Fail-open when:
+/// - `root` is unset
+/// - the tool call has no `locations` / empty paths (many harnesses omit them)
+fn tool_call_outside_write_domain(
+    tool_call: &serde_json::Value,
+    root: Option<&std::path::Path>,
+) -> bool {
+    let Some(root) = root else {
+        return false;
+    };
+    let Some(locations) = tool_call.get("locations").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    for loc in locations {
+        let Some(path_str) = loc.get("path").and_then(|p| p.as_str()) else {
+            continue;
+        };
+        if path_str.trim().is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(path_str);
+        let candidate = if path.is_absolute() {
+            dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        } else {
+            let joined = root.join(path);
+            dunce::canonicalize(&joined).unwrap_or(joined)
+        };
+        if !candidate.starts_with(root) {
+            tracing::warn!(
+                target: "acp::permission",
+                path = %candidate.display(),
+                root = %root.display(),
+                "tool call path outside write domain"
+            );
+            return true;
+        }
+    }
+    false
 }
 
 /// Build a JSON-RPC permission response with `outcome: "selected"`.
@@ -2493,35 +2549,39 @@ mod tests {
     #[test]
     fn tool_call_matches_denylist_by_title() {
         let denied = vec!["deliver_file".to_string(), "file_write".to_string()];
-        let tool_call: serde_json::Value =
-            serde_json::from_str(r#"{"toolCallId": "call_1", "title": "deliver_file", "kind": "other"}"#)
-                .unwrap();
+        let tool_call: serde_json::Value = serde_json::from_str(
+            r#"{"toolCallId": "call_1", "title": "deliver_file", "kind": "other"}"#,
+        )
+        .unwrap();
         assert!(tool_call_matches_denylist(&tool_call, &denied));
     }
 
     #[test]
     fn tool_call_matches_denylist_is_case_insensitive() {
         let denied = vec!["deliver_file".to_string()];
-        let tool_call: serde_json::Value =
-            serde_json::from_str(r#"{"toolCallId": "call_1", "title": "Deliver_File", "kind": "other"}"#)
-                .unwrap();
+        let tool_call: serde_json::Value = serde_json::from_str(
+            r#"{"toolCallId": "call_1", "title": "Deliver_File", "kind": "other"}"#,
+        )
+        .unwrap();
         assert!(tool_call_matches_denylist(&tool_call, &denied));
     }
 
     #[test]
     fn tool_call_does_not_match_unrelated_tool() {
         let denied = vec!["deliver_file".to_string(), "file_write".to_string()];
-        let tool_call: serde_json::Value =
-            serde_json::from_str(r#"{"toolCallId": "call_2", "title": "web_search_tool", "kind": "other"}"#)
-                .unwrap();
+        let tool_call: serde_json::Value = serde_json::from_str(
+            r#"{"toolCallId": "call_2", "title": "web_search_tool", "kind": "other"}"#,
+        )
+        .unwrap();
         assert!(!tool_call_matches_denylist(&tool_call, &denied));
     }
 
     #[test]
     fn empty_denylist_never_matches() {
-        let tool_call: serde_json::Value =
-            serde_json::from_str(r#"{"toolCallId": "call_3", "title": "deliver_file", "kind": "other"}"#)
-                .unwrap();
+        let tool_call: serde_json::Value = serde_json::from_str(
+            r#"{"toolCallId": "call_3", "title": "deliver_file", "kind": "other"}"#,
+        )
+        .unwrap();
         assert!(!tool_call_matches_denylist(&tool_call, &[]));
     }
 

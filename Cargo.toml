@@ -129,6 +129,7 @@ members = [
     "third_party/buzz/crates/buzz-pair-relay",
     "third_party/buzz/crates/buzz-relay-mesh",
     "third_party/buzz/crates/buzz-dev-mcp",
+    "third_party/buzz/crates/buzz-economy",
     "third_party/buzz/crates/buzz-voice",
     "third_party/buzz/crates/buzz-backend-kubernetes",
     "third_party/buzz/examples/countdown-bot",
@@ -438,6 +439,7 @@ buzz-media = { path = "third_party/buzz/crates/buzz-media" }
 buzz-sdk = { path = "third_party/buzz/crates/buzz-sdk" }
 buzz-ws-client = { path = "third_party/buzz/crates/buzz-ws-client" }
 buzz-relay-mesh = { path = "third_party/buzz/crates/buzz-relay-mesh" }
+buzz-economy = { path = "third_party/buzz/crates/buzz-economy" }
 
 [profile.release]
 incremental = true

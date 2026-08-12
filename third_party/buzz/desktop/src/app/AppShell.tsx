@@ -136,7 +136,9 @@ export function AppShell() {
   const {
     goAgents,
     goChannel,
+    goEconomy,
     goHome,
+    goMarket,
     goNewMessage,
     goProjects,
     goPulse,
@@ -899,7 +901,9 @@ export function AppShell() {
                         onOpenSearchResult={handleOpenSearchResult}
                         searchChannels={channels}
                         searchFocusRequest={searchFocusRequest}
+                        onSelectEconomy={() => void goEconomy()}
                         onSelectHome={() => void goHome()}
+                        onSelectMarket={() => void goMarket()}
                         onSelectProjects={() => void goProjects()}
                         onSelectPulse={() => void goPulse()}
                         onSelectSettings={handleOpenSettings}

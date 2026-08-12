@@ -1680,10 +1680,7 @@ pub async fn run_prompt_task(
                             "created session {sid} for channel {cid}"
                         );
                         agent.state.sessions.insert(*cid, sid.clone());
-                        agent
-                            .state
-                            .session_cwds
-                            .insert(*cid, session_cwd.clone());
+                        agent.state.session_cwds.insert(*cid, session_cwd.clone());
                         // Commit canvas only after session creation succeeds (I3).
                         if let Some((pending_cid, section)) = pending_canvas.take() {
                             agent.state.canvas_sections.insert(pending_cid, section);
@@ -2259,10 +2256,7 @@ pub async fn run_prompt_task(
 
     match prompt_result {
         Ok(stop_reason) => {
-            reaction_outcome.store(
-                REACTION_OUTCOME_OK,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            reaction_outcome.store(REACTION_OUTCOME_OK, std::sync::atomic::Ordering::Relaxed);
             log_stop_reason(&source, &stop_reason);
 
             let should_rotate = matches!(
@@ -2322,10 +2316,7 @@ pub async fn run_prompt_task(
             );
         }
         Err(AcpError::AgentExited) => {
-            reaction_outcome.store(
-                REACTION_OUTCOME_FAIL,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            reaction_outcome.store(REACTION_OUTCOME_FAIL, std::sync::atomic::Ordering::Relaxed);
             tracing::error!(target: "pool::prompt", "agent {} exited during prompt", agent.index);
             agent.state.invalidate_all();
             let usage = agent.acp.take_turn_usage();
@@ -2348,10 +2339,7 @@ pub async fn run_prompt_task(
             );
         }
         Err(AcpError::IdleTimeout(_)) => {
-            reaction_outcome.store(
-                REACTION_OUTCOME_FAIL,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            reaction_outcome.store(REACTION_OUTCOME_FAIL, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 target: "pool::prompt",
                 "idle timeout ({}s) — cancelling session {session_id}",
@@ -2439,10 +2427,7 @@ pub async fn run_prompt_task(
             }
         }
         Err(AcpError::HardTimeout { silence }) => {
-            reaction_outcome.store(
-                REACTION_OUTCOME_FAIL,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            reaction_outcome.store(REACTION_OUTCOME_FAIL, std::sync::atomic::Ordering::Relaxed);
             let recently_active = silence < RECENT_ACTIVITY_WINDOW;
             tracing::error!(
                 target: "pool::prompt",
@@ -2470,10 +2455,7 @@ pub async fn run_prompt_task(
             );
         }
         Err(e) => {
-            reaction_outcome.store(
-                REACTION_OUTCOME_FAIL,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            reaction_outcome.store(REACTION_OUTCOME_FAIL, std::sync::atomic::Ordering::Relaxed);
             tracing::error!(target: "pool::prompt", "session_prompt error: {e}");
             // AgentError means the agent caught a problem before mutating
             // session state (e.g. bad LLM response). The session is healthy —
@@ -3597,7 +3579,10 @@ struct ReactionGuard {
 }
 
 impl ReactionGuard {
-    fn new(rest: crate::relay::RestClient, ids: Vec<String>) -> (Self, Arc<std::sync::atomic::AtomicU8>) {
+    fn new(
+        rest: crate::relay::RestClient,
+        ids: Vec<String>,
+    ) -> (Self, Arc<std::sync::atomic::AtomicU8>) {
         let outcome = Arc::new(std::sync::atomic::AtomicU8::new(REACTION_OUTCOME_NONE));
         (
             Self {
@@ -3619,9 +3604,7 @@ impl Drop for ReactionGuard {
         // fallback for the rare cases it isn't.
         if let Some(rest) = self.rest.take() {
             let ids = std::mem::take(&mut self.ids);
-            let outcome = self
-                .outcome
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let outcome = self.outcome.load(std::sync::atomic::Ordering::Relaxed);
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 handle.spawn(clear_reactions(rest, ids, outcome));
             }
@@ -4072,10 +4055,7 @@ fn mention_map_from_env() -> Vec<(String, String)> {
         };
         let name = name.trim();
         let pk = pk.trim().to_ascii_lowercase();
-        if name.is_empty()
-            || pk.len() != 64
-            || !pk.chars().all(|c| c.is_ascii_hexdigit())
-        {
+        if name.is_empty() || pk.len() != 64 || !pk.chars().all(|c| c.is_ascii_hexdigit()) {
             continue;
         }
         out.push((normalize_mention_label(name), pk));
@@ -4125,7 +4105,10 @@ fn resolve_mention_pubkeys_from_content(content: &str) -> Vec<String> {
     while ci < char_indices.len() {
         let (byte_pos, ch) = char_indices[ci];
         if ch == '@' && ci + 65 <= char_indices.len() {
-            let candidate: String = char_indices[ci + 1..ci + 65].iter().map(|(_, c)| *c).collect();
+            let candidate: String = char_indices[ci + 1..ci + 65]
+                .iter()
+                .map(|(_, c)| *c)
+                .collect();
             if candidate.len() == 64 && candidate.chars().all(|c| c.is_ascii_hexdigit()) {
                 let pk = candidate.to_ascii_lowercase();
                 if !found.iter().any(|x| x == &pk) {
@@ -4204,7 +4187,14 @@ fn should_suppress_meta_channel_post(content: &str) -> bool {
         }
     }
     // Chinese meta (wait / identity) without delivery.
-    let zh_meta = ["我是文档", "等待 ZeroClaw", "保持沉默", "我的角色", "根据规则", "要不要我"];
+    let zh_meta = [
+        "我是文档",
+        "等待 ZeroClaw",
+        "保持沉默",
+        "我的角色",
+        "根据规则",
+        "要不要我",
+    ];
     if zh_meta.iter().any(|p| content.contains(p)) {
         let looks_like_work = content.contains(".pdf")
             || content.contains("http")
@@ -4489,37 +4479,15 @@ fn classify_progress_tool(kind: &str, title: &str) -> ProgressCategory {
     ]) {
         // Prefer Code when the command is clearly a build/test/git op.
         if has(&[
-            "cargo",
-            "npm",
-            "pnpm",
-            "yarn",
-            "pytest",
-            "jest",
-            "compile",
-            "build",
-            "rustc",
-            "go build",
-            "mvn",
-            "gradle",
-            "git ",
-            "docker",
-            "make ",
-            "cmake",
+            "cargo", "npm", "pnpm", "yarn", "pytest", "jest", "compile", "build", "rustc",
+            "go build", "mvn", "gradle", "git ", "docker", "make ", "cmake",
         ]) {
             return ProgressCategory::Code;
         }
         return ProgressCategory::Shell;
     }
     if has(&[
-        "cargo",
-        "compile",
-        "build",
-        "test",
-        "lint",
-        "format",
-        "refactor",
-        "debugger",
-        "git",
+        "cargo", "compile", "build", "test", "lint", "format", "refactor", "debugger", "git",
         "patch",
     ]) {
         return ProgressCategory::Code;
@@ -4748,11 +4716,7 @@ fn is_auto_post_filler(content: &str) -> bool {
         return true;
     }
     // Near-duplicate padding: same non-trivial line thrice.
-    let lines: Vec<&str> = t
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
+    let lines: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     if lines.len() >= 3 {
         let first = lines[0];
         if first.chars().count() > 40 && lines.iter().all(|l| *l == first) {
@@ -4807,14 +4771,7 @@ async fn maybe_auto_post_agent_reply(
             tags.parent_event_id = Some(last.event.id.to_hex());
         }
     }
-    post_channel_message(
-        rest,
-        batch.channel_id,
-        &tags,
-        content,
-        "auto-post reply",
-    )
-    .await;
+    post_channel_message(rest, batch.channel_id, &tags, content, "auto-post reply").await;
 }
 
 /// Best-effort: remove a reaction via a signed kind:5 (NIP-09) deletion event.
@@ -4919,11 +4876,7 @@ async fn react_working(rest: &crate::relay::RestClient, event_ids: &[String]) {
 /// durable ✅ / ⚠️ when the turn outcome is known. Spawned on turn complete.
 /// Capped at `REACTION_CONCURRENCY` concurrent requests per chunk to avoid
 /// unbounded HTTP fan-out on large batches.
-async fn clear_reactions(
-    rest: crate::relay::RestClient,
-    event_ids: Vec<String>,
-    outcome: u8,
-) {
+async fn clear_reactions(rest: crate::relay::RestClient, event_ids: Vec<String>, outcome: u8) {
     // Each event needs two removals (👀 and 💬); pair them and chunk by
     // REACTION_CONCURRENCY pairs so the total concurrent requests stay bounded.
     for chunk in event_ids.chunks(REACTION_CONCURRENCY) {
@@ -4942,10 +4895,8 @@ async fn clear_reactions(
     };
     if let Some(emoji) = finish {
         for chunk in event_ids.chunks(REACTION_CONCURRENCY) {
-            futures_util::future::join_all(
-                chunk.iter().map(|eid| reaction_add(&rest, eid, emoji)),
-            )
-            .await;
+            futures_util::future::join_all(chunk.iter().map(|eid| reaction_add(&rest, eid, emoji)))
+                .await;
         }
     }
 }
@@ -6337,11 +6288,7 @@ mod tests {
     fn test_workspace_cwd_change_rotates_only_the_selected_channel() {
         let (mut state, channel_a, channel_b) = make_state();
 
-        assert!(state.rotate_for_cwd_change(
-            &channel_a,
-            "C:/projects/new-a",
-            "C:/agents/default",
-        ));
+        assert!(state.rotate_for_cwd_change(&channel_a, "C:/projects/new-a", "C:/agents/default",));
         assert!(!state.has_channel_state(&channel_a));
         assert_eq!(
             state.sessions.get(&channel_b).map(String::as_str),
@@ -6357,11 +6304,7 @@ mod tests {
     fn test_matching_workspace_cwd_preserves_session() {
         let (mut state, channel_a, _) = make_state();
 
-        assert!(!state.rotate_for_cwd_change(
-            &channel_a,
-            "C:/projects/a",
-            "C:/agents/default",
-        ));
+        assert!(!state.rotate_for_cwd_change(&channel_a, "C:/projects/a", "C:/agents/default",));
         assert_eq!(
             state.sessions.get(&channel_a).map(String::as_str),
             Some("sess-a")

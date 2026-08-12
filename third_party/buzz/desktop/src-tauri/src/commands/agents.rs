@@ -550,12 +550,15 @@ pub async fn list_managed_agents(app: AppHandle) -> Result<Vec<ManagedAgentSumma
         // not re-read it per record.
         let global_config =
             crate::managed_agents::load_global_agent_config(&app).unwrap_or_default();
-        records
+        let summaries: Vec<ManagedAgentSummary> = records
             .iter()
             .map(|record| {
                 build_managed_agent_summary(&app, record, &runtimes, &personas, &global_config)
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        // Best-effort roster for Grok's route_list / route_pick MCP tools.
+        let _ = crate::managed_agents::write_live_roster(&summaries);
+        Ok(summaries)
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))?

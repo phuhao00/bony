@@ -929,6 +929,27 @@ mod tests {
     }
 
     #[test]
+    fn agents_preserves_capabilities_for_directory_parse() {
+        let e = ev(
+            10100,
+            r#"{"name":"Grok","capabilities":["coordination.route","code.repo.read"]}"#,
+            vec![],
+        );
+        let v = agents_from_events(std::slice::from_ref(&e));
+        let agents = v.get("agents").cloned().unwrap();
+        let parsed: Vec<crate::managed_agents::RelayAgentInfo> =
+            serde_json::from_value(agents).unwrap();
+
+        assert_eq!(
+            parsed[0].capabilities,
+            vec![
+                "coordination.route".to_string(),
+                "code.repo.read".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn agents_preserves_public_respond_to_mode_for_directory_parse() {
         let e = ev(10100, r#"{"name":"Scout","respond_to":"anyone"}"#, vec![]);
         let v = agents_from_events(std::slice::from_ref(&e));

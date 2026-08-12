@@ -113,6 +113,7 @@ async fn publish_directory_profile(
         .map_err(|e| relay::RelayError::Http(format!("profile sign error: {e}")))?;
     publisher.publish_event(profile).await?;
 
+    let capabilities = directory_capabilities_from_env();
     let content = serde_json::json!({
         "channel_add_policy": "anyone",
         "name": name,
@@ -120,6 +121,7 @@ async fn publish_directory_profile(
         "status": "online",
         "agent_type": "agent",
         "respond_to": respond_to,
+        "capabilities": capabilities,
     })
     .to_string();
     let agent = EventBuilder::new(Kind::Custom(KIND_AGENT_PROFILE as u16), content)
@@ -128,6 +130,30 @@ async fn publish_directory_profile(
         .map_err(|e| relay::RelayError::Http(format!("agent profile sign error: {e}")))?;
     publisher.publish_event(agent).await?;
     Ok(())
+}
+
+/// Read stable capability ids from `BUZZ_MANAGED_AGENT_CAPABILITIES` (same key
+/// Desktop's room seeder / managed-agent env uses). Invalid tokens are dropped.
+fn directory_capabilities_from_env() -> Vec<String> {
+    const ENV_KEY: &str = "BUZZ_MANAGED_AGENT_CAPABILITIES";
+    let Ok(raw) = std::env::var(ENV_KEY) else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .chars()
+                    .any(|character| character.is_ascii_alphanumeric())
+                && value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                })
+        })
+        .take(32)
+        .map(str::to_string)
+        .collect()
 }
 
 fn emit_runtime_lifecycle(
@@ -328,7 +354,11 @@ fn peer_agent_pubkey_set(self_pubkey_hex: &str) -> HashSet<String> {
 }
 
 /// Drop peer-bot channel traffic that does not @-mention this agent.
-fn should_skip_peer_agent_event(author_hex: &str, event: &nostr::Event, self_pubkey_hex: &str) -> bool {
+fn should_skip_peer_agent_event(
+    author_hex: &str,
+    event: &nostr::Event,
+    self_pubkey_hex: &str,
+) -> bool {
     let author = author_hex.to_ascii_lowercase();
     let self_pk = self_pubkey_hex.to_ascii_lowercase();
     if author == self_pk {

@@ -2252,6 +2252,7 @@ dependencies = [
  "buzz-sdk",
  "chrono",
  "clap",
+ "dunce",
  "evalexpr",
  "futures-util",
  "hex",
@@ -2476,6 +2477,7 @@ dependencies = [
  "block2 0.6.2",
  "buzz-agent",
  "buzz-core",
+ "buzz-economy",
  "buzz-media",
  "buzz-persona",
  "buzz-sdk",
@@ -2562,6 +2564,8 @@ dependencies = [
  "base64 0.22.1",
  "buzz-cli",
  "buzz-core",
+ "buzz-economy",
+ "chrono",
  "git-credential-nostr",
  "git-sign-nostr",
  "ignore",
@@ -2582,6 +2586,20 @@ dependencies = [
  "tracing-subscriber",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "buzz-economy"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "fs2",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

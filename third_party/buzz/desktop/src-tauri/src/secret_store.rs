@@ -605,8 +605,7 @@ impl SecretStore {
         };
         #[cfg(windows)]
         prune_windows_blob_if_needed(&mut to_write, &protect);
-        let json =
-            serde_json::to_string(&to_write).map_err(|e| format!("blob serialize: {e}"))?;
+        let json = serde_json::to_string(&to_write).map_err(|e| format!("blob serialize: {e}"))?;
         match self.write_blob_raw(json.as_bytes()) {
             Ok(()) => {
                 // Advance the cache to `to_write` only after the durable write succeeds.
@@ -1145,13 +1144,13 @@ mod tests {
     #[test]
     fn windows_prune_evicts_orphan_agents_to_fit_limit() {
         let mut map = HashMap::new();
-        map.insert("identity".to_string(), "nsec1testidentityvaluexx".to_string());
+        map.insert(
+            "identity".to_string(),
+            "nsec1testidentityvaluexx".to_string(),
+        );
         for i in 0..25 {
             let pk = format!("{i:064x}");
-            map.insert(
-                format!("agent:{pk}"),
-                format!("nsec1agent{i:0>55}"),
-            );
+            map.insert(format!("agent:{pk}"), format!("nsec1agent{i:0>55}"));
         }
         let protect_pk = format!("{:064x}", 0u64);
         let protect_key = format!("agent:{protect_pk}");
