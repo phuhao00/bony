@@ -1,4 +1,4 @@
-# Launch Buzz Desktop from bony-build only (third_party/buzz).
+# Launch Buzz Desktop from bony-build only (buzz).
 #
 # Why it used to feel "always compiling":
 #  - full sidecar cargo every start
@@ -9,10 +9,10 @@
 #  - shared CARGO_TARGET_DIR with Buzz workspace
 #  - sidecars built only when missing (-ForceSidecars to rebuild)
 #  - -Fast: run prebuilt desktop binary + vite (seconds if already built)
-#  - first full compile: scripts/buzz-room/build-desktop.ps1 (once)
+#  - first full compile: cargo build -p buzz-desktop (once)
 param(
   [string]$BuzzRoot = "",
-  [string]$RelayUrl = "ws://localhost:3000",
+  [string]$RelayUrl = "ws://127.0.0.1:3000",
   [int]$VitePort = 1420,
   [switch]$Standalone,
   [switch]$ForceSidecars,
@@ -47,7 +47,7 @@ if (-not $Standalone) {
     if ($r.StatusCode -eq 200) { $ok = $true }
   } catch {}
   if (-not $ok) {
-    throw "Relay not up. Run: powershell -File scripts/buzz-room/start-room-stack.ps1 -SkipBuild -SkipGrok"
+    throw "Relay not up. Run: powershell -File scripts/buzz-room/start-room-stack.ps1 -SkipBuild"
   }
   Write-Host "    OK"
 }
@@ -107,7 +107,7 @@ Remove-Item Env:BUZZ_DESKTOP_INSTANCE_ID -ErrorAction SilentlyContinue
 $env:BUZZ_FORCE_LOCAL_COMMUNITY = "1"
 Remove-Item Env:BUZZ_PRIVATE_KEY -ErrorAction SilentlyContinue
 
-# Room agents (Grok/ZeroClaw/Unity/OpenMontage/DocSmith) are no longer minted
+# Room agents (ZeroClaw) are no longer minted
 # by external PowerShell + a hand-written managed-agents.json: Desktop itself
 # calls the native, idempotent `seed_room_agents` Tauri command once identity
 # is ready (see `useAppOnboardingState` in features/onboarding/hooks.ts),
@@ -122,7 +122,7 @@ $configPath = Join-Path $RuntimeDir "tauri.dev.override.json"
 $configJson = @"
 {
   "build": {
-    "devUrl": "http://localhost:$VitePort",
+    "devUrl": "http://127.0.0.1:$VitePort",
     "beforeDevCommand": "pnpm exec vite --port $VitePort --strictPort"
   }
 }
@@ -143,16 +143,16 @@ if ($wantFast -and $exe) {
   if (-not (Test-Path $pnpmCmd)) { throw "pnpm.cmd not found (expected $pnpmCmd)" }
   # cmd.exe wrapper keeps Node/npm PATH visible to pnpm+vite on Windows.
   $vite = Start-Process -FilePath "cmd.exe" `
-    -ArgumentList @("/c", "`"$pnpmCmd`" exec vite --port $VitePort --strictPort") `
+    -ArgumentList @("/c", "`"$pnpmCmd`" exec vite --host 127.0.0.1 --port $VitePort --strictPort") `
     -WorkingDirectory $Desktop -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $viteLog -RedirectStandardError $viteErr
   $vite.Id | Set-Content (Join-Path $RuntimeDir "vite.pid")
 
-  Write-Host "    waiting for http://localhost:$VitePort ..."
+  Write-Host "    waiting for http://127.0.0.1:$VitePort ..."
   $ready = $false
   for ($i = 0; $i -lt 60; $i++) {
     try {
-      $null = Invoke-WebRequest -Uri "http://localhost:$VitePort" -UseBasicParsing -TimeoutSec 1
+      $null = Invoke-WebRequest -Uri "http://127.0.0.1:$VitePort" -UseBasicParsing -TimeoutSec 1
       $ready = $true
       break
     } catch { Start-Sleep -Milliseconds 500 }
@@ -164,7 +164,7 @@ if ($wantFast -and $exe) {
 
   $env:TAURI_DEV = "1"
   $env:BUZZ_RELAY_URL = $RelayUrl
-  if ($env:BUZZ_RELAY_HTTP) { } else { $env:BUZZ_RELAY_HTTP = "http://localhost:3000" }
+  if ($env:BUZZ_RELAY_HTTP) { } else { $env:BUZZ_RELAY_HTTP = "http://127.0.0.1:3000" }
   Write-Host "    local-only relay: $($env:BUZZ_RELAY_URL)  http: $($env:BUZZ_RELAY_HTTP)"
   Write-Host "    launching desktop UI (cwd=exe dir for shared DLLs)..."
   # Non-blocking GUI so this script can return while app stays open

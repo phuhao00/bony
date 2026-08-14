@@ -10,7 +10,7 @@
 |----|------|
 | Bony 桌面端 | Tauri 桌面壳 · Coding Workspace · ACP · 本地多 Agent 房间 |
 | 运行时 | 本地 agent + BYOK · 权限模式 · 逻辑在 Rust |
-| Buzz 房间 | 单 workspace / 单 `target/` · Grok 协调 · 串行 `@` 交接 · 硬拦兜底 |
+| Buzz 房间 | 单 workspace / 单 `target/` · 默认 ZeroClaw 检索 · 串行 `@` 交接 · 硬拦兜底 |
 | 协作智能 | 分工执行 → 记忆写回 → 下次检索（见 `buzz-room-agent-orchestration-plan.md`） |
 
 **任务完成** = 可验证 + 无脚本/多语言债务 + 职责在正确 crate + 最短协作路径 + 性能默认最优 + **无多余重复实现**。
@@ -49,7 +49,7 @@ powershell -File .\scripts\buzz-room\stop-room-stack.ps1
 | 场景 | 动作 |
 |------|------|
 | 单域 | 直接指派最擅长 agent；不讨论 |
-| 资讯→文档 | `@ZeroClaw` → `@DocSmith`（两帖，各一 `@`） |
+| 资讯检索 | `@ZeroClaw`（一帖一个 `@`） |
 | 跨域 | 短讨论仅在必要；再串行执行 |
 | 动态 / 用户 Agent | capability 路由；默认 mention-only + owner-only；高权限显式授权 |
 | 防回归 | `BUZZ_ACP_DENY_TOOLS`、meta 过滤、工具名级禁令 |
@@ -71,7 +71,7 @@ Buzz 运行时协作：`docs/buzz-room-collab.md`、`docs/buzz-room-agent-orches
 - 业务规则只放领域层；UI / Tauri command / prompt **不**堆完整业务副本。
 - **一次真相**：校验、映射、策略、常量单点定义。
 - 抽象门槛：≥2 处重复或跨模块共享再抽；禁止为一处调用铺空 framework / trait 金字塔。
-- 扩现有模块 API 优于平行新开同名能力；跨 bony/Buzz/grok 的共享下沉到底层 crate。
+- 扩现有模块 API 优于平行新开同名能力。
 - 合并近重复分支，删死代码；入口保持薄。
 
 完成自检：无大段 copy-paste；有唯一权威实现；无「未来也许用」的过度抽象。
@@ -82,11 +82,10 @@ Cursor 规则：`.cursor/rules/modularity-dry.mdc`。
 
 | 路径 | 职责 |
 |------|------|
-| `third_party/buzz/desktop` | Bony 桌面界面与 Tauri 本机集成 |
-| `third_party/buzz/crates/buzz-acp` | Coding Agent ACP 会话池与队列 |
-| `crates/codegen/xai-grok-*` | Agent / 工具 / TUI |
-| `third_party/buzz` | Buzz in-tree sources |
-| `scripts/buzz-room/prompts/` | Agent 文案（非业务运行时） |
+| `desktop/` | Bony 桌面界面与 Tauri 本机集成 |
+| `crates/` | 房间协议、relay、ACP、db、pubsub |
+| `desktop/src-tauri/prompts/` | Agent 文案（非业务运行时） |
+| `scripts/buzz-room/` | 白名单启动入口（无业务） |
 | `.cursor/rules/` | 本规范的 agent 强制镜像 |
 
 ## 8. 冲突优先级

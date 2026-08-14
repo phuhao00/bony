@@ -1,0 +1,38 @@
+---
+description: 每次 git commit 后必须跑 OpenWiki 更新
+alwaysApply: true
+---
+
+# OpenWiki：每次提交后更新
+
+用户要求 **每次提交都执行 OpenWiki 更新**。官方入口是本机已安装的 CLI，不是脚本。
+
+## 何时跑
+
+只要本会话里 **实际完成了一次 `git commit`**（用户明确要求提交、且 commit 成功），紧接着必须更新 wiki。不要等用户再提醒。
+
+## 命令（仓库根，UTF-8）
+
+```powershell
+openwiki code --update --print --language zh-CN
+```
+
+- 工作目录必须是仓库根 `bony-build`，这样写的是本仓库 `openwiki/`，不是 `~/.openwiki/wiki`。
+- `--print` 一次性跑完就退出；不要进交互 chat。
+- 失败不回滚刚才的代码 commit；把 CLI 报错原文留给用户。
+
+## 更新后的第二笔 commit
+
+若 `openwiki/`、`AGENTS.md`、`CLAUDE.md` 出现未提交改动：
+
+1. 只暂存这些 wiki 相关文件（不要把无关脏文件塞进去）。
+2. 再提交一次，message：`docs: update OpenWiki`。
+3. 用户没要求 push 就不要 push。
+
+不要把 wiki 更新 amend 进刚做完的代码 commit（除非用户明确要求 amend，且满足既有 amend 条件）。
+
+## 不要做的
+
+- 不要为此新增 `.ps1` / `.sh` / `.py`。
+- 不要在用户 **没有** 要求 commit 时主动 commit。
+- 不要手改 generated `openwiki/*.md` 来「代替」CLI 更新。

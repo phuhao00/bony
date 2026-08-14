@@ -1,2 +1,0 @@
-# Config for Buzz tree moved to monorepo root: ../../.cargo/config.toml
-# (Cargo does not load child .cargo when building from the repository root.)

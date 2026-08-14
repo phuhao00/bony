@@ -62,7 +62,7 @@ rustflags = [
 # No +crt-static: static CRT breaks linking against prebuilt native deps used by
 # Buzz desktop voice (sherpa-onnx, onnxruntime-style libs). Dynamic CRT is fine
 # for local/dev; set RUSTFLAGS=-Ctarget-feature=+crt-static only for fully-static
-# redistributable Grok CLI builds if you intentionally need it.
+# redistributable fully-static builds if you intentionally need it.
 rustflags = ["-C", "force-unwind-tables=yes"]
 
 [target.aarch64-pc-windows-msvc]

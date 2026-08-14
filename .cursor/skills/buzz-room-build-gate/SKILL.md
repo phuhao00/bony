@@ -16,7 +16,7 @@ description: >-
 
 - **单一 Cargo workspace**：仓库根 `Cargo.toml`。
 - **单一 target**：仓库根 `target/`。
-- Buzz 在 **`third_party/buzz/`**（普通目录，非 submodule）。
+- 产品在仓库根：`crates/`（房间协议与运行时）、`desktop/`（Tauri 桌面端）。
 
 ## 硬性目标
 
@@ -44,7 +44,7 @@ Seed / 注册 agent / 密钥：**Rust（Tauri commands / room_seed / cargo 二�
 
 | 禁止 | 原因 |
 |------|------|
-| `build-desktop.ps1` / `build-tools.ps1` 等当入口 | 规范：非启动脚本停用 |
+| 已删除的 `build-*.ps1` / `mint-*` / `register-*` 等 | 非启动脚本，编译用 `cargo -p` |
 | 双 target / 裸 `tauri dev` 另起缓存 | 缓存分裂 |
 | 无确认 `cargo clean` | 毁缓存 |
 | 默认关 STT「图快」 | 阉功能 |

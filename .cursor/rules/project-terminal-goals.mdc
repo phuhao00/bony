@@ -11,9 +11,9 @@ alwaysApply: true
 
 | 产品面 | 终态 |
 |--------|------|
-| **Bony 桌面端** | Tauri 桌面壳内统一频道、Coding Workspace 与本地多 Agent 协作；ACP 驱动 Grok，并为 Codex / Claude Code 等编码 Agent 保留统一会话入口 |
-| **Agent 运行时** | 对齐 grok-build 上游；本机 BYOK；权限模式完整；不把无关逻辑塞进 PowerShell |
-| **Buzz 房间** | 单 monorepo workspace + 根 `target/`；Grok 协调 + specialists `@` 串行交接；工具硬拦 > prompt 软约束 |
+| **Bony 桌面端** | Tauri 桌面壳内统一频道、Coding Workspace 与本地多 Agent 协作；ACP 接入编码 Agent（Codex / Claude Code / 自定义），并为 catalog 保留统一会话入口 |
+| **Agent 运行时** | 本机 ACP；BYOK；权限模式完整；不把无关逻辑塞进 PowerShell |
+| **Buzz 房间** | 单 workspace + 根 `target/`；默认 ZeroClaw 检索；`@` 串行交接；工具硬拦 > prompt |
 | **协作记忆** | 讨论→分工→执行→记忆写回（见 `docs/buzz-room-agent-orchestration-plan.md`）；交付物在房间内可交接 |
 
 ## 任务级完成判定（缺一不可）
@@ -29,7 +29,7 @@ alwaysApply: true
 
 - 不做跨语言微服务拼盘；不维护第二套构建入口。
 - 不把 Bony 桌面端的 TS 面扩成新业务中枢；新能力优先进 Rust（`buzz-*` / `bony-*` / acp）。
-- 不把「今天资讯 / PDF」类路由变成 Grok 本地拼文件或 pandoc 旁路。
+- 不把「今天资讯 / PDF」类路由变成本地拼文件或 pandoc 旁路。
 ---
 
 遇到范围歧义：先用本表判定「做完长什么样」，再改代码；不确定时问终态验收点，不问实现偏好清单。

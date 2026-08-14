@@ -16,16 +16,16 @@ alwaysApply: true
 
 | 禁止 | 改做 |
 |------|------|
-| 新 Python / Go / Node / bash 业务程序 | 新 `crates/...` 或 `third_party/buzz/crates/...` Rust crate |
+| 新 Python / Go / Node / bash 业务程序 | 新 `crates/...` Rust crate |
 | 用解释器做「快捷自动化」补丁 | 扩现有 Rust 命令/库 API |
 | 平行新建非 Cargo 工程 | 加入根 workspace 成员 |
 | 为省编译时间默认关功能（如 STT） | 修链接/feature；local-stt 默认 shared DLL |
 
 ## 存量边界（不扩大）
 
-- **Bony 桌面端**：`third_party/buzz/desktop`（Tauri）承载 Coding Workspace、频道与多 Agent 协作。
+- **Bony 桌面端**：`desktop/`（Tauri）承载 Coding Workspace、频道与多 Agent 协作。
 - **Bony 桌面前端**：既有 TS 只承载界面和交互状态；**禁止**在 TS 新增业务中枢/agent 编排；编排、seed、密钥、agent 生命周期进 **Rust（Tauri commands / buzz crates）**。
-- Prompt 文案：`scripts/buzz-room/prompts/*.md` 可改内容；**不是**可执行业务层。
+- Prompt 文案：`desktop/src-tauri/prompts/*.md` 可改内容；**不是**可执行业务层。
 
 ## 决策
 

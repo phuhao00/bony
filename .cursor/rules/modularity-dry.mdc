@@ -30,7 +30,7 @@ alwaysApply: true
 ```
 
 - 新能力：先找应归属的 **crate 或现有 mod**；确需新文件时按职责命名，禁止巨型 `mod.rs` 堆砌。
-- 跨 Buzz / bony / grok：**共享进最底层公共 crate**，禁止三份拷贝。
+- 跨 Buzz / bony：**共享进最底层公共 crate**，禁止三份拷贝。
 - 删除死代码、未用 feature 路径；合并近重复分支。
 
 ## 完成判定（补充）

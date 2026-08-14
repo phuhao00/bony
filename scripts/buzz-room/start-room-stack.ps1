@@ -1,8 +1,8 @@
-# One-shot: start Buzz room stack entirely from bony-build (third_party/buzz only).
+# One-shot: start Buzz room stack entirely from bony-build (buzz only).
 # Does not reference C:\Users\Administrator\buzz or other external trees.
 param(
   [switch]$SkipBuild,
-  [switch]$SkipGrok,
+  [switch]$SkipAgentHint,
   [switch]$ForegroundRelay
 )
 $ErrorActionPreference = "Stop"
@@ -59,16 +59,12 @@ Write-Host "==> Infra (Docker compose in $BuzzRoot)"
 & (Join-Path $PSScriptRoot "start-infra.ps1") -BuzzRoot $BuzzRoot
 
 if (-not $SkipBuild) {
-  Write-Host "==> Build tools"
-  & (Join-Path $PSScriptRoot "build-tools.ps1") -BonyRoot $BonyRoot -BuzzRoot $BuzzRoot
-  # ensure relay (root workspace target — Buzz is a member, not its own workspace)
-  if (-not (Test-Path (Join-Path $BonyRoot "target\debug\buzz-relay.exe"))) {
-    Set-Location $BonyRoot
-    Remove-Item Env:RUSTUP_TOOLCHAIN -ErrorAction SilentlyContinue
-    Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
-    cargo build -p buzz-relay
-    if ($LASTEXITCODE -ne 0) { throw "buzz-relay build failed" }
-  }
+  Write-Host "==> cargo build -p buzz-relay"
+  Set-Location $BonyRoot
+  Remove-Item Env:RUSTUP_TOOLCHAIN -ErrorAction SilentlyContinue
+  Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue
+  cargo build -p buzz-relay
+  if ($LASTEXITCODE -ne 0) { throw "buzz-relay build failed" }
 }
 
 $envFile = Join-Path $BuzzRoot ".env"
@@ -192,12 +188,12 @@ if (-not $ok) {
 }
 Write-Host "    health OK"
 
-# Room agents (Grok/ZeroClaw/Unity/OpenMontage/DocSmith) are no longer
+# Room agents (ZeroClaw) are no longer
 # minted here as external buzz-acp processes: they're native Desktop
 # managed-agents, seeded idempotently by Desktop itself on launch (native
 # `seed_room_agents` Tauri command — see start-desktop.ps1). This script only
 # brings up the relay/infra; run start-desktop.ps1 to get the agents.
-if (-not $SkipGrok) {
+if (-not $SkipAgentHint) {
   Write-Host "==> Room agents: seeded natively by Desktop on launch (run start-desktop.ps1)"
 }
 
@@ -207,5 +203,5 @@ Write-Host "  BuzzRoot: $BuzzRoot"
 Write-Host "  Relay:    http://127.0.0.1:3000/health"
 Write-Host "  WS:       ws://localhost:3000"
 Write-Host "  Logs:     $RuntimeDir"
-Write-Host "  Next:     powershell -File scripts/buzz-room/start-desktop.ps1  (seeds + starts the 5 room agents)"
+Write-Host "  Next:     powershell -File scripts/buzz-room/start-desktop.ps1  (seeds ZeroClaw)"
 Write-Host "  Stop:     powershell -File scripts/buzz-room/stop-room-stack.ps1"

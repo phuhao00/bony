@@ -8,7 +8,7 @@
 |----|------|------|----------|
 | 强制规则 | `AGENTS.md`、`.cursor/rules/*` | 始终生效的语言、性能、安全、构建边界 | 长步骤教程 |
 | Task Skill | `.cursor/skills/*/SKILL.md` | 按任务触发的可复用工作流 | 永久注入的项目常识 |
-| 房间角色 Prompt | `scripts/buzz-room/prompts/*.md` | 运行时 specialist 的窄职责、工具与 handoff | 业务实现、重复路由引擎 |
+| 房间角色 Prompt | `desktop/src-tauri/prompts/*.md` | 运行时 specialist 的窄职责、工具与 handoff | 业务实现、重复路由引擎 |
 
 同一事实只保留一个权威定义；其它层用链接或一句硬约束引用，不复制整段。
 
@@ -21,7 +21,6 @@
 | 延迟、吞吐、内存、I/O | `rust-performance-optimization` | 性能实现者 | 变更完成后独立评审 |
 | diff / PR / 合并前评审 | `rust-change-review` | 评审者 | 默认只读，不与实现者共用结论 |
 | 新增/修改 Buzz agent、用户自建 Agent | `buzz-agent-contracts` | 契约设计者 | 触及 registry/硬拦时转 Rust 实现者 |
-| 上游 grok-build 同步 | `upstream-feature-sync` | 集成者 | 必须保留产品层与 Buzz 本地栈 |
 | LanceDB / 向量检索 | `lancedb-best-practices` | 数据实现者 | 仍遵守 Rust 交付与性能闸门 |
 
 命中多个 Skill 时按“诊断 → 实现/性能 → 评审 → 构建/启动验证”顺序使用，避免不同角色重复探索同一问题。

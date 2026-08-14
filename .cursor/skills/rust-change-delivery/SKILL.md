@@ -3,7 +3,7 @@ name: rust-change-delivery
 description: >-
   Implement, fix, or refactor product behavior in the repository Rust workspace
   with a minimal diff, a single authoritative implementation, and package-scoped
-  verification. Use for requested code changes in bony-*, xai-*, buzz-* or Tauri
+  verification. Use for requested code changes in buzz-* or Tauri
   Rust crates; do not use for diagnosis-only or review-only requests.
 ---
 

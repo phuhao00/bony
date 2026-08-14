@@ -9,10 +9,7 @@ param(
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "_paths.ps1")
 if (-not $BuzzRoot) {
-  try { $BuzzRoot = Get-BuzzRoot } catch {
-    & (Join-Path $PSScriptRoot "setup-buzz.ps1")
-    $BuzzRoot = Get-BuzzRoot
-  }
+  $BuzzRoot = Get-BuzzRoot
 }
 
 Set-Location $BuzzRoot

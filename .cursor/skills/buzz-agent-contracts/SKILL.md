@@ -20,8 +20,8 @@ description: >-
 - `docs/AGENT_COLLABORATION.md`
 - `docs/buzz-room-collab.md`
 - `docs/buzz-room-agent-orchestration-plan.md`
-- `scripts/buzz-room/prompts/AGENTS.md`
-- `third_party/buzz/desktop/src-tauri/src/managed_agents/types.rs`
+- `desktop/src-tauri/prompts/AGENTS.md`
+- `desktop/src-tauri/src/managed_agents/types.rs`
 - 目标 agent prompt、persona/managed-agent/catalog、ACP 权限与相关测试
 
 涉及动态注册、用户自建 Agent、能力 schema 或兼容迁移时，再读取 [`references/dynamic-agent-registry.md`](references/dynamic-agent-registry.md)。
@@ -52,7 +52,7 @@ description: >-
 - 用户明确选择某个已授权 Agent 时优先尊重选择。
 - 否则先按 capability、输入兼容、权限、健康状态过滤，再按历史质量、负载和用户偏好排序。
 - 简单单域任务直接给得分最高的 Agent，不先讨论。
-- 固定“检索→文档”是安全策略 pin；当前默认 `Grok → ZeroClaw → DocSmith`，未来可由满足同一 capability 契约的授权 Agent 替换。
+- 检索默认 `@ZeroClaw`；编码由 Coding Workspace 里的 ACP Agent 自己做。
 - 每条 Buzz 消息最多一个 `@Agent`；不得在同帖预唤醒后续角色。
 - handoff 必须在消息正文中携带下游所需内容，不传不可访问的沙盒附件。
 - specialist 完成或阻塞后回调当前 coordinator，除非固定链明确由它直接交给下一能力。

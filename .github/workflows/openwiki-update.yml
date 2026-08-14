@@ -1,0 +1,66 @@
+# OpenWiki: refresh repo wiki after every push to main.
+# Local agent path (same CLI): openwiki code --update --print --language zh-CN
+#
+# Required GitHub secrets:
+#   OPENAI_API_KEY
+#   OPENWIKI_LANGSMITH_API_KEY  (optional; used when set)
+
+name: OpenWiki Update
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "openwiki/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: openwiki-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'docs: update OpenWiki')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install OpenWiki
+        run: npm install --global openwiki mermaid@11.16.0 jsdom@29.1.1
+
+      - name: Run OpenWiki
+        run: openwiki code --update --print --language zh-CN
+        env:
+          OPENWIKI_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENWIKI_MODEL_ID: gpt-5.6-terra
+          OPENWIKI_LANGSMITH_API_KEY: ${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.OPENWIKI_LANGSMITH_API_KEY }}
+          LANGCHAIN_PROJECT: bony
+          LANGCHAIN_TRACING_V2: "true"
+
+      - name: Create OpenWiki update pull request
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
+        with:
+          add-paths: |
+            openwiki
+            AGENTS.md
+            CLAUDE.md
+          branch: openwiki/update
+          commit-message: "docs: update OpenWiki"
+          title: "docs: update OpenWiki"
+          body: |
+            Automated OpenWiki documentation update after a push to `main`.

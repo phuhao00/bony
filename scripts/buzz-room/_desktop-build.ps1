@@ -82,7 +82,6 @@ function Ensure-Sidecars {
   $need = @(
     "buzz-acp",
     "buzz-agent",
-    "buzz-backend-kubernetes",
     "buzz-dev-mcp",
     "git-credential-nostr",
     "buzz"
@@ -90,7 +89,6 @@ function Ensure-Sidecars {
   $pkgs = @{
     "buzz-acp" = "buzz-acp"
     "buzz-agent" = "buzz-agent"
-    "buzz-backend-kubernetes" = "buzz-backend-kubernetes"
     "buzz-dev-mcp" = "buzz-dev-mcp"
     "git-credential-nostr" = "git-credential-nostr"
     "buzz" = "buzz-cli"

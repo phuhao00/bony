@@ -19,7 +19,7 @@ description: >-
 # LanceDB 向量存储最佳实践（bony-build / buzz-search）
 
 本 skill 把一套通用 LanceDB 最佳实践素材，翻译并核实为**本仓库实际会用的 Rust API**。唯一权威参照实现是
-`third_party/buzz/crates/buzz-search/src/vector.rs`（`VectorSearchService`）。任何新 LanceDB 用例，优先复用或扩展
+`crates/buzz-search/src/vector.rs`（`VectorSearchService`）。任何新 LanceDB 用例，优先复用或扩展
 这个模块里已有的类型/写法，而不是平行发明一套新接口（见 `.cursor/rules/modularity-dry.mdc`）。
 
 ## 硬约束：只用 Rust
@@ -312,7 +312,7 @@ let batches = df.collect().await?;
 
 ## 相关文件
 
-- `third_party/buzz/crates/buzz-search/src/vector.rs` —— 唯一权威参照实现，任何新 LanceDB 用例先看这个文件的
+- `crates/buzz-search/src/vector.rs` —— 唯一权威参照实现，任何新 LanceDB 用例先看这个文件的
   `VectorRow`/`VectorSearchService`/`table_schema` 写法。
-- `third_party/buzz/crates/buzz-search/Cargo.toml`、根 `Cargo.toml` —— 版本锁定的位置，升级 `lancedb` 前先看
+- `crates/buzz-search/Cargo.toml`、根 `Cargo.toml` —— 版本锁定的位置，升级 `lancedb` 前先看
   `Cargo.lock` 里 `datafusion`/`arrow-*` 的传递版本是否跟着变。

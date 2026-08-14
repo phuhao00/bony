@@ -1,6 +1,0 @@
-# Buzz crate sources for monorepo (bony-build). Not a Cargo workspace root —
-# workspace lives at the repository root Cargo.toml. Build from repo root:
-#   cargo build -p buzz-desktop
-#   cargo build -p buzz-relay
-#
-# Profiles and patch.crates-io for Buzz were migrated to the root Cargo.toml.

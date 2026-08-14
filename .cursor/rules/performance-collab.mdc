@@ -18,16 +18,16 @@ alwaysApply: true
 
 | 场景 | 方案 |
 |------|------|
-| 单域任务 | 直接 `@最擅长的 specialist` 或 Grok 自有工具；**零讨论** |
-| 检索+文档 | 固定两跳：`@ZeroClaw` →（完整正文）`@DocSmith`；禁止双 `@` 同帖 |
-| 多域组合 | 仅当 ≥2 specialist 且非固定两跳时，才短讨论（≤3 行）再串行 `@` |
+| 单域任务 | 直接 `@` 最擅长的座席或 Coding Workspace 里的 ACP Agent；**零讨论** |
+| 检索 | `@ZeroClaw`；禁止双 `@` 同帖 |
+| 多域组合 | 仅当 ≥2 specialist 时，才短讨论（≤3 行）再串行 `@` |
 | 防回归 | 硬拦（如 `BUZZ_ACP_DENY_TOOLS`、meta 过滤）+ 具体工具名禁令；不靠空话 prompt |
 | 记忆 | 任务末结构化写回；下次检索 1~3 条 notes（见 orchestration plan） |
 
 硬约束：
 
 - 一条消息 **最多一个** `@Agent`。
-- Grok **无**文档/搜索：禁止 DIY `read_file`/`list_dir`/`run_terminal_command` 代替 ZeroClaw/DocSmith。
+- 不要用本机拼文件 / `pandoc` 代替 `@ZeroClaw` 做检索。
 - 不解释身份、不甩选项菜单、不空等自我介绍。
 
 ## 方案选择口令

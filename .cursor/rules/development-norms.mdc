@@ -9,13 +9,13 @@ alwaysApply: true
 
 | 需求 | 落点 |
 |------|------|
-| 桌面 AI 编程壳 | `third_party/buzz/desktop`（界面）+ `third_party/buzz/desktop/src-tauri`（本机能力） |
-| Agent/工具/会话 | `crates/codegen/xai-grok-*` 等 |
-| Buzz 协议/ACP/池 | `third_party/buzz/crates/*` |
-| Desktop 本机命令/seed | `third_party/buzz/desktop/src-tauri`（Rust） |
-| 房间协作策略文档 | `docs/buzz-room-*.md`、`scripts/buzz-room/prompts/*.md` |
+| 桌面 AI 编程壳 | `desktop/`（界面）+ `desktop/src-tauri`（本机能力） |
+| Agent/工具/会话 | `buzz-acp` + 本机 ACP 进程（catalog 中已授权 runtime） |
+| Buzz 协议/ACP/池 | `crates/*` |
+| Desktop 本机命令/seed | `desktop/src-tauri`（Rust） |
+| 房间协作策略文档 | `docs/buzz-room-*.md`、`desktop/src-tauri/prompts/*.md` |
 
-Buzz 在 **`third_party/buzz` 普通目录**（非 submodule），是根 workspace 成员。
+Buzz 产品在仓库根：`crates/` + `desktop/`，单一 workspace 成员。
 
 ## 做 diff 的规矩
 
@@ -24,7 +24,6 @@ Buzz 在 **`third_party/buzz` 普通目录**（非 submodule），是根 workspa
 - 入口薄、领域厚；细节见 `modularity-dry` 规则与 `docs/PROJECT_STANDARDS.md` §6。
 - 不主动 commit；用户要求再按 git 协议提交。
 - 不写用户未要的 markdown，**项目规范文档**（本规则 + `docs/PROJECT_STANDARDS.md`）除外。
-- 与上游 grok-build 对齐的代码：小而清晰的 diff；产品壳可独立演进。
 
 ## 验证顺序
 

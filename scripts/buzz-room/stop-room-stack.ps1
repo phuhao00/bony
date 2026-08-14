@@ -15,11 +15,10 @@ function Stop-Tree {
 
 foreach ($name in @(
     "buzz-relay.pid",
+    "vite.pid",
+    "desktop.pid",
     "grok-agent.pid",
-    "zeroclaw-agent.pid",
-    "unity-agent.pid",
-    "openmontage-agent.pid",
-    "docsmith-agent.pid"
+    "zeroclaw-agent.pid"
   )) {
   $f = Join-Path $RuntimeDir $name
   if (Test-Path $f) {
@@ -39,4 +38,4 @@ foreach ($pn in @("buzz-relay", "buzz-acp", "zeroclaw", "grok")) {
   }
 }
 
-Write-Host "Room stack processes stopped. Docker infra left running (use docker compose down in third_party/buzz if needed)."
+Write-Host "Room stack processes stopped. Docker infra left running (use docker compose down in buzz if needed)."

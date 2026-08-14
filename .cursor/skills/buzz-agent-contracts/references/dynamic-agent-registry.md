@@ -48,7 +48,7 @@ routing:
 
 规则：
 
-- capability ID 使用稳定命名空间，如 `research.web`、`document.pdf.create`、`code.rust.change`、`media.video.render`、`unity.scene.edit`、`coordination.route`。
+- capability ID 使用稳定命名空间，如 `research.web`、`document.pdf.create`、`code.rust.change`、`coordination.route`。
 - display name 可重复、可修改；稳定 ID/slug 不随重命名变化。
 - capability 版本只描述契约兼容性，不描述 Agent 产品版本。
 - capability 声明不授予工具、文件、网络或响应权限。

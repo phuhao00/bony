@@ -44,5 +44,6 @@
       }
     }
   },
-  "model": "bailian-coding-plan/qwen3-coder-plus"
+  "model": "bailian-coding-plan/qwen3-coder-plus",
+  "disabled_providers": []
 }

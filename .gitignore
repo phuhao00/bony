@@ -4,13 +4,27 @@
 
 # Local packaging / release artifacts (never commit binaries)
 .local-dist/
+/dist/
 
-# Buzz sources live in-tree (not a git submodule). Ignore local build junk only.
-/third_party/buzz/target/
-/third_party/buzz/**/node_modules/
-/third_party/buzz/**/dist/
-/third_party/buzz/**/.turbo/
-/third_party/buzz/.env
+# Local dumps / relay uploads
+/RESEARCH/
+/uploads/
+
+# Frontend
+/node_modules/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/**/.turbo/
+
+# Local relay config and SQLite (never commit)
+.env
+/buzz.db
+/buzz.db-wal
+/buzz.db-shm
+
+# Leftover vendor path if a locked folder could not be moved
+/third_party/
+/_nm_stash/
 
 # Local agent smoke / relay logs
 /tmp-*.log
@@ -25,4 +39,3 @@ tmp-discovery*.diff
 
 # Local runtime PIDs/logs for room stack
 .local-runtime/
-
